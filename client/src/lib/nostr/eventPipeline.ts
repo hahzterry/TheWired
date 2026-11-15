@@ -2,17 +2,16 @@ import type { NostrEvent } from "../../types/nostr";
 import { EVENT_KINDS } from "../../types/nostr";
 import { EventDeduplicator } from "./dedup";
 import { registerForgetSeen } from "./forgetSeen";
-import { inModGroup, verifySpaceModAuthority } from "./mutationAuthority";
 import { clearPendingDeletion } from "../../store/slices/eventsSlice";
 import { isValidEventStructure } from "./validation";
 import { verifyBridge } from "./verifyWorkerBridge";
 import { store } from "../../store";
 import type { AppDispatch } from "../../store";
 import { putEvent, deleteEvent, deleteAddressableEvent } from "../db/eventStore";
-import { addEvent, indexChatMessage, indexReel, indexLongForm, indexLiveStream, indexNote, indexMusicTrack, indexMusicAlbum, indexReply, indexRepost, indexRepostByAuthor, indexQuote, removeChatMessage, hideMessage, removeEvent, trackDeletedNote, indexEditedMessage } from "../../store/slices/eventsSlice";
+import { addEvent, indexChatMessage, indexReel, indexLongForm, indexLiveStream, indexNote, indexMusicTrack, indexMusicAlbum, indexReply, indexRepost, indexRepostByAuthor, indexQuote, hideMessage, trackDeletedNote, indexEditedMessage } from "../../store/slices/eventsSlice";
 import { addReaction } from "../../store/slices/reactionsSlice";
 import { addZap } from "../../store/slices/zapsSlice";
-import { addPollVote, removePoll } from "../../store/slices/pollsSlice";
+import { addPollVote } from "../../store/slices/pollsSlice";
 import { validateReceiptShape } from "../lightning/zapReceipt";
 import { notifyMusicUpdate } from "../../features/music/savedVersionSync";
 import { addTrack, indexTrackByArtist, indexTrackByAlbum, indexTrackByArtistName, indexAlbumByArtist, indexAlbumByArtistName, addAlbum, addPlaylist, addAnnotation, removeTrack, removeAlbum, recordMovedRelease, libraryReleaseMoved } from "../../store/slices/musicSlice";
@@ -47,6 +46,7 @@ import { createCallWrapHandlers } from "./pipeline/callWraps";
 import { createFriendWrapHandlers } from "./pipeline/friendWraps";
 import { createGiftWrapHandler } from "./pipeline/giftWrapHandler";
 import { createDeletionIndexer } from "./pipeline/deletionIndex";
+import { createModDeleteIndexer } from "./pipeline/modDeleteIndex";
 
 export type { EventPipelineDeps };
 export { computeSweep };
@@ -92,6 +92,7 @@ const { indexEventIntoSpaceFeeds } = createSpaceFeedIndexer(ctx, batching);
 const { handleCallInviteWrap, handleCallDeclineWrap, handleCallMissedWrap } = createCallWrapHandlers(ctx);
 const { handleFriendRequestWrap, handleFriendAcceptWrap, handleFriendRemoveWrap } = createFriendWrapHandlers(ctx);
 const { indexDeletion } = createDeletionIndexer(ctx, batching);
+const { indexModDelete } = createModDeleteIndexer(ctx, batching);
 const { handleGiftWrap } = createGiftWrapHandler(ctx, {
   handleFriendRequestWrap,
   handleFriendAcceptWrap,
@@ -628,58 +629,7 @@ async function indexEvent(event: NostrEvent, relayUrl: string): Promise<void> {
       break;
     }
     case EVENT_KINDS.MOD_DELETE_EVENT: {
-      // NIP-29 kind:9005: moderator delete — admin removes a message from the group.
-      const groupId = event.tags.find((t) => t[0] === "h")?.[1];
-      if (!groupId) break;
-
-      // #5 — authority check. The chat read set includes non-enforcing mirrors and
-      // imported relays, so anyone could publish a 9005 to wipe arbitrary messages.
-      // Require the author to be in the space's pinned authority set, or (platform
-      // spaces) the event to come from the space's own host relay, which enforces
-      // the backend's MANAGE_MESSAGES roles.
-      const space = getState().spaces.list.find((s) => s.id === groupId);
-      const verdict = verifySpaceModAuthority(event, space, relayUrl);
-      if (verdict === "defer-unknown-space") {
-        // Space not loaded yet (rare race: spaces hydrate before chat subs open).
-        // Drop without persisting and unmark so a relay redelivery can retry once
-        // the space metadata is present.
-        dedup.unmarkSeen(event.id);
-        break;
-      }
-      if (verdict === "defer-host-relay") {
-        // A platform space's role-holding moderator is vouched for only by the
-        // host relay's delivery. Leave the id unseen so that copy is processed
-        // even when a mirror delivered this one first.
-        dedup.unmarkSeen(event.id);
-        break;
-      }
-      if (verdict === "drop-unauthorized") {
-        break;
-      }
-
-      // Apply buffered adds first so refs to same-burst messages resolve.
-      flushEventPipeline();
-      for (const tag of event.tags) {
-        if (tag[0] === "e" && tag[1]) {
-          const refEvent = getState().events.entities[tag[1]];
-          if (refEvent) {
-            // Scope hardening: only delete messages that actually belong to THIS
-            // group, so an admin of one (e.g. self-imported) group can't delete
-            // another group's messages, or an untagged public note, by id.
-            if (!inModGroup(refEvent, groupId)) continue;
-            const refChannelTag = refEvent.tags.find((t) => t[0] === "channel")?.[1];
-            const contextId = refChannelTag ? `${groupId}:${refChannelTag}` : groupId;
-            dispatch(removeChatMessage({ contextId, eventId: tag[1] }));
-            dispatch(hideMessage(tag[1]));
-            dispatch(removeEvent(tag[1]));
-            if (refEvent.kind === EVENT_KINDS.POLL) {
-              dispatch(removePoll(tag[1]));
-            }
-            deps.persistence.deleteEvent(tag[1]).catch(() => {});
-          }
-        }
-      }
-      deps.persistence.putEvent(event).catch(() => {});
+      indexModDelete(event, relayUrl);
       break;
     }
   }
