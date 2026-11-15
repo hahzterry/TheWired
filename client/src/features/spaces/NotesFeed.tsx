@@ -11,6 +11,7 @@ import { useMusicNote } from "../../lib/media/useNoteMedia";
 import { imageCache } from "../../lib/cache/imageCache";
 import { useAnchoredScrollRestore } from "../../hooks/useAnchoredScrollRestore";
 import { readFeedScroll, writeFeedScroll } from "../../hooks/feedScrollMemory";
+import { useRetainedState } from "../../hooks/useRetainedState";
 import { useFeedPagination } from "./useFeedPagination";
 import { FeedToolbar } from "./FeedToolbar";
 import { LoadMoreButton } from "./LoadMoreButton";
@@ -55,7 +56,8 @@ const NoteCard = memo(function NoteCard({ event }: { event: NostrEvent }) {
   const { profile } = useProfile(event.pubkey);
   const isBlocked = useIsBlocked(event.pubkey);
   const { openUserPopover } = useUserPopover();
-  const [showMedia, setShowMedia] = useState(true);
+  // Kept while the card is outside the feed's rendered window.
+  const [showMedia, setShowMedia] = useRetainedState(`note:${event.id}:media`, true);
   const avatarRef = useRef<HTMLButtonElement>(null);
 
   const quoteRef = useMemo(() => parseQuoteRef(event), [event]);

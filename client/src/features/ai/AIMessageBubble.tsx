@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from "react";
+import { useRetainedState } from "@/hooks/useRetainedState";
 import {
   BrainCircuit,
   AlertCircle,
@@ -98,6 +99,7 @@ export const AIMessageBubble = memo(function AIMessageBubble({
         >
           {showReasoningPanel && (
             <ReasoningBlock
+              messageId={messageId}
               reasoning={reasoning!}
               thinking={thinking}
               reasoningMs={message.reasoningMs}
@@ -302,17 +304,20 @@ function TokenStats({ message }: { message: AIMessage }) {
 }
 
 function ReasoningBlock({
+  messageId,
   reasoning,
   thinking,
   reasoningMs,
 }: {
+  messageId: string;
   reasoning: string;
   thinking: boolean;
   reasoningMs?: number;
 }) {
   // Auto: expanded while actively thinking, collapsed once the answer begins.
-  // A user click pins the state thereafter.
-  const [override, setOverride] = useState<boolean | null>(null);
+  // A user click pins the state thereafter (kept while the message is outside
+  // the list's rendered window).
+  const [override, setOverride] = useRetainedState<boolean | null>(`ai:${messageId}:reasoning`, null);
   const open = override ?? thinking;
 
   const label = thinking

@@ -13,6 +13,7 @@ import { buildThreadContext, buildNoteContext } from "../ai/context/aiContext";
 import { QuotedNote } from "../spaces/notes/QuotedNote";
 import { NoteShareMenu } from "../../components/sharing/NoteShareMenu";
 import { ReplyComposer } from "../spaces/notes/ReplyComposer";
+import { useRetainedState } from "../../hooks/useRetainedState";
 import { RepostHeader } from "./RepostHeader";
 import { useProfile } from "./useProfile";
 import { useProfileNoteActions } from "./useProfileNoteActions";
@@ -191,10 +192,12 @@ function NoteCardInner({
   const pinnedNoteIds = useAppSelector((s) => s.identity.pinnedNoteIds);
   const askAI = useAskAI();
   const aiEnabled = useAppSelector(selectFeatureEnabled(FEATURE_AI));
-  const [showReplyComposer, setShowReplyComposer] = useState(false);
-  const [showQuoteComposer, setShowQuoteComposer] = useState(false);
-  const [showReplies, setShowReplies] = useState(false);
-  const [showMedia, setShowMedia] = useState(true);
+  // What the reader opened or hid on this card is kept while the card is
+  // outside a virtualized feed's rendered window, drafts included.
+  const [showReplyComposer, setShowReplyComposer] = useRetainedState(`pnote:${event.id}:reply`, false);
+  const [showQuoteComposer, setShowQuoteComposer] = useRetainedState(`pnote:${event.id}:quote`, false);
+  const [showReplies, setShowReplies] = useRetainedState(`pnote:${event.id}:replies`, false);
+  const [showMedia, setShowMedia] = useRetainedState(`pnote:${event.id}:media`, true);
   const [showPopover, setShowPopover] = useState(false);
   const [mentionPopover, setMentionPopover] = useState<{ pubkey: string; anchor: HTMLElement } | null>(null);
   const [showOverflow, setShowOverflow] = useState(false);
@@ -402,6 +405,7 @@ function NoteCardInner({
             setShowReplies(true);
           }}
           onCancel={() => setShowReplyComposer(false)}
+          draftKey={`pnote:${event.id}:reply-draft`}
         />
       )}
 
@@ -416,6 +420,7 @@ function NoteCardInner({
             setShowQuoteComposer(false);
           }}
           onCancel={() => setShowQuoteComposer(false)}
+          draftKey={`pnote:${event.id}:quote-draft`}
         />
       )}
 
@@ -502,7 +507,7 @@ function InlineReplies({ noteId }: { noteId: string }) {
 
 /** Shows the parent note a reply is responding to. Fetches if not in store. */
 function ThreadContext({ parentId }: { parentId: string }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useRetainedState(`pnote-context:${parentId}`, false);
   const parentEvent = useAppSelector((s) => eventsSelectors.selectById(s.events, parentId));
 
   // Fetch parent event if not in store and user expands

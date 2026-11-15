@@ -1,4 +1,5 @@
 import { memo, useCallback, useState } from "react";
+import { useRetainedState } from "../../../hooks/useRetainedState";
 import { useAppSelector } from "../../../store/hooks";
 import { selectActiveSpace } from "../spaceSelectors";
 import { useNoteEngagement } from "../useNoteEngagement";
@@ -22,8 +23,10 @@ import type { NostrEvent } from "../../../types/nostr";
  * card's text or (memoized) media above it.
  */
 export const NoteFooter = memo(function NoteFooter({ event }: { event: NostrEvent }) {
-  const [showReplyComposer, setShowReplyComposer] = useState(false);
-  const [threadExpanded, setThreadExpanded] = useState(false);
+  // Kept while the card is outside the feed's rendered window, so an open
+  // composer (and its draft) or an expanded thread is still there on return.
+  const [showReplyComposer, setShowReplyComposer] = useRetainedState(`note:${event.id}:reply`, false);
+  const [threadExpanded, setThreadExpanded] = useRetainedState(`note:${event.id}:thread`, false);
   const [shareAnchor, setShareAnchor] = useState<HTMLElement | null>(null);
 
   const engagement = useNoteEngagement(event.id);
@@ -79,6 +82,7 @@ export const NoteFooter = memo(function NoteFooter({ event }: { event: NostrEven
           targetPubkey={event.pubkey}
           onSend={handleSendReply}
           onCancel={handleCancelReply}
+          draftKey={`note:${event.id}:reply-draft`}
         />
       )}
 
