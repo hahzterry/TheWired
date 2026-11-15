@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure";
 import { getConversationKey, decrypt as nip44Decrypt } from "nostr-tools/nip44";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
@@ -27,6 +26,13 @@ import {
   spaceGrantKey,
 } from "../spaceKeys";
 import { makeTestIdentity, type TestIdentity } from "./testSigner";
+import fixtures from "../../../../shared-types/fixtures/space-e2ee-v1.json";
+
+/** Flip one character in the middle of a base64 payload. */
+function tamper(payload: string): string {
+  const i = Math.floor(payload.length / 2);
+  return payload.slice(0, i) + (payload[i] === "A" ? "B" : "A") + payload.slice(i + 1);
+}
 
 const SPACE = "space-under-test";
 
@@ -137,9 +143,7 @@ describe("sealed space events", () => {
 
   it("rejects a tampered ciphertext", () => {
     const event = seal(alice, key, "untouched");
-    const bytes = Buffer.from(event.content, "base64");
-    bytes[bytes.length - 40] ^= 0x01;
-    const tampered = { ...event, content: bytes.toString("base64") };
+    const tampered = { ...event, content: tamper(event.content) };
     expect(codeOf(() => openSealedSpaceEvent(tampered, key))).toBe("decrypt");
   });
 
@@ -307,9 +311,7 @@ describe("key grants", () => {
 
   it("rejects a tampered payload", async () => {
     const [grant] = grantFor(alice, key, [bob.pubkey]);
-    const bytes = Buffer.from(grant.content, "base64");
-    bytes[bytes.length - 40] ^= 0x01;
-    const tampered = { ...grant, content: bytes.toString("base64") };
+    const tampered = { ...grant, content: tamper(grant.content) };
     expect(await codeOfAsync(() => openSpaceKeyGrant(tampered, bob.pubkey, bob.signer.nip44Decrypt))).toBe("decrypt");
   });
 
@@ -393,9 +395,7 @@ describe("rotation", () => {
 
 // The contract fixtures other implementations check themselves against.
 describe("contract fixtures (packages/shared-types/fixtures/space-e2ee-v1.json)", () => {
-  const fx = JSON.parse(
-    readFileSync(new URL("../../../../shared-types/fixtures/space-e2ee-v1.json", import.meta.url), "utf8"),
-  );
+  const fx = fixtures;
   const who = (name: "alice" | "bob" | "carol") => {
     const sk = hexToBytes(fx.identities[name].secretKey);
     return {

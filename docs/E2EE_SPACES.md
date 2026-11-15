@@ -64,7 +64,11 @@ rumor is bound to that author, so no member can post as another member.
 **Explicit non-goals.**
 
 - **Metadata.** The relay still sees who is a member, who posts, when, how much, in which
-  space and under which epoch, who was given keys, and what gets deleted.
+  space and under which epoch, who was given keys, and what gets deleted. Message sizes are
+  blurred by NIP-44 padding (every short message is the same length on the wire).
+- **The space's own description.** Its name, picture, about text, channel list and roles are
+  not encrypted in v1: they live where they do today (the backend, the relay's 39000–39002,
+  the 30078 layout overlay). Phase 3 can seal the layout.
 - **Forward secrecy and post-compromise security inside an epoch.** A leaked epoch key reads
   the whole epoch. Rotation is the only ratchet. This is the price of the simple scheme and the
   reason MLS stays on the roadmap (D1).
@@ -156,6 +160,13 @@ for one `nip44_decrypt(eph, entry)`, checks the result (§6.2) and stores the ke
 - **Someone joins**: a manager's client sees a roster member without the current key and
   publishes a grant for them (a *late grant*: same epoch, new throwaway key). Until then the
   member sees "Waiting for an admin to share the key".
+- **Which roster**: a manager's client MUST decide from the authority's roster *as of that
+  moment* (the backend's member list, or the host relay's newest 39002 signed by the pinned
+  relay key), never from a cached copy. A stale cache would rotate out members who joined
+  since. If the roster cannot be fetched, nothing is granted or rotated.
+- **When**: on a fresh roster change, after a removal by this client, and a few seconds after
+  a manager opens the space (that is what serves a member who joined while no manager was
+  online).
 - **History policy `full`**: the late grant is followed by one grant per older epoch.
 
 ### 5.3 Rotation
@@ -424,6 +435,7 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 | Join cost | 1 small grant event per joiner (per epoch under `full`) | needs a manager's client online |
 | Practical size | hundreds of members | every leave rotates; a space with constant churn rotates constantly, and each rotation leaves the removed member able to read the hand-over window on a colluding relay. Past that, MLS is the right tool. |
 | Reading history | all sealed events of the space are fetched, the channel is only known after decryption | per-channel paging returns later with an optional blinded channel tag (phase 3) |
+| Key hand-over latency | a joiner waits for a manager's client to be online | the invite could carry the current epoch key in its link fragment (phase 2), so joiners read at once |
 
 ## 12. Migration and compatibility
 
@@ -444,7 +456,7 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 
 | Phase | Contents |
 |---|---|
-| **1 (this slice)** | Feature flag; create an encrypted space (any mode); epoch keys in the keychain; grants and late grants; rotation on removal and on leave; sealed chat send/receive in chat channels; plaintext guard; lock indicator and banners; contract types; tests. |
+| **1 (this slice)** | Feature flag; create an encrypted space (any mode); epoch keys in the keychain; grants and late grants; rotation on removal and on leave; sealed chat send/receive/edit in chat channels, replies and mentions inside the ciphertext; relay-side deletion; plaintext guard; lock indicator and banners; contract types; tests. Known gaps are listed in §16. |
 | **2: complete chat + server awareness** | Reactions, edits, replies UI polish, polls; encrypted attachments; `encrypted` flag on the relay (refuse plaintext kinds) and backend (badge, skip ingestion); marker in 39000 and in invites; background unread for encrypted spaces; key-holder list and hand-over rows; "Ask for the key"; root hand-over; media keys only to key holders; history paging. |
 | **3: the rest of a space** | Notes/media/articles/music channels as sealed rumors; local search; content-free push; verifiable reports; "encrypt from now on" for existing spaces; blinded channel tags. |
 | **4: MLS evaluation** | Re-check Marmot's audit status and multi-device story; if adopted, swap the key layer. |
@@ -471,10 +483,40 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 | Key store (keychain) | `client/src/features/spaces/e2ee/spaceKeyStore.ts` |
 | Key state, accept rules, epoch choice | `client/src/features/spaces/e2ee/spaceKeyring.ts` |
 | Roster reconcile (late grant / rotate) | `client/src/features/spaces/e2ee/keyReconcile.ts` |
-| Send, receive, subscriptions | `client/src/features/spaces/e2ee/sealedChat.ts`, `e2eeSubscriptions.ts` |
+| Roster the reconcile acts on | `client/src/features/spaces/e2ee/freshRoster.ts` |
+| Send and receive | `client/src/features/spaces/e2ee/sealedChat.ts` |
+| Subscriptions and lifecycle | `client/src/features/spaces/e2ee/e2eeController.ts` (mounted by `useSpaceE2ee` in `App.tsx`) |
+| Pipeline seam | `client/src/lib/nostr/spaceE2eeHooks.ts` |
 | Non-secret Redux state | `client/src/store/slices/spaceE2eeSlice.ts` |
 | Plaintext guard | `client/src/lib/nostr/publish.ts` |
 | Pipeline branch | `client/src/lib/nostr/eventPipeline.ts` |
 
 D2 (transport) is confined to the grant functions in `spaceKeys.ts` and the grant subscription;
 D3 to two constants; D4 to `epochsToGrant` in `keyReconcile.ts`; D5 to `sealSpaceEvent`.
+
+## 16. Known gaps in the slice
+
+Found while building and in live QA; none is hidden by the feature being off by default.
+
+- **History is one REQ of 500 sealed events per space**, newest first, with no paging.
+- **Reactions**: the reaction button still shows in an encrypted space, and reacting is
+  refused by the plaintext guard (kind 7 is not sealed yet). Polls, attachments and non-chat
+  channels are hidden or refused the same way.
+- **Feature switched off mid-session**: messages already decrypted stay on screen until a
+  reload; nothing new is fetched, decrypted or sent.
+- **Keys are not wiped when you leave or are removed.** The device keeps the epochs it had
+  (it could read those messages anyway). A wipe on leave belongs with phase 2.
+- **Backend member lists are not paged yet**, and the reconcile treats the list it gets as the
+  whole roster. A space larger than one page would rotate out the members beyond it; encrypted
+  platform spaces MUST stay below that until the member API pages.
+- **Two managers online at once** both hand a joiner the key (harmless duplicates) and can
+  both rotate on a removal (two epochs with the same `seq`, resolved by the tie-break).
+- **Live delivery right after creating or joining a group**: the relay refreshes a
+  connection's membership at most every 30 s, so events from others in that window are not
+  pushed live (true for plaintext chat as well). They load on the next history fetch.
+- **Cold start**: these subscriptions open before NIP-42 AUTH completes, so the first answer
+  is empty; the controller asks again with backoff (five tries, ~45 s in all). A signer that
+  takes longer than that to approve AUTH leaves the space empty until it is reopened.
+- **Web without persistence** re-derives every epoch from its grant at each reload: one
+  signer decryption per epoch held. Fine for an extension, slow on a remote signer with many
+  epochs.
