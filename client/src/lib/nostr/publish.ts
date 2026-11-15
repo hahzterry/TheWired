@@ -1,4 +1,5 @@
 import type { EventSigner } from "@ishtarservices/core";
+import { SPACE_E2EE_PLAINTEXT_KINDS } from "@ishtarservices/shared-types";
 import type { NostrEvent, UnsignedEvent } from "../../types/nostr";
 import { getSigner, getSignerTimeoutMs } from "./loginFlow";
 import { signingQueue } from "./signingQueue";
@@ -35,7 +36,26 @@ export interface SignOptions {
   signer?: EventSigner;
 }
 
+/**
+ * Refuse to sign plaintext content for an end-to-end encrypted space
+ * (docs/E2EE_SPACES.md §6.1). Chat there goes out sealed (kind 4290); only
+ * deletions, group management, reports and layout overlays stay in the clear.
+ * This is the one chokepoint every publish path signs through, so a feature
+ * that doesn't know about encryption can't leak into such a space. Spaces that
+ * are not marked encrypted are unaffected.
+ */
+function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): void {
+  const encrypted = store.getState().spaceE2ee.spaces;
+  if (SPACE_E2EE_PLAINTEXT_KINDS.includes(unsigned.kind)) return;
+  for (const tag of unsigned.tags) {
+    if (tag[0] === "h" && tag[1] && encrypted[tag[1]]) {
+      throw new Error("This space is end-to-end encrypted, and this can't be posted there yet.");
+    }
+  }
+}
+
 async function signWith(unsigned: UnsignedEvent, opts?: SignOptions): Promise<NostrEvent> {
+  assertSealedForEncryptedSpace(unsigned);
   if (opts?.signer) return opts.signer.signEvent(unsigned);
   const signer = getSigner();
   if (!signer) throw new Error("No signer available");

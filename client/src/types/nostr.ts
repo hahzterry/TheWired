@@ -121,4 +121,9 @@ export const EVENT_KINDS = {
   POLL: 1068,
   /** NIP-88: Poll response (vote; e tag → poll, response tags → option ids) */
   POLL_RESPONSE: 1018,
+  /** Sealed space event: an h-tagged envelope whose content is the encrypted
+   *  inner event of an end-to-end encrypted space (docs/E2EE_SPACES.md). */
+  SPACE_SEALED_EVENT: 4290,
+  /** Space key grant: hands an epoch key to members of an encrypted space. */
+  SPACE_KEY_GRANT: 4291,
 } as const;

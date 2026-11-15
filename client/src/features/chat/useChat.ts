@@ -13,6 +13,8 @@ import { removePoll } from "../../store/slices/pollsSlice";
 import { saveUserState, getUserState } from "../../lib/db/userStateStore";
 import { EVENT_KINDS, type NostrEvent } from "../../types/nostr";
 import type { PollDraft } from "../polls/PollComposer";
+import { selectIsEncryptedSpace } from "../../store/slices/spaceE2eeSlice";
+import { sealForSpace } from "../spaces/e2ee/sealedChat";
 
 /** 15 minutes in seconds */
 const EDIT_WINDOW_SECONDS = 15 * 60;
@@ -42,6 +44,8 @@ export function useChat() {
     [hostRelay, relayUrlsKey],
   );
   const messages = useAppSelector(selectChatMessages);
+  // End-to-end encrypted space (docs/E2EE_SPACES.md): chat goes out sealed.
+  const encrypted = useAppSelector(selectIsEncryptedSpace(activeSpaceId));
 
   const [pendingMessages, setPendingMessages] = useState<PendingMessage[]>([]);
   const [replyTo, setReplyTo] = useState<{
@@ -97,16 +101,27 @@ export function useChat() {
           relayManager.connect(url, "read+write");
         }
 
-        const signed = await signAndPublish(
-          unsigned,
-          relayTargets.length ? relayTargets : undefined,
-        );
+        if (encrypted) {
+          // Attachments would upload in the clear; they return with encrypted
+          // blobs. The sealed event's local pipeline pass indexes the message,
+          // so nothing is hand-dispatched here.
+          if (attachments?.length) throw new Error("Attachments aren't available in encrypted spaces yet.");
+          await signAndPublish(
+            await sealForSpace(unsigned, activeSpaceId),
+            relayTargets.length ? relayTargets : undefined,
+          );
+        } else {
+          const signed = await signAndPublish(
+            unsigned,
+            relayTargets.length ? relayTargets : undefined,
+          );
 
-        // Add to store — index by channel composite key for per-channel scoping
-        dispatch(addEvent(signed));
-        dispatch(
-          indexChatMessage({ groupId: activeChannelId ?? activeSpaceId, eventId: signed.id }),
-        );
+          // Add to store — index by channel composite key for per-channel scoping
+          dispatch(addEvent(signed));
+          dispatch(
+            indexChatMessage({ groupId: activeChannelId ?? activeSpaceId, eventId: signed.id }),
+          );
+        }
 
         // Remove pending, mark as confirmed
         setPendingMessages((prev) =>
@@ -124,7 +139,7 @@ export function useChat() {
 
       setReplyTo(null);
     },
-    [pubkey, activeSpaceId, activeChannelId, replyTo, relayTargets, dispatch],
+    [pubkey, activeSpaceId, activeChannelId, replyTo, relayTargets, encrypted, dispatch],
   );
 
   /** Publish a NIP-88 poll into the active channel. The local pipeline pass in
@@ -251,12 +266,21 @@ export function useChat() {
         channelIdPart,
       );
 
+      if (encrypted) {
+        // The edit is sealed like any message; the pipeline applies it.
+        await signAndPublish(
+          await sealForSpace(unsigned, activeSpaceId),
+          relayTargets.length ? relayTargets : undefined,
+        );
+        setEditingMessage(null);
+        return;
+      }
       const signed = await signAndPublish(unsigned, relayTargets.length ? relayTargets : undefined);
       dispatch(addEvent(signed));
       dispatch(indexEditedMessage({ originalId: originalEvent.id, editEventId: signed.id }));
       setEditingMessage(null);
     },
-    [pubkey, activeSpaceId, activeChannelId, relayTargets, dispatch],
+    [pubkey, activeSpaceId, activeChannelId, relayTargets, encrypted, dispatch],
   );
 
   /** Check if an event is within the edit window (chat messages only —

@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { Users, Settings, Search } from "lucide-react";
+import { Users, Settings, Search, Lock } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { SearchPanel } from "../search/SearchPanel";
 import { useSpace } from "./useSpace";
@@ -8,6 +8,7 @@ import { toggleRightPanel } from "../../store/slices/uiSlice";
 import { usePermissions } from "./usePermissions";
 import { SpaceSettingsModal } from "./settings/SpaceSettingsModal";
 import { parseChannelIdPart } from "./spaceSelectors";
+import { selectIsEncryptedSpace } from "../../store/slices/spaceE2eeSlice";
 import type { MessageSearchResult } from "../search/useMessageSearch";
 
 export function ChannelHeader() {
@@ -15,6 +16,7 @@ export function ChannelHeader() {
   const dispatch = useAppDispatch();
   const currentPubkey = useAppSelector((s) => s.identity.pubkey);
   const allChannels = useAppSelector((s) => s.spaces.channels);
+  const encrypted = useAppSelector(selectIsEncryptedSpace(activeSpace?.id));
   const { can } = usePermissions(activeSpace?.id ?? null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -57,6 +59,15 @@ export function ChannelHeader() {
       <span className="ml-2 text-xs text-muted">
         in {activeSpace.name}
       </span>
+      {encrypted && (
+        <span
+          className="ml-2 flex items-center gap-1 rounded bg-card px-1.5 py-0.5 text-[10px] text-muted"
+          title="Messages here are end-to-end encrypted. The relay stores only ciphertext."
+        >
+          <Lock size={10} />
+          Encrypted
+        </span>
+      )}
       {channel && channel.slowModeSeconds > 0 && (
         <span className="ml-2 rounded bg-card px-1.5 py-0.5 text-[10px] text-muted">
           Slow mode: {channel.slowModeSeconds}s

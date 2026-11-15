@@ -11,11 +11,14 @@ import type { RootState } from "../index";
 export const FEATURE_DECENTRALIZED_SPACES = "decentralized-spaces";
 export const FEATURE_AI = "ai";
 export const FEATURE_MUSIC_INSIGHTS = "music-insights";
+/** End-to-end encrypted spaces (docs/E2EE_SPACES.md). */
+export const FEATURE_E2EE_SPACES = "e2ee-spaces";
 
 export type FeatureId =
   | typeof FEATURE_DECENTRALIZED_SPACES
   | typeof FEATURE_AI
-  | typeof FEATURE_MUSIC_INSIGHTS;
+  | typeof FEATURE_MUSIC_INSIGHTS
+  | typeof FEATURE_E2EE_SPACES;
 
 /** Features enabled by default for every account. */
 const DEFAULT_ENABLED: FeatureId[] = [];

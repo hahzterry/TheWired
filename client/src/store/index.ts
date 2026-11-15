@@ -23,6 +23,7 @@ import { featuresSlice } from "./slices/featuresSlice";
 import { feedPrefsSlice } from "./slices/feedPrefsSlice";
 import { aiSlice } from "./slices/aiSlice";
 import { mediaPrefsSlice } from "./slices/mediaPrefsSlice";
+import { spaceE2eeSlice } from "./slices/spaceE2eeSlice";
 import { onboardingSlice } from "../features/onboarding/onboardingSlice";
 import { listenTogetherMiddleware } from "@/features/listenTogether/listenTogetherMiddleware";
 
@@ -55,6 +56,7 @@ const appReducer = combineReducers({
   feedPrefs: feedPrefsSlice.reducer,
   ai: aiSlice.reducer,
   mediaPrefs: mediaPrefsSlice.reducer,
+  spaceE2ee: spaceE2eeSlice.reducer,
   onboarding: onboardingSlice.reducer,
 });
 

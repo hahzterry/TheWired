@@ -1,4 +1,5 @@
 import type { NostrEvent } from "../../types/nostr";
+import { getSpaceE2eeHooks } from "./spaceE2eeHooks";
 import { EVENT_KINDS } from "../../types/nostr";
 import { EventDeduplicator } from "./dedup";
 import { registerForgetSeen } from "./forgetSeen";
@@ -440,6 +441,46 @@ async function processIncomingEvent(
       dedup.unmarkSeen(event.id);
     }
     return;
+  }
+
+  // Encrypted spaces (docs/E2EE_SPACES.md): the two contract kinds never enter
+  // the store as-is. A key grant goes to the keyring; a sealed event is opened
+  // and its inner event continues below under the outer id. With the feature
+  // off (or not started) both are dropped and unmarked, so nothing else changes.
+  if (event.kind === EVENT_KINDS.SPACE_KEY_GRANT) {
+    if (!getSpaceE2eeHooks()?.onKeyGrant(event)) dedup.unmarkSeen(event.id);
+    else dispatch(incrementEventCount(relayUrl));
+    return;
+  }
+  if (event.kind === EVENT_KINDS.SPACE_SEALED_EVENT) {
+    const opened = getSpaceE2eeHooks()?.openSealed(event, relayUrl) ?? { status: "declined" as const };
+    if (opened.status === "declined") dedup.unmarkSeen(event.id);
+    if (opened.status !== "opened") return;
+    await ingestVerifiedEvent(opened.event, relayUrl, receivedAt, true);
+    return;
+  }
+
+  await ingestVerifiedEvent(event, relayUrl, receivedAt, false);
+}
+
+/**
+ * Everything after validation, dedup and signature verification. `sealed` is
+ * true for the inner event of a sealed space event: it arrives here under the
+ * outer event's id (already verified and deduped) and is the only form of chat
+ * an encrypted space accepts.
+ */
+async function ingestVerifiedEvent(
+  event: NostrEvent,
+  relayUrl: string,
+  receivedAt: number,
+  sealed: boolean,
+): Promise<void> {
+  // In an encrypted space, plaintext chat is never rendered: it can only come
+  // from a client that doesn't know the space is encrypted, or from someone
+  // injecting unencrypted messages among the sealed ones.
+  if (!sealed && event.kind === EVENT_KINDS.CHAT_MESSAGE) {
+    const h = event.tags.find((t) => t[0] === "h")?.[1];
+    if (h && getState().spaceE2ee.spaces[h]) return;
   }
 
   // Step 3b: Reject re-delivered deleted notes/reposts/polls
@@ -1760,8 +1801,15 @@ function handleCallMissedWrap(
   }
 }
 
+  /** Ingest the inner event of a sealed space event that was parked until its
+   *  key arrived. Its outer event was verified and deduped when it was parked. */
+  async function ingestOpenedSealedEvent(event: NostrEvent, relayUrl: string): Promise<void> {
+    await ingestVerifiedEvent(event, relayUrl, Date.now(), true);
+  }
+
   return {
     processIncomingEvent,
+    ingestOpenedSealedEvent,
     flushEventPipeline,
     resetEventPipelineCaches,
     forgetSeenEvents,
@@ -1790,6 +1838,9 @@ const defaultPipeline = createEventPipeline({
  * 4. Dispatch to Redux + index
  */
 export const processIncomingEvent = defaultPipeline.processIncomingEvent;
+
+/** Ingest an opened sealed space event that was waiting for its key. */
+export const ingestOpenedSealedEvent = defaultPipeline.ingestOpenedSealedEvent;
 
 /** Apply all buffered burst-path ops in one batch — see createEventPipeline. */
 export const flushEventPipeline = defaultPipeline.flushEventPipeline;

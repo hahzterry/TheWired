@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { X, Search, Plus, Rss } from "lucide-react";
+import { X, Search, Plus, Rss, Lock } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { ImageUpload } from "../../components/ui/ImageUpload";
@@ -13,6 +13,7 @@ import { useUserSearch } from "../search/useUserSearch";
 import { useProfile } from "../profile/useProfile";
 import {
   FEATURE_DECENTRALIZED_SPACES,
+  FEATURE_E2EE_SPACES,
   selectFeatureEnabled,
 } from "../../store/slices/featuresSlice";
 import { RelayPicker, type ExtraPreset } from "./RelayPicker";
@@ -29,6 +30,7 @@ import {
   tunnelToRelayUrl,
 } from "../../lib/relay/embeddedRelay";
 import type { Space, SpaceType } from "../../types/space";
+import { prepareFirstEpoch, publishFirstEpoch } from "./e2ee/spaceKeyring";
 
 /** Top-level choice in the create modal. "decentralized" reveals the relay
  *  picker; A-lite keeps backend-owned channels/roles but a creator-chosen relay. */
@@ -117,6 +119,9 @@ export function CreateSpaceModal({
   const decentralizedEnabled = useAppSelector(
     selectFeatureEnabled(FEATURE_DECENTRALIZED_SPACES),
   );
+  const e2eeEnabled = useAppSelector(selectFeatureEnabled(FEATURE_E2EE_SPACES));
+  const [encrypted, setEncrypted] = useState(false);
+  const [fullHistory, setFullHistory] = useState(false);
   const [name, setName] = useState("");
   const [about, setAbout] = useState("");
   const [picture, setPicture] = useState("");
@@ -262,6 +267,22 @@ export function CreateSpaceModal({
       groupRef: { host: relayUrlToHost(resolvedHostRelay), groupId: spaceId },
     };
 
+    // End-to-end encrypted space: make and store the first key before anything
+    // is created, so a keychain failure can't leave a space that was meant to
+    // be encrypted accepting plaintext (docs/E2EE_SPACES.md).
+    const makeEncrypted = e2eeEnabled && encrypted;
+    if (makeEncrypted) {
+      try {
+        await prepareFirstEpoch(space, fullHistory ? "full" : "epoch");
+      } catch (err) {
+        setCreateError(
+          `Couldn't set up encryption: ${err instanceof Error ? err.message : "unknown error"}. Try again.`,
+        );
+        setCreating(false);
+        return;
+      }
+    }
+
     if (isNative) {
       // Relay-authoritative NIP-29 group: publish kind:9007 (create) + 9002
       // (metadata) to the chosen relay. No backend registration.
@@ -343,6 +364,11 @@ export function CreateSpaceModal({
     pendingIdRef.current = null;
     // Now navigate to the space
     onCreate(space);
+    if (makeEncrypted) {
+      publishFirstEpoch(space).catch((err) => {
+        console.error("[CreateSpace] publishing the space key failed:", err instanceof Error ? err.message : "unknown error");
+      });
+    }
 
     setName("");
     setAbout("");
@@ -353,6 +379,8 @@ export function CreateSpaceModal({
     setHostRelay(BOOTSTRAP_RELAYS[0]);
     setRelayInfo(null);
     setPrivateGroup(false);
+    setEncrypted(false);
+    setFullHistory(false);
     setFeedPubkeys([]);
     setSelectedChannels(new Set(["chat", "notes", "media", "articles", "music"]));
     setQuery("");
@@ -537,6 +565,41 @@ export function CreateSpaceModal({
                 </>
               )}
             </>
+          )}
+
+          {e2eeEnabled && (
+            <div className="rounded-lg border border-border bg-surface px-2.5 py-2">
+              <label className="flex cursor-pointer items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={encrypted}
+                  onChange={(e) => setEncrypted(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <Lock size={14} className="text-soft" />
+                <span className="text-sm text-heading">End-to-end encrypted</span>
+              </label>
+              {encrypted && (
+                <>
+                  <p className="mt-1.5 text-[11px] text-muted">
+                    Only members can read the chat; the relay stores ciphertext. Search, link
+                    previews, notifications, attachments, polls and reactions are off in this
+                    space, and it can&apos;t be switched back later.
+                  </p>
+                  <label className="mt-1.5 flex cursor-pointer items-center gap-2.5">
+                    <input
+                      type="checkbox"
+                      checked={fullHistory}
+                      onChange={(e) => setFullHistory(e.target.checked)}
+                      className="rounded border-border"
+                    />
+                    <span className="text-[12px] text-soft">
+                      New members can read messages from before they joined
+                    </span>
+                  </label>
+                </>
+              )}
+            </div>
           )}
 
           <div>

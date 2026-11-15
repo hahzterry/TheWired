@@ -26,6 +26,7 @@ import { walletSlice } from "@/store/slices/walletSlice";
 import { featuresSlice } from "@/store/slices/featuresSlice";
 import { feedPrefsSlice } from "@/store/slices/feedPrefsSlice";
 import { aiSlice } from "@/store/slices/aiSlice";
+import { spaceE2eeSlice } from "../../store/slices/spaceE2eeSlice";
 import { mediaPrefsSlice } from "@/store/slices/mediaPrefsSlice";
 import { onboardingSlice } from "@/features/onboarding/onboardingSlice";
 import type { RootState } from "@/store";
@@ -57,6 +58,7 @@ const appReducer = combineReducers({
   feedPrefs: feedPrefsSlice.reducer,
   ai: aiSlice.reducer,
   mediaPrefs: mediaPrefsSlice.reducer,
+  spaceE2ee: spaceE2eeSlice.reducer,
   onboarding: onboardingSlice.reducer,
 });
 

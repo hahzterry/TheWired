@@ -30,6 +30,7 @@ import { getAutoUpdatesEnabled } from "../features/settings/AppSettingsTab";
 import { useAppUpdater } from "../hooks/useAppUpdater";
 import { useZoomShortcuts } from "../hooks/useZoomShortcuts";
 import { useEmbeddedRelayAutostart } from "../features/settings/useEmbeddedRelayAutostart";
+import { useSpaceE2ee } from "../features/spaces/e2ee/useSpaceE2ee";
 
 // Lazy: the AI chat tree (react-markdown / rehype-highlight / marked) only loads
 // the first time the user opens the AI tab, then stays mounted (keep-alive).
@@ -50,6 +51,7 @@ function AuthGate() {
   // Desktop: bring the self-hosted relay back up (if the user was hosting) and
   // re-point their self-hosted spaces to its live address after a restart.
   useEmbeddedRelayAutostart();
+  useSpaceE2ee();
 
   if (restoring || switchingAccount) {
     return (

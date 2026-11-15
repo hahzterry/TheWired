@@ -40,11 +40,12 @@ export const SPACE_SEALED_MAX_PLAINTEXT_BYTES = 65535;
 
 /**
  * Plaintext kinds a client may still publish with an encrypted space's `h`
- * tag: deletion, NIP-29 management, the two contract kinds, reports and the
- * NIP-78 layout overlays. Everything else must be sealed.
+ * tag: deletion, NIP-29 management, the two contract kinds, reports, the
+ * NIP-78 layout overlays and voice-room metadata / presence (NIP-53). Everything
+ * else must be sealed.
  */
 export const SPACE_E2EE_PLAINTEXT_KINDS: readonly number[] = [
-  5, 1984, 9000, 9001, 9002, 9005, 9007, 9008, 9009, 9021, 9022, 30078,
+  5, 1984, 9000, 9001, 9002, 9005, 9007, 9008, 9009, 9021, 9022, 10312, 30078, 30312,
   SPACE_E2EE_KINDS.SEALED_EVENT,
   SPACE_E2EE_KINDS.KEY_GRANT,
 ];
