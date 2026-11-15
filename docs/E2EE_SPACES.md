@@ -506,9 +506,9 @@ Found while building and in live QA; none is hidden by the feature being off by 
   reload; nothing new is fetched, decrypted or sent.
 - **Keys are not wiped when you leave or are removed.** The device keeps the epochs it had
   (it could read those messages anyway). A wipe on leave belongs with phase 2.
-- **Backend member lists are not paged yet**, and the reconcile treats the list it gets as the
-  whole roster. A space larger than one page would rotate out the members beyond it; encrypted
-  platform spaces MUST stay below that until the member API pages.
+- **The reconcile treats the backend's member list as the whole roster.** That is true today
+  (the endpoint returns every member). When that endpoint gains paging, the reconcile MUST
+  walk every page first, or it would rotate out the members beyond the first one.
 - **Two managers online at once** both hand a joiner the key (harmless duplicates) and can
   both rotate on a removal (two epochs with the same `seq`, resolved by the tie-break).
 - **Live delivery right after creating or joining a group**: the relay refreshes a

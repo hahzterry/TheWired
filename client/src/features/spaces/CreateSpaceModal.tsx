@@ -246,17 +246,21 @@ export function CreateSpaceModal({
         ? "nip29-native"
         : "decentralized-alite";
 
+    // An encrypted space is chat-only for now: the other channel types have
+    // no sealed form yet, so creating them would only produce dead channels.
+    const makeEncrypted = e2eeEnabled && encrypted;
+
     const space: Space = {
       id: spaceId,
       name: name.trim(),
       about: about.trim() || undefined,
       picture: picture.trim() || undefined,
       // Native NIP-29 groups are chat-centric; force read-write.
-      mode: isNative ? "read-write" : mode,
+      mode: isNative || makeEncrypted ? "read-write" : mode,
       creatorPubkey: pubkey,
       adminPubkeys: [pubkey],
       memberPubkeys: [pubkey],
-      feedPubkeys: !isNative && mode === "read" ? feedPubkeys : [],
+      feedPubkeys: !isNative && !makeEncrypted && mode === "read" ? feedPubkeys : [],
       hostRelay: resolvedHostRelay,
       isPrivate: isNative ? privateGroup : false,
       // New backend spaces start unlisted (invite-only) until a listing request.
@@ -270,7 +274,6 @@ export function CreateSpaceModal({
     // End-to-end encrypted space: make and store the first key before anything
     // is created, so a keychain failure can't leave a space that was meant to
     // be encrypted accepting plaintext (docs/E2EE_SPACES.md).
-    const makeEncrypted = e2eeEnabled && encrypted;
     if (makeEncrypted) {
       try {
         await prepareFirstEpoch(space, fullHistory ? "full" : "epoch");
@@ -324,10 +327,12 @@ export function CreateSpaceModal({
       }
     } else {
       // Platform / A-lite: bootstrap on the backend FIRST (seeds roles + channels).
-      const channelList = Array.from(selectedChannels).map((type) => ({
-        type,
-        label: `#${type}`,
-      }));
+      const channelList = makeEncrypted
+        ? [{ type: "chat", label: "#chat" }]
+        : Array.from(selectedChannels).map((type) => ({
+            type,
+            label: `#${type}`,
+          }));
 
       try {
         await registerSpace({
@@ -341,7 +346,7 @@ export function CreateSpaceModal({
         });
 
         // Register feed sources after space is created
-        if (mode === "read" && feedPubkeys.length > 0) {
+        if (!makeEncrypted && mode === "read" && feedPubkeys.length > 0) {
           addFeedSources(spaceId, feedPubkeys).catch((err) => {
             console.error("[CreateSpace] Feed sources registration failed:", err);
           });
@@ -393,6 +398,9 @@ export function CreateSpaceModal({
   // (those are Wired backend concepts that don't apply).
   const nativeSelected =
     decentralizedEnabled && spaceKind === "decentralized" && decentralizedFlavor === "native";
+  // Chat-only spaces (native groups, and encrypted spaces for now) have no
+  // mode / channel / feed choices to make.
+  const chatOnlySelected = nativeSelected || (e2eeEnabled && encrypted);
 
   // Offer the self-hosted relay only for NIP-29-native spaces: creating one
   // publishes 9007 (so the creator becomes a relay-native member and the
@@ -582,9 +590,10 @@ export function CreateSpaceModal({
               {encrypted && (
                 <>
                   <p className="mt-1.5 text-[11px] text-muted">
-                    Only members can read the chat; the relay stores ciphertext. Search, link
-                    previews, notifications, attachments, polls and reactions are off in this
-                    space, and it can&apos;t be switched back later.
+                    Only members can read the chat; the relay stores ciphertext. The space is
+                    chat-only for now: search, link previews, notifications, attachments, polls,
+                    reactions and the other channel types are off, and it can&apos;t be switched
+                    back later.
                   </p>
                   <label className="mt-1.5 flex cursor-pointer items-center gap-2.5">
                     <input
@@ -639,7 +648,7 @@ export function CreateSpaceModal({
             shape="square"
           />
 
-          {!nativeSelected && (
+          {!chatOnlySelected && (
           <div>
             <label className="mb-1 block text-xs font-medium text-soft">
               Mode
@@ -675,7 +684,7 @@ export function CreateSpaceModal({
           )}
 
           {/* Channel selection */}
-          {!nativeSelected && (
+          {!chatOnlySelected && (
           <div>
             <label className="mb-1 block text-xs font-medium text-soft">
               Channels
@@ -722,7 +731,7 @@ export function CreateSpaceModal({
           )}
 
           {/* Feed Sources -- shown only for feed mode */}
-          {!nativeSelected && mode === "read" && (
+          {!chatOnlySelected && mode === "read" && (
             <div>
               <label className="mb-1 block text-xs font-medium text-soft">
                 Feed Sources
