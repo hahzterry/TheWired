@@ -132,33 +132,18 @@ import { ensureMediaGrant, clearMediaGrant } from "../media/mediaGrant";
 import { musicTokenCache } from "../cache/tokenCache";
 import { abandonMediaSessions } from "../webrtc/mediaSession";
 import { endMediaSessionsForAccountChange } from "../../features/calling/accountChangeMedia";
+import { loginState } from "./login/state";
 
 const startupLog = createLogger("startup");
 const idLog = createLogger("identity");
-
-/** Set at the start of performLogin so subscribeUserData can report own-profile latency. */
-let loginStartedAt = 0;
 
 /** Dedup concurrent session restores. React StrictMode mounts AuthGate twice in
  *  dev, firing tryRestoreSession twice; without this guard two full logins race,
  *  doubling all subscriptions + IDB work. Concurrent callers share one promise. */
 let restoreInFlight: Promise<boolean> | null = null;
 
-let currentSigner: NostrSigner | null = null;
-
-/** Persistence listener cleanup functions — captured so we can stop them on logout */
-let cleanupDMPersistence: (() => void) | null = null;
-let cleanupDMReadState: (() => void) | null = null;
-let cleanupFollowerPersistence: (() => void) | null = null;
-let cleanupFriendRequestPersistence: (() => void) | null = null;
-let cleanupNotificationPersistence: (() => void) | null = null;
-let cleanupMusicLibrarySync: (() => void) | null = null;
-let cleanupActiveSpacePersistence: (() => void) | null = null;
-let cleanupGiftWrapReconciliation: (() => void) | null = null;
-let cleanupProjectKeyListener: (() => void) | null = null;
-
 export function getSigner(): NostrSigner | null {
-  return currentSigner;
+  return loginState.currentSigner;
 }
 
 /** Signing timeout budget. NIP-46 bunkers may require manual approval, so give them longer. */
@@ -314,7 +299,7 @@ function ingestOwnProfileEvent(event: import("../../types/nostr").NostrEvent, pu
     idLog.warn(`own kind:0 had invalid JSON content — profile not updated`);
     return;
   }
-  const latency = loginStartedAt ? `${(performance.now() - loginStartedAt).toFixed(0)}ms after login` : "";
+  const latency = loginState.loginStartedAt ? `${(performance.now() - loginState.loginStartedAt).toFixed(0)}ms after login` : "";
   idLog.info(
     `own kind:0 received → "${profile.display_name || profile.name || "unnamed"}" ${latency} — dispatching to identity slice`,
   );
@@ -533,7 +518,7 @@ export async function performLogin(
   knownPubkey?: string,
   nip46Connect?: Nip46Connection,
 ): Promise<void> {
-  loginStartedAt = performance.now();
+  loginState.loginStartedAt = performance.now();
   startupLog.info(
     `performLogin start (signerType=${signerTypeOverride ?? "auto"}, knownPubkey=${knownPubkey ? shortKey(knownPubkey) : "none"})`,
   );
@@ -543,7 +528,7 @@ export async function performLogin(
 
   // Step 2: Connect to bootstrap relays and WAIT for at least one
   await relayManager.connectToBootstrapAndWait();
-  startupLog.info(`bootstrap relays ready after ${(performance.now() - loginStartedAt).toFixed(0)}ms`);
+  startupLog.info(`bootstrap relays ready after ${(performance.now() - loginState.loginStartedAt).toFixed(0)}ms`);
 
   // Step 3: Detect/create signer and get pubkey
   const signerType = signerTypeOverride ?? (await detectSigner());
@@ -564,7 +549,7 @@ export async function performLogin(
     }
     const { Nip46Signer } = await import("./nip46Signer");
     const { hexToBytes } = await import("@noble/hashes/utils");
-    currentSigner = await Nip46Signer.connect(
+    loginState.currentSigner = await Nip46Signer.connect(
       connect.bunkerUri,
       hexToBytes(connect.clientSecretHex),
       { onAuthUrl: handleBunkerAuthUrl, knownUserPubkey: knownPubkey },
@@ -582,9 +567,9 @@ export async function performLogin(
         // Key may not exist yet (first login / import) — getPublicKey will handle it
       }
     }
-    currentSigner = await createSigner(signerType);
+    loginState.currentSigner = await createSigner(signerType);
   }
-  const signerPubkey = await currentSigner.getPublicKey();
+  const signerPubkey = await loginState.currentSigner.getPublicKey();
   if (knownPubkey && knownPubkey !== signerPubkey) {
     // The signer returned a different key than the session expected. This means
     // the stored key was lost (keychain wiped, unsigned dev build, etc.). Do NOT
@@ -1196,7 +1181,7 @@ export async function performLogin(
   // re-delivered events (which trigger evaluateCollaboratorNotification)
   // find existing notifications and skip them via addNotification dedup.
   await loadNotificationState();
-  cleanupNotificationPersistence = startNotificationPersistence();
+  loginState.cleanupNotificationPersistence = startNotificationPersistence();
 
   // Step 7e: Subscribe for user's own music events + deletion events from relays
   // Events flow through processIncomingEvent → Redux + IndexedDB persistence
@@ -1240,8 +1225,8 @@ export async function performLogin(
       relayUrls: PROFILE_RELAYS,
     });
   };
-  cleanupProjectKeyListener?.();
-  cleanupProjectKeyListener = onProjectKeyAdded((projectPubkey) => subscribeProjectAuthors([projectPubkey]));
+  loginState.cleanupProjectKeyListener?.();
+  loginState.cleanupProjectKeyListener = onProjectKeyAdded((projectPubkey) => subscribeProjectAuthors([projectPubkey]));
   hydrateHeldProjectKeys(pubkey).then(subscribeProjectAuthors).catch(() => {});
 
   // Step 7e-b: Re-fetch any saved items (and folder members) missing from
@@ -1272,23 +1257,23 @@ export async function performLogin(
   // This populates processedWrapIds so relay echoes are deduped and
   // messages keep their original display timestamps.
   await loadDMState();
-  cleanupDMPersistence = startDMPersistence();
+  loginState.cleanupDMPersistence = startDMPersistence();
 
   // Step 7f-a: Fetch relay-synced DM read state (NIP-78).
   // This populates lastReadTimestamps so re-fetched DMs after a cache clear
   // are correctly marked as already-read.
   loadDMReadState();
-  cleanupDMReadState = startDMReadStateSync();
+  loginState.cleanupDMReadState = startDMReadStateSync();
 
   // Step 7f-a2: Music library + folders sync with the account's other
   // devices (encrypted kind-30078 docs). After the DM bootstrap so a remote
   // signer serves DM unwraps first.
-  cleanupMusicLibrarySync?.();
-  cleanupMusicLibrarySync = startMusicLibrarySync(pubkey);
+  loginState.cleanupMusicLibrarySync?.();
+  loginState.cleanupMusicLibrarySync = startMusicLibrarySync(pubkey);
 
   // Step 7f-b: Load persisted friend requests from IndexedDB
   await loadFriendRequestState();
-  cleanupFriendRequestPersistence = startFriendRequestPersistence();
+  loginState.cleanupFriendRequestPersistence = startFriendRequestPersistence();
 
   // Step 7f-c: Notification state already loaded in step 7d-b (before relay subs).
 
@@ -1305,7 +1290,7 @@ export async function performLogin(
   // Persist active space changes to IndexedDB for restore on next login/switch
   {
     let lastSpaceId = store.getState().spaces.activeSpaceId;
-    cleanupActiveSpacePersistence = store.subscribe(() => {
+    loginState.cleanupActiveSpacePersistence = store.subscribe(() => {
       const current = store.getState().spaces.activeSpaceId;
       if (current !== lastSpaceId) {
         lastSpaceId = current;
@@ -1351,8 +1336,8 @@ export async function performLogin(
   });
   // NIP-77: reconcile the inbox by event id on relays that speak it
   // (docs/DM_WIRE_CONTRACT.md §7.5); the since-window sub above is the fallback.
-  cleanupGiftWrapReconciliation?.();
-  cleanupGiftWrapReconciliation = startGiftWrapReconciliation(pubkey, () => {
+  loginState.cleanupGiftWrapReconciliation?.();
+  loginState.cleanupGiftWrapReconciliation = startGiftWrapReconciliation(pubkey, () => {
     const dm = store.getState().identity.dmRelayList;
     return dm.length > 0 ? [...new Set([...dm, ...BOOTSTRAP_RELAYS])] : [...BOOTSTRAP_RELAYS];
   });
@@ -1361,7 +1346,7 @@ export async function performLogin(
   // Use all connected read relays (not just bootstrap) so user-configured relays are included.
   // Buffer follower pubkeys until EOSE, then MERGE with cached set (never shrink).
   await loadFollowerState();
-  cleanupFollowerPersistence = startFollowerPersistence();
+  loginState.cleanupFollowerPersistence = startFollowerPersistence();
 
   const followerBuffer: string[] = [];
   let followerMerged = false;
@@ -1715,26 +1700,26 @@ export function performCleanup(): void {
   flushMusicLibrarySync();
 
   // 2. Unsubscribe persistence listeners
-  cleanupDMPersistence?.();
-  cleanupDMPersistence = null;
-  cleanupDMReadState?.();
-  cleanupDMReadState = null;
-  cleanupFollowerPersistence?.();
-  cleanupFollowerPersistence = null;
-  cleanupFriendRequestPersistence?.();
-  cleanupFriendRequestPersistence = null;
-  cleanupNotificationPersistence?.();
-  cleanupNotificationPersistence = null;
-  cleanupMusicLibrarySync?.();
-  cleanupMusicLibrarySync = null;
+  loginState.cleanupDMPersistence?.();
+  loginState.cleanupDMPersistence = null;
+  loginState.cleanupDMReadState?.();
+  loginState.cleanupDMReadState = null;
+  loginState.cleanupFollowerPersistence?.();
+  loginState.cleanupFollowerPersistence = null;
+  loginState.cleanupFriendRequestPersistence?.();
+  loginState.cleanupFriendRequestPersistence = null;
+  loginState.cleanupNotificationPersistence?.();
+  loginState.cleanupNotificationPersistence = null;
+  loginState.cleanupMusicLibrarySync?.();
+  loginState.cleanupMusicLibrarySync = null;
   resetLibraryFill();
 
-  cleanupActiveSpacePersistence?.();
-  cleanupActiveSpacePersistence = null;
-  cleanupGiftWrapReconciliation?.();
-  cleanupGiftWrapReconciliation = null;
-  cleanupProjectKeyListener?.();
-  cleanupProjectKeyListener = null;
+  loginState.cleanupActiveSpacePersistence?.();
+  loginState.cleanupActiveSpacePersistence = null;
+  loginState.cleanupGiftWrapReconciliation?.();
+  loginState.cleanupGiftWrapReconciliation = null;
+  loginState.cleanupProjectKeyListener?.();
+  loginState.cleanupProjectKeyListener = null;
   clearProjectKeySession();
 
   // 3. Close subscriptions and background chat subs
@@ -1742,8 +1727,8 @@ export function performCleanup(): void {
   stopAllBgChatSubs();
 
   // 4. Clear module-level caches (signer, profile, DM relay, channel, dedup, authorSet)
-  closeSignerIfRemote(currentSigner);
-  currentSigner = null;
+  closeSignerIfRemote(loginState.currentSigner);
+  loginState.currentSigner = null;
   profileCache.clear();
   clearDMRelayCache();
   clearLastChannelCache();
@@ -1779,25 +1764,25 @@ export async function performLogout(): Promise<void> {
   cancelMusicLibrarySync();
 
   // 2. Stop persistence listeners
-  cleanupDMPersistence?.();
-  cleanupDMPersistence = null;
-  cleanupDMReadState?.();
-  cleanupDMReadState = null;
-  cleanupFollowerPersistence?.();
-  cleanupFollowerPersistence = null;
-  cleanupFriendRequestPersistence?.();
-  cleanupFriendRequestPersistence = null;
-  cleanupNotificationPersistence?.();
-  cleanupNotificationPersistence = null;
-  cleanupMusicLibrarySync?.();
-  cleanupMusicLibrarySync = null;
+  loginState.cleanupDMPersistence?.();
+  loginState.cleanupDMPersistence = null;
+  loginState.cleanupDMReadState?.();
+  loginState.cleanupDMReadState = null;
+  loginState.cleanupFollowerPersistence?.();
+  loginState.cleanupFollowerPersistence = null;
+  loginState.cleanupFriendRequestPersistence?.();
+  loginState.cleanupFriendRequestPersistence = null;
+  loginState.cleanupNotificationPersistence?.();
+  loginState.cleanupNotificationPersistence = null;
+  loginState.cleanupMusicLibrarySync?.();
+  loginState.cleanupMusicLibrarySync = null;
   resetLibraryFill();
-  cleanupActiveSpacePersistence?.();
-  cleanupActiveSpacePersistence = null;
-  cleanupGiftWrapReconciliation?.();
-  cleanupGiftWrapReconciliation = null;
-  cleanupProjectKeyListener?.();
-  cleanupProjectKeyListener = null;
+  loginState.cleanupActiveSpacePersistence?.();
+  loginState.cleanupActiveSpacePersistence = null;
+  loginState.cleanupGiftWrapReconciliation?.();
+  loginState.cleanupGiftWrapReconciliation = null;
+  loginState.cleanupProjectKeyListener?.();
+  loginState.cleanupProjectKeyListener = null;
   clearProjectKeySession();
 
   // 3. Close all relay subscriptions and background chat subs
@@ -1805,8 +1790,8 @@ export async function performLogout(): Promise<void> {
   stopAllBgChatSubs();
 
   // 4. Clear signer and module-level caches
-  closeSignerIfRemote(currentSigner);
-  currentSigner = null;
+  closeSignerIfRemote(loginState.currentSigner);
+  loginState.currentSigner = null;
   profileCache.clear();
   clearDMRelayCache();
   clearLastChannelCache();
