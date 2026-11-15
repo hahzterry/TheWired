@@ -55,7 +55,7 @@ is the failure mode to guard against.
    metadata (`isRoom`, `participants`, `subject`). `DMContact` gains optional room
    fields (a room's "pubkey" is the synthetic roomId, so avatar/name lookups must
    branch).
-2. **Receive** — in `lib/nostr/eventPipeline.ts` (~line 932, the unwrapped-DM routing),
+2. **Receive** — in `handleGiftWrap` (`lib/nostr/pipeline/giftWrapHandler.ts`, the unwrapped-DM routing),
    after the `type`-tag checks, branch on `isGroupDM(dm)`: route under
    `roomIdOf(dm)` instead of the single-partner logic, and **bypass the `HEX64_RE`
    guard** for room ids (a roomId isn't 64-hex). Mark/create the room contact with

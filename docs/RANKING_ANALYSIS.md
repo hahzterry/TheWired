@@ -248,7 +248,7 @@ These outrank every algorithm change above.
 | 5 | `getTrending` silently ignores the `kind` param the route accepts. | `routes/feeds.ts:8`, `services/feedService.ts:7-27` |
 | 6 | `trendingComputer` only ever computes the `24h` period, though `1h/6h/7d` are defined. | `workers/trendingComputer.ts:17-22`, `:73` |
 | 7 | Kind:6 reposts and kind:1 replies are counted by nothing — only NIP-22 kind:1111 comments are. | `workers/trendingComputer.ts:132-141` |
-| 8 | Friends Feed indexes **only while it is the active space**, so nothing accumulates in the background. | `lib/nostr/eventPipeline.ts:1065` |
+| 8 | Friends Feed indexes **only while it is the active space**, so nothing accumulates in the background. | `indexEventIntoSpaceFeeds` in `lib/nostr/pipeline/spaceFeeds.ts` |
 | 9 | `FEED_INDEX_CAP = 500` retains the newest 500 *by insertion order* — a score-ordered feed cannot use this retention rule as-is. | `store/slices/eventsSlice.ts:99-101` |
 | 10 | Dead surfaces: `/feeds/*` (no client callers), `app.reputation`, `app.spam_reports`, `app.space_feed_sources`, and the three `musicSlice.discovery` id lists. Wire or delete. | various |
 
