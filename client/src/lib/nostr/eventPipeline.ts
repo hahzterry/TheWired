@@ -8,7 +8,7 @@ import { isValidEventStructure } from "./validation";
 import { verifyBridge } from "./verifyWorkerBridge";
 import type { UnknownAction } from "@reduxjs/toolkit";
 import { store } from "../../store";
-import type { AppDispatch, RootState } from "../../store";
+import type { AppDispatch } from "../../store";
 import { putEvent, deleteEvent, deleteAddressableEvent } from "../db/eventStore";
 import { addEvent, addEvents, indexChatMessage, indexReel, indexLongForm, indexLiveStream, indexNote, indexSpaceFeed, removeEventFromAllSpaceFeeds, indexMusicTrack, indexMusicAlbum, indexReply, indexRepost, indexRepostByAuthor, indexQuote, removeChatMessage, hideMessage, removeEvent, removeManyEvents, removeNote, removeRepost, trackDeletedNote, trackDeletedAddr, indexEditedMessage, indexNotes, indexReplies, indexReposts, indexRepostsByAuthor, indexQuotes, indexChatMessages, indexReels, indexLongForms, indexLiveStreams, indexMusicTracks, indexMusicAlbums, indexSpaceFeeds } from "../../store/slices/eventsSlice";
 import { addReaction, addReactions, removeReactionByEventId, type ReactionInput } from "../../store/slices/reactionsSlice";
@@ -57,6 +57,11 @@ import {
   applyNativeRelaySetEvent,
 } from "../../features/spaces/nip29SpaceSync";
 import { createLogger, shortKey, shortRelay } from "../debug/logger";
+import type { EventPipelineDeps } from "./pipeline/types";
+import { computeSweep } from "./pipeline/sweep";
+
+export type { EventPipelineDeps };
+export { computeSweep };
 
 const log = createLogger("pipeline");
 const latencyLog = createLogger("latency");
@@ -83,61 +88,7 @@ function logChatLatency(event: NostrEvent, relayUrl: string, receivedAt: number)
 // queue) are injected here. The desktop wires its existing singletons into a
 // default instance below — behavior-identical to the old module-level form.
 
-export interface EventPipelineDeps {
-  /** Store boundary. Thin arrows over the Redux store on desktop. */
-  dispatch: AppDispatch;
-  getState: () => RootState;
-  /** Signature verification (desktop: the Web Worker bridge). */
-  verifier: { verify(event: NostrEvent): Promise<boolean> };
-  /** Event persistence (desktop: IndexedDB eventStore). */
-  persistence: {
-    putEvent(event: NostrEvent): Promise<void>;
-    deleteEvent(id: string): Promise<void>;
-    deleteAddressableEvent(kind: number, pubkey: string, dTag: string): Promise<unknown>;
-  };
-  /** kind:0 sink (desktop: the profileCache singleton). */
-  profileCache: { handleProfileEvent(event: NostrEvent, relayUrl?: string): void };
-  /** Bounded-concurrency gift-wrap decryptor. */
-  decryptQueue: {
-    submit(event: NostrEvent): boolean;
-    clear(): void;
-    setHandler(handler: (event: NostrEvent) => Promise<void> | void): void;
-  };
-}
-
 export type EventPipeline = ReturnType<typeof createEventPipeline>;
-
-/** Pure: pick the ids to evict. `ids` MUST be oldest-first (the entity adapter
- *  keeps them sorted by created_at asc). Returns the oldest ids NOT referenced by
- *  any secondary index (or the editedMessages map), capped at the amount needed to
- *  reach `target`. Exported for tests. Returns [] when at/under `softCap`. */
-export function computeSweep(
-  ids: readonly string[],
-  indices: ReadonlyArray<Record<string, string[]>>,
-  editedMessages: Record<string, string>,
-  softCap: number,
-  target: number,
-): string[] {
-  if (ids.length <= softCap) return [];
-  const referenced = new Set<string>();
-  for (const index of indices) {
-    for (const key in index) {
-      const list = index[key];
-      for (let i = 0; i < list.length; i++) referenced.add(list[i]);
-    }
-  }
-  // Edit events are referenced via editedMessages, not a string[] index.
-  for (const originalId in editedMessages) {
-    referenced.add(originalId);
-    referenced.add(editedMessages[originalId]);
-  }
-  const need = ids.length - target;
-  const evict: string[] = [];
-  for (let i = 0; i < ids.length && evict.length < need; i++) {
-    if (!referenced.has(ids[i])) evict.push(ids[i]);
-  }
-  return evict;
-}
 
 export function createEventPipeline(deps: EventPipelineDeps) {
   const { dispatch, getState } = deps;
