@@ -492,6 +492,7 @@ export function DMConversation({ partnerPubkey, onBack }: DMConversationProps) {
           renderItem={renderRow}
           listKey={partnerPubkey}
           className="flex-1"
+          testId="dm-message-list"
           atBottomThreshold={SCROLL_BOTTOM_THRESHOLD}
           initialRow={
             // Divider near the top, nudged down so it isn't flush with the edge.

@@ -18,8 +18,6 @@ type AIRow =
   | { kind: "write"; key: string; id: string };
 
 const aiRowKey = (row: AIRow) => row.key;
-/** The list never follows by row count: it follows the content's height below. */
-const neverFollow = () => false;
 
 export function AIMessageList({ conversationId }: { conversationId: string }) {
   const messageIds = useAppSelector(selectMessageIdsForConversation(conversationId));
@@ -62,22 +60,34 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
     });
   }, []);
 
-  const onScroll = useCallback((el: HTMLElement) => {
-    const top = el.scrollTop;
-    if (programmatic.current) {
+  const onScroll = useCallback(
+    (el: HTMLElement, byVirtualizer: number) => {
+      const top = el.scrollTop;
+      if (programmatic.current) {
+        lastTop.current = top;
+        return; // ignore our own scrolling (no feedback loop)
+      }
+      // Only the reader can release the follow. The list also scrolls itself
+      // (rows being measured, the window resizing): what it moved is taken
+      // out, so an upward correction is not read as the reader pulling away.
+      const m = {
+        top,
+        lastTop: lastTop.current + byVirtualizer,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      };
+      const byReader = top - m.lastTop;
+      stick.current = nextStick(stick.current, m);
       lastTop.current = top;
-      return; // ignore our own scrolling (no feedback loop)
-    }
-    const m = {
-      top,
-      lastTop: lastTop.current,
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-    };
-    stick.current = nextStick(stick.current, m);
-    lastTop.current = top;
-    setShowJump(!isAtBottom(m));
-  }, []);
+      if (stick.current && !isAtBottom(m) && byVirtualizer !== 0 && Math.abs(byReader) < 1) {
+        // Attached, and the list moved itself away from the end: go back.
+        scrollToBottom();
+        return;
+      }
+      setShowJump(!isAtBottom(m));
+    },
+    [scrollToBottom],
+  );
 
   // Follow content growth while stuck. The list reports every height change of
   // its content — streamed text, images loading, code blocks, expanded
@@ -86,6 +96,11 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
   const onContentResize = useCallback(() => {
     if (stick.current) scrollToBottom();
   }, [scrollToBottom]);
+
+  // A new row (the question, the reply starting, a pending write) is followed
+  // in the same frame while attached; its growth after that is followed by
+  // the resize handler above.
+  const followNewRow = useCallback(() => stick.current, []);
 
   // Switching conversations: re-attach to the bottom and jump there. (The list
   // itself is rebuilt per conversation and opens on its newest row.)
@@ -124,9 +139,10 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
         renderItem={renderRow}
         listKey={conversationId}
         className="h-full"
+        testId="ai-message-list"
         contentClassName="mx-auto max-w-3xl"
         atBottomThreshold={BOTTOM_PX}
-        shouldFollow={neverFollow}
+        shouldFollow={followNewRow}
         stickToBottom={false}
         onScroll={onScroll}
         onContentResize={onContentResize}

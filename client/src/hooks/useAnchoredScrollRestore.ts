@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { markProgrammaticScroll } from "@/lib/virtual/viewportAnchor";
 
 /**
  * Anchor-aware scroll restoration for feeds whose height grows *after* paint
@@ -122,6 +123,9 @@ export function resolveScrollTop(
   return resolveAnchorTop(container, saved, cardAttr) ?? saved.scrollTop;
 }
 
+/** How long each frame of the re-pin loop claims the scroller for. */
+const REPIN_MARK_MS = 400;
+
 /** Frames to wait for a requested card to render before asking again. */
 const ANCHOR_REQUEST_FRAMES = 20;
 
@@ -182,6 +186,10 @@ export function useAnchoredScrollRestore({
 
     restoringRef.current = true;
     cancelRepin();
+    // A virtualized list keeps the reader's place on its own while idle; tell
+    // it this scrolling is ours, so it does not put the old position back. The
+    // mark is renewed every frame of the loop below and lapses soon after it.
+    markProgrammaticScroll(el, REPIN_MARK_MS);
 
     // A virtualized list may not have the anchor card rendered. Ask it to
     // bring the card in; never fall back to a pixel offset while waiting.
@@ -240,6 +248,7 @@ export function useAnchoredScrollRestore({
         repinRaf.current = 0;
         return;
       }
+      markProgrammaticScroll(node, REPIN_MARK_MS);
       repinRaf.current = requestAnimationFrame(step);
     };
     repinRaf.current = requestAnimationFrame(step);

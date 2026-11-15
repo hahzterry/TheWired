@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, fireEvent, screen } from "@testing-library/react";
 import { renderWithProviders } from "@/__tests__/helpers/renderWithProviders";
 import { createTestStore, type TestStore } from "@/__tests__/helpers/createTestStore";
-import { VirtualViewport, setScrollGeometry, virtualListSettled } from "@/__tests__/helpers/virtualList";
+import { VirtualViewport, userScrollTo, virtualListSettled } from "@/__tests__/helpers/virtualList";
 import { lunaVega, riverChen } from "@/__tests__/fixtures/testUsers";
 import { dmSlice, type DMMessage as DMMessageType } from "@/store/slices/dmSlice";
 
@@ -247,10 +247,11 @@ describe("DMConversation (virtualized)", () => {
     await virtualListSettled();
     expect(screen.queryByTitle("Scroll to bottom")).toBeNull();
 
-    act(() => setScrollGeometry(scroller(container), { scrollTop: 9339, scrollHeight: 10_000, clientHeight: 600 })); // 61px
+    act(() => userScrollTo(scroller(container), { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 })); // the end
+    act(() => userScrollTo(scroller(container), { scrollTop: 9339, scrollHeight: 10_000, clientHeight: 600 })); // up to 61px
     expect(screen.getByTitle("Scroll to bottom")).toBeInTheDocument();
 
-    act(() => setScrollGeometry(scroller(container), { scrollTop: 9341, scrollHeight: 10_000, clientHeight: 600 })); // 59px
+    act(() => userScrollTo(scroller(container), { scrollTop: 9341, scrollHeight: 10_000, clientHeight: 600 })); // 59px
     expect(screen.queryByTitle("Scroll to bottom")).toBeNull();
   });
 

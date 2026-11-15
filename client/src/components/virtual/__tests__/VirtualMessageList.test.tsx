@@ -10,7 +10,14 @@ import {
 import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 import { FIRST_ITEM_BASE } from "@/lib/virtual/prependShift";
 import { resetItemHeightsForTests } from "@/lib/virtual/itemHeights";
-import { setScrollGeometry, virtualListSettled } from "@/__tests__/helpers/virtualList";
+import {
+  captureResizeObservers,
+  setScrollGeometry,
+  userScrollTo,
+  virtualizerScrollTo,
+  virtualListContent,
+  virtualListSettled,
+} from "@/__tests__/helpers/virtualList";
 
 interface Msg {
   id: string;
@@ -46,10 +53,26 @@ function virtualIndexes(container: HTMLElement): number[] {
 /** The list shows its rows once its opening scroll has landed. */
 const settled = () => virtualListSettled();
 
-/** Pretend the scroller is scrolled to `scrollTop` and tell the list. */
-function scrollTo(container: HTMLElement, geometry: { scrollTop: number; scrollHeight: number; clientHeight: number }) {
+type Geometry = { scrollTop: number; scrollHeight: number; clientHeight: number };
+
+/** The reader scrolls the list to `scrollTop` (wheel input, then the scroll). */
+function scrollTo(container: HTMLElement, geometry: Geometry) {
+  const scroller = container.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement;
+  act(() => userScrollTo(scroller, geometry));
+  return scroller;
+}
+
+/** A scroll with no input behind it: a script, the scrollbar, the browser. */
+function plainScroll(container: HTMLElement, geometry: Geometry) {
   const scroller = container.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement;
   act(() => setScrollGeometry(scroller, geometry));
+  return scroller;
+}
+
+/** The virtualizer moves the list itself. */
+async function movedByList(container: HTMLElement, geometry: Geometry) {
+  const scroller = container.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement;
+  await virtualizerScrollTo(scroller, geometry);
   return scroller;
 }
 
@@ -193,11 +216,128 @@ describe("VirtualMessageList", () => {
     // History arrives: the list is scrolled DOWN by the added height while its
     // total height is not final yet, so for a moment it is not "at the end".
     rerender(<List items={[...msgs(500, 500), ...first]} {...props} />);
-    scrollTo(container, { scrollTop: 37_400, scrollHeight: 38_300, clientHeight: 600 });
+    await movedByList(container, { scrollTop: 37_400, scrollHeight: 38_300, clientHeight: 600 });
     expect(onAtBottomChange).not.toHaveBeenCalledWith(false);
     // A message arriving now is followed, not missed.
     rerender(<List items={[...msgs(500, 500), ...first, { id: "new" }]} {...props} />);
     expect(onMissedAppend).not.toHaveBeenCalled();
+  });
+
+  it("is not released by the virtualizer correcting its own offset upwards", async () => {
+    const onMissedAppend = vi.fn();
+    const onAtBottomChange = vi.fn();
+    const first = msgs(200);
+    const props = { onMissedAppend, onAtBottomChange };
+    const { container, rerender } = render(<List items={first} {...props} />);
+    await settled(); // opened at the end
+    plainScroll(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 });
+    // Rows above are measured again (the window was resized) and the
+    // virtualizer scrolls up by the difference: the end is now 118px away.
+    const scroller = await movedByList(container, { scrollTop: 9082, scrollHeight: 10_000, clientHeight: 800 });
+    expect(onAtBottomChange).not.toHaveBeenCalledWith(false);
+    // ...and the list puts itself back on the newest row.
+    expect(scroller.scrollTop).toBe(10_000);
+    rerender(<List items={[...first, { id: "new" }]} {...props} />);
+    expect(onMissedAppend).not.toHaveBeenCalled();
+  });
+
+  it("a slow upward scroll inside the threshold is not pulled back when rows are measured", async () => {
+    const resizes = captureResizeObservers();
+    try {
+      const { container } = render(<List items={msgs(200)} />);
+      await settled();
+      const scroller = plainScroll(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 }); // the end
+      const content = virtualListContent(container);
+
+      // Content resizes while holding the end: the list keeps to it. (jsdom
+      // does not clamp or emit the scroll that follows; a browser would land
+      // on 9,500 and say so.)
+      Object.defineProperty(content, "offsetHeight", { value: 10_100, configurable: true });
+      Object.defineProperty(scroller, "scrollHeight", { value: 10_100, configurable: true });
+      act(() => resizes.fire(content));
+      expect(scroller.scrollTop).toBe(10_100);
+      plainScroll(container, { scrollTop: 9500, scrollHeight: 10_100, clientHeight: 600 });
+
+      // The reader moves up 30px (still "at the bottom" for following), and
+      // rows above are measured: the list must not drag them back.
+      plainScroll(container, { scrollTop: 9470, scrollHeight: 10_100, clientHeight: 600 });
+      Object.defineProperty(content, "offsetHeight", { value: 10_220, configurable: true });
+      Object.defineProperty(scroller, "scrollHeight", { value: 10_220, configurable: true });
+      act(() => resizes.fire(content));
+      expect(scroller.scrollTop).toBe(9470);
+
+      // Back down to the very end: it holds again.
+      plainScroll(container, { scrollTop: 9620, scrollHeight: 10_220, clientHeight: 600 });
+      Object.defineProperty(content, "offsetHeight", { value: 10_300, configurable: true });
+      Object.defineProperty(scroller, "scrollHeight", { value: 10_300, configurable: true });
+      act(() => resizes.fire(content));
+      expect(scroller.scrollTop).toBe(10_300);
+    } finally {
+      resizes.restore();
+    }
+  });
+
+  it("is released by any other upward scroll, with or without input (wheel, scrollbar, script)", async () => {
+    const onAtBottomChange = vi.fn();
+    const { container } = render(<List items={msgs(200)} onAtBottomChange={onAtBottomChange} />);
+    await settled();
+    plainScroll(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 });
+    plainScroll(container, { scrollTop: 4000, scrollHeight: 10_000, clientHeight: 600 });
+    expect(onAtBottomChange).toHaveBeenLastCalledWith(false);
+    // It is never dragged back to the end while the reader keeps scrolling.
+    const scroller = plainScroll(container, { scrollTop: 3000, scrollHeight: 10_000, clientHeight: 600 });
+    expect(scroller.scrollTop).toBe(3000);
+  });
+
+  it("a jump to an older row releases the bottom; a jump to the newest row does not", async () => {
+    const onAtBottomChange = vi.fn();
+    const handle = createRef<VirtualMessageListHandle>();
+    render(<List items={msgs(300)} onAtBottomChange={onAtBottomChange} handleRef={handle} />);
+    await settled();
+    act(() => {
+      handle.current!.scrollToKey("m299");
+    });
+    expect(handle.current!.isAtBottom()).toBe(true);
+    act(() => {
+      handle.current!.scrollToKey("m10");
+    });
+    expect(handle.current!.isAtBottom()).toBe(false);
+    expect(onAtBottomChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("tells the caller how much of a scroll was the virtualizer's own", async () => {
+    const onScroll = vi.fn();
+    const { container } = render(<List items={msgs(50)} onScroll={onScroll} />);
+    await settled();
+    // The reader leaves the end first, so nothing pulls the list back to it.
+    plainScroll(container, { scrollTop: 1900, scrollHeight: 2500, clientHeight: 600 });
+    const scroller = plainScroll(container, { scrollTop: 100, scrollHeight: 2500, clientHeight: 600 });
+    // The virtualizer moves the list 60px up.
+    await movedByList(container, { scrollTop: 40, scrollHeight: 2500, clientHeight: 600 });
+    expect(onScroll).toHaveBeenLastCalledWith(scroller, -60);
+    // The reader scrolls 30px up: none of it is the virtualizer's.
+    scrollTo(container, { scrollTop: 10, scrollHeight: 2500, clientHeight: 600 });
+    expect(onScroll).toHaveBeenLastCalledWith(scroller, 0);
+  });
+
+  it("separates the reader's part when both moved the list before one scroll event", async () => {
+    const onScroll = vi.fn();
+    const onAtBottomChange = vi.fn();
+    const { container } = render(<List items={msgs(200)} onScroll={onScroll} onAtBottomChange={onAtBottomChange} />);
+    await settled();
+    const scroller = plainScroll(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 });
+    // Within one frame the virtualizer compensates +150 (rows above measured
+    // taller) and the reader's wheel moves the list 300 up. One scroll event
+    // follows, showing a net -150.
+    scroller.scrollBy({ top: 150 });
+    scroller.scrollTop -= 300;
+    onScroll.mockClear();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onScroll).toHaveBeenLastCalledWith(scroller, 150);
+    // The reader's 300px up released the bottom, though the net move was 150.
+    expect(onAtBottomChange).toHaveBeenLastCalledWith(false);
   });
 
   it("opens away from the bottom when given an initial row", async () => {
@@ -227,7 +367,7 @@ describe("VirtualMessageList", () => {
     const { container } = render(<List items={msgs(50)} onScroll={onScroll} handleRef={handle} />);
     await settled();
     const scroller = scrollTo(container, { scrollTop: 10, scrollHeight: 2500, clientHeight: 600 });
-    expect(onScroll).toHaveBeenCalledWith(scroller);
+    expect(onScroll).toHaveBeenCalledWith(scroller, 0);
     expect(handle.current!.scroller()).toBe(scroller);
   });
 

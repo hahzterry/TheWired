@@ -32,6 +32,29 @@ export function nextPinned(prev: boolean, input: { nearBottom: boolean; movedUp:
   return prev;
 }
 
+/**
+ * Whether the list should hold itself on its newest row when sizes change.
+ *
+ * Stricter than "at the bottom": that still holds a little way up (within the
+ * threshold), which is right for deciding whether to follow a new message.
+ * Re-pinning on every size change is another matter. In a virtualized list
+ * sizes change all the time while scrolling, as rows above are measured, so a
+ * reader moving up slowly would be pulled back on every step until they got
+ * past the threshold. So: any upward move by the reader lets go; arriving at
+ * the very end, or moving down while within the threshold, takes hold again.
+ */
+export function nextStuck(
+  prev: boolean,
+  input: { readerMoved: number; nearBottom: boolean; atVeryEnd: boolean },
+): boolean {
+  // At the very end, however it got there: the browser also moves the offset
+  // up when the content shrinks or the window grows, and leaves it there.
+  if (input.atVeryEnd) return true;
+  if (input.readerMoved < -1) return false;
+  if (input.nearBottom && input.readerMoved > 1) return true;
+  return prev;
+}
+
 export type AppendAction =
   /** Nothing new at the tail: leave the reader where they are. */
   | "stay"

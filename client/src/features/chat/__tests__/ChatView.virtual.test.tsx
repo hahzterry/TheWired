@@ -8,7 +8,7 @@ import { act, fireEvent, screen, within } from "@testing-library/react";
 import type { NostrEvent } from "@/types/nostr";
 import { renderWithProviders } from "@/__tests__/helpers/renderWithProviders";
 import { createTestStore } from "@/__tests__/helpers/createTestStore";
-import { VirtualViewport, setScrollGeometry, virtualListSettled } from "@/__tests__/helpers/virtualList";
+import { VirtualViewport, userScrollTo, virtualListSettled } from "@/__tests__/helpers/virtualList";
 
 const ME = "aa".repeat(32);
 const SPACE = "space-1";
@@ -143,8 +143,8 @@ const scroller = (container: HTMLElement) =>
 /** Scroll the reader up into history. */
 function scrollUp(container: HTMLElement) {
   // From the bottom, up: only an upward move counts as leaving the bottom.
-  act(() => setScrollGeometry(scroller(container), { scrollTop: 19_400, scrollHeight: 20_000, clientHeight: 600 }));
-  act(() => setScrollGeometry(scroller(container), { scrollTop: 500, scrollHeight: 20_000, clientHeight: 600 }));
+  act(() => userScrollTo(scroller(container), { scrollTop: 19_400, scrollHeight: 20_000, clientHeight: 600 }));
+  act(() => userScrollTo(scroller(container), { scrollTop: 500, scrollHeight: 20_000, clientHeight: 600 }));
 }
 
 beforeEach(() => {
@@ -319,7 +319,7 @@ describe("ChatView (virtualized)", () => {
       scrollUp(container);
       fixture.messages = [...fixture.messages, fixture.make(200)];
       refresh();
-      act(() => setScrollGeometry(scroller(container), { scrollTop: 19_400, scrollHeight: 20_000, clientHeight: 600 }));
+      act(() => userScrollTo(scroller(container), { scrollTop: 19_400, scrollHeight: 20_000, clientHeight: 600 }));
       expect(screen.queryByTitle("Scroll to bottom")).toBeNull();
     });
   });

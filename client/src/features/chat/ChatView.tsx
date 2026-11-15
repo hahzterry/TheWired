@@ -322,6 +322,7 @@ export function ChatView() {
           renderItem={renderRow}
           listKey={activeChannelId ?? activeSpaceId ?? "chat"}
           className="flex-1"
+          testId="chat-message-list"
           atBottomThreshold={80}
           initialRow={
             dividerEventId !== null && unreadStartIndex > 0

@@ -1,21 +1,50 @@
 import {
+  forwardRef,
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type HTMLAttributes,
   type ReactNode,
   type Ref,
 } from "react";
-import { Virtuoso, type ListItem, type ListRange, type VirtuosoHandle } from "react-virtuoso";
+import { Virtuoso, type Components, type ListItem, type ListRange, type VirtuosoHandle } from "react-virtuoso";
 import { initialHeightEstimates, rememberItemHeight } from "@/lib/virtual/itemHeights";
 import { nextFirstItemIndex, type PrependState } from "@/lib/virtual/prependShift";
+import { markProgrammaticScroll } from "@/lib/virtual/viewportAnchor";
+import { useViewportAnchor } from "./useViewportAnchor";
 
 /** Extra pixels rendered above and below the viewport. */
 const OVERSCAN = { top: 600, bottom: 1000 };
 /** How long the first rows may play their entrance animation. */
 const INTRO_MS = 1500;
+/** How long a jump made through the list may take to land. */
+const JUMP_MS = 1200;
+
+interface FeedContext {
+  setListEl: (el: HTMLDivElement | null) => void;
+}
+
+/** The element holding the rows; handed to the viewport anchor. */
+const FeedList: Components<unknown, FeedContext>["List"] = forwardRef<
+  HTMLDivElement,
+  HTMLAttributes<HTMLDivElement> & { context?: FeedContext }
+>(function FeedList({ context, ...rest }, ref) {
+  const setRefs = useCallback(
+    (el: HTMLDivElement | null) => {
+      context?.setListEl(el);
+      if (typeof ref === "function") ref(el);
+      else if (ref) ref.current = el;
+    },
+    [context, ref],
+  );
+  return <div {...rest} ref={setRefs} />;
+});
+
+const FEED_COMPONENTS: Components<unknown, FeedContext> = { List: FeedList };
 
 export interface VirtualFeedHandle {
   /**
@@ -124,6 +153,8 @@ function VirtualFeedInner<T>({
   // list in view gets the usual behaviour instead: the new rows push in.
   const wrapperRef = useRef<HTMLDivElement>(null);
   const prepend = useRef<PrependState | null>(null);
+  // Rows were added above in a render that has not been committed yet.
+  const shiftPending = useRef(false);
   if (prepend.current === null || prepend.current.keys !== keys) {
     let firstItemIndex = nextFirstItemIndex(prepend.current, keys);
     if (prepend.current !== null && firstItemIndex < prepend.current.firstItemIndex) {
@@ -131,6 +162,7 @@ function VirtualFeedInner<T>({
       const topInView =
         !wrapper || wrapper.getBoundingClientRect().top >= scrollParent.getBoundingClientRect().top - 1;
       if (topInView) firstItemIndex = prepend.current.firstItemIndex;
+      else shiftPending.current = true;
     }
     prepend.current = { keys, firstItemIndex };
   }
@@ -151,12 +183,35 @@ function VirtualFeedInner<T>({
         const index = keysRef.current.indexOf(key);
         if (index < 0) return null;
         if (!virtuoso.current) return false;
+        markProgrammaticScroll(scrollParent, JUMP_MS);
         virtuoso.current.scrollToIndex({ index, align: "start", offset: offset + (index > 0 ? gap : 0) });
         return true;
       },
     }),
-    [gap],
+    [gap, scrollParent],
   );
+
+  // While the reader is idle, hold the row they are on when content above it
+  // changes height (media arriving late in a card above the viewport).
+  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+  const feedContext = useMemo<FeedContext>(
+    () => ({
+      // Never store a passing null: the virtualizer re-attaches refs while it
+      // renders, and a null in between would loop this state.
+      setListEl: (el) => {
+        if (el) setListEl(el);
+      },
+    }),
+    [],
+  );
+  const expectShift = useViewportAnchor(scrollParent, listEl);
+  // Rows arrived above the viewport in this render: the virtualizer is about
+  // to scroll by their height, which is not the reader going anywhere.
+  useLayoutEffect(() => {
+    if (!shiftPending.current) return;
+    shiftPending.current = false;
+    expectShift();
+  });
 
   // Entrance animations are for the first paint only.
   const [intro, setIntro] = useState(true);
@@ -227,6 +282,8 @@ function VirtualFeedInner<T>({
     <Virtuoso
       ref={virtuoso}
       customScrollParent={scrollParent}
+      context={feedContext}
+      components={FEED_COMPONENTS as Components<T, FeedContext>}
       data={items}
       firstItemIndex={firstItemIndex}
       computeItemKey={computeKey}

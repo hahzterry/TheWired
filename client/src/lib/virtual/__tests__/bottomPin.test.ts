@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isNearBottom, jumpBehavior, nextPinned, onListChange } from "../bottomPin";
+import { isNearBottom, jumpBehavior, nextPinned, nextStuck, onListChange } from "../bottomPin";
 
 describe("isNearBottom", () => {
   it("is true within the threshold of the end", () => {
@@ -74,5 +74,34 @@ describe("nextPinned", () => {
 
   it("stays released while the reader scrolls down but has not reached the end", () => {
     expect(nextPinned(false, { nearBottom: false, movedUp: false })).toBe(false);
+  });
+});
+
+describe("nextStuck", () => {
+  it("lets go on any upward move by the reader, even inside the threshold", () => {
+    expect(nextStuck(true, { readerMoved: -8, nearBottom: true, atVeryEnd: false })).toBe(false);
+    expect(nextStuck(true, { readerMoved: -400, nearBottom: false, atVeryEnd: false })).toBe(false);
+  });
+
+  it("stays put when the offset moved up but the list is still at its very end (content shrank, window grew)", () => {
+    expect(nextStuck(true, { readerMoved: -440, nearBottom: true, atVeryEnd: true })).toBe(true);
+  });
+
+  it("takes hold at the very end", () => {
+    expect(nextStuck(false, { readerMoved: 0, nearBottom: true, atVeryEnd: true })).toBe(true);
+    expect(nextStuck(false, { readerMoved: 40, nearBottom: true, atVeryEnd: true })).toBe(true);
+  });
+
+  it("takes hold when the reader moves down inside the threshold", () => {
+    expect(nextStuck(false, { readerMoved: 12, nearBottom: true, atVeryEnd: false })).toBe(true);
+  });
+
+  it("does not take hold while the reader is still far from the end", () => {
+    expect(nextStuck(false, { readerMoved: 300, nearBottom: false, atVeryEnd: false })).toBe(false);
+  });
+
+  it("keeps its state when the reader did not move (the list moved itself, or content resized)", () => {
+    expect(nextStuck(true, { readerMoved: 0, nearBottom: false, atVeryEnd: false })).toBe(true);
+    expect(nextStuck(false, { readerMoved: 0, nearBottom: true, atVeryEnd: false })).toBe(false);
   });
 });

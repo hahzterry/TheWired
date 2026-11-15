@@ -7,7 +7,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, fireEvent, screen } from "@testing-library/react";
 import { renderWithProviders } from "@/__tests__/helpers/renderWithProviders";
 import { createTestStore, type TestStore } from "@/__tests__/helpers/createTestStore";
-import { VirtualViewport, virtualListSettled } from "@/__tests__/helpers/virtualList";
+import {
+  VirtualViewport,
+  captureResizeObservers,
+  virtualListContent,
+  virtualListSettled,
+} from "@/__tests__/helpers/virtualList";
 
 const fixture = vi.hoisted(() => ({ explodeId: null as string | null }));
 
@@ -43,13 +48,7 @@ function makeStore(messageCount: number, opts: { streaming?: boolean; writes?: s
   });
 }
 
-/**
- * Captures the ResizeObserver the list uses to hear its content grow. The
- * virtualizer creates observers of its own; theirs take the entries argument,
- * the list's takes none, which is how the two are told apart here.
- */
-let resizeCallbacks: Array<() => void> = [];
-const RealResizeObserver = globalThis.ResizeObserver;
+let resizes: ReturnType<typeof captureResizeObservers>;
 
 function renderList(store: TestStore, conversationId = CONV) {
   return renderWithProviders(
@@ -73,16 +72,23 @@ function setGeometry(scroller: HTMLElement, g: { scrollTop: number; scrollHeight
 /** The content grew (a streamed chunk arrived): new height, then notify. */
 function grow(scroller: HTMLElement, scrollHeight: number) {
   Object.defineProperty(scroller, "scrollHeight", { value: scrollHeight, configurable: true });
-  act(() => {
-    for (const cb of resizeCallbacks) cb();
-  });
+  act(() => resizes.fire(virtualListContent(scroller)));
 }
 
-/** A scroll the user made. */
+/** A scroll the user made: wheel input, then the scroll. */
 function userScroll(scroller: HTMLElement, scrollTop: number) {
   scroller.scrollTop = scrollTop;
   act(() => {
+    scroller.dispatchEvent(new Event("wheel"));
     scroller.dispatchEvent(new Event("scroll"));
+  });
+}
+
+/** A scroll the virtualizer made itself (through the element's `scrollTo`). */
+async function listScroll(scroller: HTMLElement, scrollTop: number) {
+  await act(async () => {
+    scroller.scrollTo({ top: scrollTop });
+    await Promise.resolve();
   });
 }
 
@@ -91,20 +97,11 @@ const nextFrame = () => act(() => new Promise<void>((resolve) => requestAnimatio
 
 beforeEach(() => {
   fixture.explodeId = null;
-  resizeCallbacks = [];
-  class CapturingResizeObserver {
-    constructor(cb: (...args: unknown[]) => void) {
-      if (cb.length === 0) resizeCallbacks.push(cb);
-    }
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  }
-  (globalThis as { ResizeObserver: unknown }).ResizeObserver = CapturingResizeObserver;
+  resizes = captureResizeObservers();
 });
 
 afterEach(() => {
-  (globalThis as { ResizeObserver: unknown }).ResizeObserver = RealResizeObserver;
+  resizes.restore();
   vi.restoreAllMocks();
 });
 
@@ -152,6 +149,19 @@ describe("AIMessageList (virtualized)", () => {
 
     grow(scroller, 3000); // the reply keeps streaming
     expect(scroller.scrollTop).toBe(1500); // the reader is left where they are
+  });
+
+  it("keeps following when the list corrects its own position upwards", async () => {
+    const { container } = renderList(makeStore(20, { streaming: true }));
+    await virtualListSettled();
+    const scroller = scrollerOf(container);
+    setGeometry(scroller, { scrollTop: 1400, scrollHeight: 2000, clientHeight: 600 });
+    grow(scroller, 2300);
+    await nextFrame();
+
+    await listScroll(scroller, 1500); // not the reader: the virtualizer's own scroll
+    grow(scroller, 3000);
+    expect(scroller.scrollTop).toBe(3000); // still attached
   });
 
   it("re-attaches when the reader scrolls back to the bottom", async () => {

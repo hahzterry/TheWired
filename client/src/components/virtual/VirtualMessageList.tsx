@@ -13,12 +13,39 @@ import {
 } from "react";
 import { Virtuoso, type Components, type ListItem, type ListRange, type VirtuosoHandle } from "react-virtuoso";
 import { useStickToBottom } from "@/hooks/useStickToBottom";
-import { isNearBottom, jumpBehavior, nextPinned } from "@/lib/virtual/bottomPin";
+import { isNearBottom, jumpBehavior, nextPinned, nextStuck } from "@/lib/virtual/bottomPin";
 import { initialHeightEstimates, rememberItemHeight } from "@/lib/virtual/itemHeights";
 import { nextFirstItemIndex, tailAppended, type PrependState } from "@/lib/virtual/prependShift";
+import { markProgrammaticScroll } from "@/lib/virtual/viewportAnchor";
+import { useViewportAnchor } from "./useViewportAnchor";
 
 /** Extra pixels rendered above and below the viewport. */
 const OVERSCAN = { top: 800, bottom: 800 };
+/** How long a jump made through the list may take to land. */
+const JUMP_MS = 1200;
+/** Within this many px of the end is the very end. */
+const END_PX = 2;
+
+/**
+ * Add to `delta` every pixel the virtualizer scrolls `scroller` itself. It
+ * always goes through the element's `scrollBy` / `scrollTo`; wrapping those
+ * two on this one element is how its scrolls are told from everyone else's.
+ * (An animated `scrollTo` moves nothing synchronously and so adds nothing;
+ * the list's own animated jumps set the pin themselves.)
+ */
+function noteVirtualizerScrolls(scroller: HTMLElement, delta: { current: number }): void {
+  const marked = scroller as HTMLElement & { __virtualizerScrollsNoted?: boolean };
+  if (marked.__virtualizerScrollsNoted) return;
+  marked.__virtualizerScrollsNoted = true;
+  const wrap = (original: (...args: unknown[]) => void) =>
+    (...args: unknown[]) => {
+      const before = scroller.scrollTop;
+      original(...args);
+      delta.current += scroller.scrollTop - before;
+    };
+  scroller.scrollBy = wrap(scroller.scrollBy.bind(scroller) as (...args: unknown[]) => void) as typeof scroller.scrollBy;
+  scroller.scrollTo = wrap(scroller.scrollTo.bind(scroller) as (...args: unknown[]) => void) as typeof scroller.scrollTo;
+}
 
 export interface VirtualMessageListHandle {
   /** Go to the newest row. Animates only when it is close. */
@@ -63,8 +90,13 @@ export interface VirtualMessageListProps<T> {
    * bottom. Default true. Pass false when the caller pins the list itself.
    */
   stickToBottom?: boolean;
-  /** Every scroll of the list, after the at-bottom state was updated. */
-  onScroll?: (scroller: HTMLElement) => void;
+  /**
+   * Every scroll of the list, after the at-bottom state was updated.
+   * `byVirtualizer` is how many px of it the virtualizer moved the list
+   * itself (negative: up), to correct its offset or to make room for rows
+   * added above. The rest is the reader's, or the caller's own scrolling.
+   */
+  onScroll?: (scroller: HTMLElement, byVirtualizer: number) => void;
   /** The list's content changed height. */
   onContentResize?: (scroller: HTMLElement) => void;
   /** Namespace for remembered row heights. */
@@ -78,6 +110,8 @@ export interface VirtualMessageListProps<T> {
   className?: string;
   /** Classes for the element wrapping the rows (e.g. a centered column). */
   contentClassName?: string;
+  /** `data-testid` for the scrolling element. */
+  testId?: string;
   handleRef?: Ref<VirtualMessageListHandle>;
 }
 
@@ -150,12 +184,18 @@ function VirtualMessageListInner<T>({
   paddingBottom = 0,
   className,
   contentClassName,
+  testId,
   handleRef,
 }: VirtualMessageListProps<T>) {
   const virtuoso = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
+  // The same two elements as state, for the hooks that attach to them.
+  const [elements, setElements] = useState<{ scroller: HTMLElement | null; list: HTMLDivElement | null }>({
+    scroller: null,
+    list: null,
+  });
 
   const keys = useMemo(() => items.map(itemKey), [items, itemKey]);
   const keysRef = useRef(keys);
@@ -176,22 +216,39 @@ function VirtualMessageListInner<T>({
   });
 
   // Whether the reader is at the bottom. Updated on scroll only, and released
-  // only by an upward move: content changing under a reader who is at the
-  // bottom (history prepended, media loading) must not count as leaving it.
+  // only by a scroll that moves up and is not the virtualizer's own: content
+  // changing under a reader who is at the bottom (history prepended, media
+  // loading, the window growing) must not count as leaving it.
   const nearBottom = useRef(!initial.atRow);
   const reportedAtBottom = useRef(!initial.atRow);
   const lastScrollTop = useRef(0);
+  // Whether the list holds itself on its newest row when sizes change. Let go
+  // by any upward move of the reader, even inside the threshold (see
+  // `nextStuck`); `nearBottom` above is the looser "at the bottom" that
+  // decides whether a new message is followed.
+  const stuck = useRef(!initial.atRow);
+  // How far the virtualizer has scrolled the list itself since the last scroll
+  // event. It does that through the scroller's `scrollBy` / `scrollTo` (to
+  // correct its offset after rows are measured again, to make room for
+  // prepended rows, to reach a row); the reader, the browser and plain
+  // `scrollTop` writes never go that way. Subtracting it from a scroll
+  // event's total leaves what the reader did, even when both moved the list
+  // within the same frame.
+  const virtualizerDelta = useRef(0);
 
   // Rows arriving at the head: tell the virtualizer how many, so the rows on
   // screen stay where they are. Worked out during render because the new
   // index has to reach the virtualizer together with the new rows.
   const prepend = useRef<PrependState | null>(null);
+  // Rows were added above in a render that has not been committed yet.
+  const shiftPending = useRef(false);
   // Whether the row that just arrived at the tail should be followed.
   const followNext = useRef(false);
   const missedAppend = useRef(false);
   if (prepend.current === null || prepend.current.keys !== keys) {
     const prevKeys = prepend.current?.keys ?? [];
     const firstItemIndex = nextFirstItemIndex(prepend.current, keys);
+    if (prepend.current !== null && firstItemIndex < prepend.current.firstItemIndex) shiftPending.current = true;
     if (prepend.current !== null && tailAppended(prevKeys, keys)) {
       const follow = shouldFollow
         ? shouldFollow({ atBottom: nearBottom.current, last: items[items.length - 1] })
@@ -215,6 +272,8 @@ function VirtualMessageListInner<T>({
     if (followNext.current) {
       followNext.current = false;
       nearBottom.current = true;
+      stuck.current = true;
+      markProgrammaticScroll(scrollerRef.current, JUMP_MS);
       virtuoso.current?.scrollToIndex({ index: "LAST", align: "end" });
     }
     if (missedAppend.current) {
@@ -238,24 +297,42 @@ function VirtualMessageListInner<T>({
 
   const onAtBottomChangeRef = useRef(onAtBottomChange);
   onAtBottomChangeRef.current = onAtBottomChange;
-  const onScrollRef = useRef(onScroll);
-  onScrollRef.current = onScroll;
-  const handleScroll = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    const top = el.scrollTop;
-    const at = nextPinned(nearBottom.current, {
-      nearBottom: isNearBottom(el, atBottomThreshold),
-      movedUp: top < lastScrollTop.current - 1,
-    });
-    lastScrollTop.current = top;
+  const setAtBottom = useCallback((at: boolean) => {
     nearBottom.current = at;
     if (at !== reportedAtBottom.current) {
       reportedAtBottom.current = at;
       onAtBottomChangeRef.current?.(at);
     }
-    onScrollRef.current?.(el);
-  }, [atBottomThreshold]);
+  }, []);
+  const onScrollRef = useRef(onScroll);
+  onScrollRef.current = onScroll;
+  const stickToBottomRef = useRef(stickToBottom);
+  stickToBottomRef.current = stickToBottom;
+  const handleScroll = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const top = el.scrollTop;
+    const byVirtualizer = virtualizerDelta.current;
+    virtualizerDelta.current = 0;
+    const byReader = top - lastScrollTop.current - byVirtualizer;
+    const near = isNearBottom(el, atBottomThreshold);
+    const at = nextPinned(nearBottom.current, { nearBottom: near, movedUp: byReader < -1 });
+    stuck.current = nextStuck(stuck.current, {
+      readerMoved: byReader,
+      nearBottom: near,
+      atVeryEnd: isNearBottom(el, END_PX),
+    });
+    lastScrollTop.current = top;
+    setAtBottom(at);
+    // Holding the end, yet the virtualizer has just moved the list away from
+    // it: it corrects its offset when rows above are measured again (after
+    // the window is resized, say) and does not know the list is pinned.
+    if (stuck.current && !near && byVirtualizer < -1 && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      lastScrollTop.current = el.scrollTop;
+    }
+    onScrollRef.current?.(el, byVirtualizer);
+  }, [atBottomThreshold, setAtBottom]);
 
   const attachScroller = useCallback(
     (el: HTMLElement | Window | null) => {
@@ -263,35 +340,62 @@ function VirtualMessageListInner<T>({
       if (prev) prev.removeEventListener("scroll", handleScroll);
       const node = el instanceof HTMLElement ? el : null;
       scrollerRef.current = node;
-      if (node) node.addEventListener("scroll", handleScroll, { passive: true });
+      if (node) {
+        node.addEventListener("scroll", handleScroll, { passive: true });
+        noteVirtualizerScrolls(node, virtualizerDelta);
+        // The list scrolls itself to its opening row.
+        markProgrammaticScroll(node, JUMP_MS);
+      }
       setMounted(!!node && !!listRef.current);
+      // Never store a passing null: the virtualizer re-attaches refs while it
+      // renders, and a null in between would loop this state.
+      if (node) setElements((prev) => (prev.scroller === node ? prev : { ...prev, scroller: node }));
     },
     [handleScroll],
   );
   const setListEl = useCallback((el: HTMLDivElement | null) => {
     listRef.current = el;
     setMounted(!!el && !!scrollerRef.current);
+    if (el) setElements((prev) => (prev.list === el ? prev : { ...prev, list: el }));
   }, []);
   useEffect(() => () => scrollerRef.current?.removeEventListener("scroll", handleScroll), [handleScroll]);
 
   // Media and embeds settle their size after render: stay on the newest row
   // while the reader is there.
-  useStickToBottom(scrollerRef, listRef, { active: mounted && stickToBottom, nearBottomRef: nearBottom });
+  useStickToBottom(scrollerRef, listRef, { active: mounted && stickToBottom, nearBottomRef: stuck });
 
-  // Callers that pin the list themselves (the AI stream) hear about every
-  // height change of the content.
+  // While the reader is idle up in history, hold the row they are on when
+  // content above it changes height.
+  const isPinned = useCallback(() => stuck.current, []);
+  const expectShift = useViewportAnchor(elements.scroller, elements.list, isPinned);
+  // Rows arrived above the viewport in this render: the virtualizer is about
+  // to scroll by their height, which is not the reader going anywhere.
+  useLayoutEffect(() => {
+    if (!shiftPending.current) return;
+    shiftPending.current = false;
+    expectShift();
+  });
+
+  // The scroller itself changing size (the window, the composer growing a
+  // reply banner) moves the end of the list without the content changing:
+  // stay on the newest row then too. And callers that pin the list themselves
+  // (the AI stream) hear about every height change of the content.
   const onContentResizeRef = useRef(onContentResize);
   onContentResizeRef.current = onContentResize;
-  const wantsResize = !!onContentResize;
   useEffect(() => {
     const content = listRef.current;
-    if (!mounted || !wantsResize || !content || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (scrollerRef.current) onContentResizeRef.current?.(scrollerRef.current);
+    const scroller = scrollerRef.current;
+    if (!mounted || !content || !scroller || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === content) onContentResizeRef.current?.(scroller);
+        else if (stickToBottomRef.current && stuck.current) scroller.scrollTop = scroller.scrollHeight;
+      }
     });
     observer.observe(content);
+    observer.observe(scroller);
     return () => observer.disconnect();
-  }, [mounted, wantsResize]);
+  }, [mounted]);
 
   useImperativeHandle(
     handleRef,
@@ -300,19 +404,30 @@ function VirtualMessageListInner<T>({
         const last = keysRef.current.length - 1;
         if (last < 0) return;
         const how = behavior === "smooth" ? jumpBehavior(last, rendered.current) : "auto";
-        if (how === "auto") nearBottom.current = true;
+        if (how === "auto") {
+          nearBottom.current = true;
+          stuck.current = true;
+        }
+        markProgrammaticScroll(scrollerRef.current, JUMP_MS);
         virtuoso.current?.scrollToIndex({ index: "LAST", align: "end", behavior: how });
       },
       scrollToKey: (key, align = "center") => {
         const index = keysRef.current.indexOf(key);
         if (index < 0) return false;
+        // A jump away from the newest row is the reader leaving the bottom.
+        // (If it lands within the threshold, the scroll there re-attaches.)
+        if (index < keysRef.current.length - 1) {
+          setAtBottom(false);
+          stuck.current = false;
+        }
+        markProgrammaticScroll(scrollerRef.current, JUMP_MS);
         virtuoso.current?.scrollToIndex({ index, align, behavior: jumpBehavior(index, rendered.current) });
         return true;
       },
       isAtBottom: () => nearBottom.current,
       scroller: () => scrollerRef.current,
     }),
-    [],
+    [setAtBottom],
   );
 
   const rememberHeights = useCallback(
@@ -343,6 +458,7 @@ function VirtualMessageListInner<T>({
       ref={virtuoso}
       scrollerRef={attachScroller}
       className={className}
+      data-testid={testId}
       context={context}
       components={COMPONENTS as Components<T, ListContext>}
       data={items}
