@@ -10,11 +10,32 @@ import {
   getRedisConnectionOptions,
   type TranscodeJobData,
 } from "../lib/queue.js";
+import { transcodeJobDuration, transcodeJobs, transcodeJobsActive } from "../lib/metrics/index.js";
+
+/** Run one job's work, recording that it is active, how it ended and how
+ *  long it took. Exported for tests. */
+export async function instrumentTranscode<T>(work: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+  const finish = (result: "completed" | "failed") => {
+    transcodeJobsActive.dec();
+    transcodeJobs.inc({ result });
+    transcodeJobDuration.observe({ result }, (performance.now() - startedAt) / 1000);
+  };
+  transcodeJobsActive.inc();
+  try {
+    const value = await work();
+    finish("completed");
+    return value;
+  } catch (err) {
+    finish("failed");
+    throw err;
+  }
+}
 
 export function startTranscodeWorker(): { stop: () => Promise<void> } {
   const worker = new Worker<TranscodeJobData>(
     TRANSCODE_QUEUE,
-    async (job: Job<TranscodeJobData>) => {
+    (job: Job<TranscodeJobData>) => instrumentTranscode(async () => {
       const { sha256, storagePath, mimeType } = job.data;
 
       await db
@@ -54,7 +75,7 @@ export function startTranscodeWorker(): { stop: () => Promise<void> } {
           .where(eq(musicUploads.sha256, sha256));
         throw err;
       }
-    },
+    }),
     {
       connection: getRedisConnectionOptions(),
       concurrency: config.transcodeConcurrency,

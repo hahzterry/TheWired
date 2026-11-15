@@ -52,6 +52,12 @@ type Config struct {
 
 	// Cap on request bodies to /api routes that are not uploads (bytes).
 	MaxAPIBodyBytes int64
+
+	// METRICS_ADDR: where the internal Prometheus listener binds ("host:port",
+	// ":port" or a port; no host = loopback). Empty = no listener. It is a
+	// separate socket from Port on purpose: the public port is what the web
+	// proxy forwards to. Parsed (and rejected if malformed) by metrics.ParseAddr.
+	MetricsAddr string
 }
 
 // devTrustedProxies is the non-production default: Docker bridge networks and
@@ -106,6 +112,8 @@ func Load() *Config {
 		NIP98RequirePayload: strings.ToLower(getEnv("NIP98_REQUIRE_PAYLOAD", "off")),
 
 		MaxAPIBodyBytes: int64(getEnvInt("MAX_API_BODY_BYTES", 2<<20)),
+
+		MetricsAddr: os.Getenv("METRICS_ADDR"),
 	}
 }
 

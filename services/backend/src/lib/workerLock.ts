@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getRedis } from "./redis.js";
+import { jobLockSkips, runInstrumentedJob } from "./metrics/index.js";
 
 /**
  * Single-runner guard for the periodic background workers.
@@ -90,11 +91,14 @@ export async function runWithWorkerLock(
     console.warn(
       `[workerLock] ${name}: Redis unavailable (${(err as Error).message}) — running unguarded`,
     );
-    await task();
+    await runInstrumentedJob(name, task);
     return true;
   }
 
-  if (acquired !== "OK") return false;
+  if (acquired !== "OK") {
+    jobLockSkips.inc({ job: name });
+    return false;
+  }
 
   // Keep the lock alive for as long as the task actually runs, so a slow pass
   // never has its lock expire out from under it.
@@ -105,7 +109,7 @@ export async function runWithWorkerLock(
   renewTimer.unref?.();
 
   try {
-    await task();
+    await runInstrumentedJob(name, task);
     return true;
   } finally {
     clearInterval(renewTimer);

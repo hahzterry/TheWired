@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/thewired/gateway/internal/gatewayauth"
+	"github.com/thewired/gateway/internal/metrics"
 )
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -25,7 +26,7 @@ type Router struct {
 func NewRouter(backendURL string, signer *gatewayauth.Signer) *Router {
 	return &Router{
 		target:    mustParseBackend(backendURL),
-		transport: newBackendTransport(DefaultResponseHeaderTimeout),
+		transport: metrics.InstrumentTransport(metrics.UpstreamAPI, newBackendTransport(DefaultResponseHeaderTimeout)),
 		signer:    signer,
 	}
 }
@@ -52,7 +53,7 @@ type blossomHandler struct {
 func NewBlossomHandler(backendURL string, signer *gatewayauth.Signer) http.Handler {
 	return &blossomHandler{
 		target:    mustParseBackend(backendURL),
-		transport: newBackendTransport(DefaultResponseHeaderTimeout),
+		transport: metrics.InstrumentTransport(metrics.UpstreamBlossom, newBackendTransport(DefaultResponseHeaderTimeout)),
 		signer:    signer,
 	}
 }
@@ -103,6 +104,17 @@ func (rt *Router) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Strip /api prefix (keeping any %2F-style encoding intact)
 		backendPath, backendRawPath := stripAPIPrefix(r.URL)
+
+		// Internal-only backend paths are never forwarded, whatever the
+		// backend happens to serve there (see IsInternalBackendPath). The
+		// server wires InternalPathGuard in front of the whole /api chain;
+		// this is the same check at the point of forwarding, so a router
+		// mounted without that guard still refuses.
+		if IsInternalBackendPath(backendPath) {
+			metrics.InternalPathBlocked()
+			http.NotFound(w, r)
+			return
+		}
 
 		// Sign the identity headers over the path the backend will see.
 		rt.signer.Apply(r, wirePath(backendPath, backendRawPath))

@@ -4,6 +4,7 @@ import { getRedis } from "../lib/redis.js";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "../lib/id.js";
 import { startLockedInterval } from "../lib/workerLock.js";
+import { recordJobFailure } from "../lib/metrics/index.js";
 import { suspensionService } from "../services/suspensionService.js";
 
 interface EventRow {
@@ -75,6 +76,7 @@ export function startTrendingComputer(): { stop: () => void } {
       await computeTrendingPeriod("24h", redis);
     } catch (err) {
       console.error(`[trending] Error computing 24h:`, (err as Error).message);
+      recordJobFailure("trendingComputer");
     }
   }
 
