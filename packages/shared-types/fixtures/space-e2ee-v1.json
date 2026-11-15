@@ -1,0 +1,198 @@
+{
+  "$comment": "Test vectors for the encrypted-space contract (docs/E2EE_SPACES.md), SPACE_E2EE_VERSION 1. PROVISIONAL. Every key here is a throwaway test key. An implementation is compatible when it derives the same values from each epoch key, opens `sealed` to `rumor` with that epoch's key, and unwraps each grant's `p` entry with a recipient's secret key to the epoch key. carol is removed before epoch 1: its grant has no entry for her and her epoch-0 key must fail on `epoch1.sealed`.",
+  "version": 1,
+  "salt": "thewired-space-e2ee-v1",
+  "space": "fixturespace01",
+  "identities": {
+    "alice": {
+      "secretKey": "00000000000000000000000000000000000000000000000000000000000a11ce",
+      "pubkey": "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102",
+      "role": "creator and manager"
+    },
+    "bob": {
+      "secretKey": "0000000000000000000000000000000000000000000000000000000000000b0b",
+      "pubkey": "5d45cb81aa765d69ca52e3869491ecf0e8fdf6a63d64e65b5213647ee4973ae5",
+      "role": "member"
+    },
+    "carol": {
+      "secretKey": "00000000000000000000000000000000000000000000000000000000000ca401",
+      "pubkey": "c3bb02673c15e350c1a10d91a9a78f63ee0b4b3f3e4611e06d40c245308bd613",
+      "role": "member in epoch 0, removed before epoch 1"
+    }
+  },
+  "epoch0": {
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epochId": "200013a76bca3727",
+    "contentKey": "6555b9b94ae75559181650b80867f12247a0da707c39a013a477a99e2401338c",
+    "grantKey": "d7407d1f031c1ccce368586d4c472736a013e2e0949427c6a2bd9780f85c289a",
+    "payload": {
+      "v": 1,
+      "space": "fixturespace01",
+      "epoch": "200013a76bca3727",
+      "seq": 0,
+      "prev": null,
+      "managers": [
+        "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102"
+      ],
+      "history": "epoch",
+      "at": 1763000000
+    },
+    "grant": {
+      "pubkey": "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102",
+      "created_at": 1763000000,
+      "kind": 4291,
+      "tags": [
+        [
+          "h",
+          "fixturespace01"
+        ],
+        [
+          "epoch",
+          "200013a76bca3727"
+        ],
+        [
+          "eph",
+          "ee85c3c61a5fa452855d6ab7f7edd59119ab656e6f22b024780acf4bf96ec8e6"
+        ],
+        [
+          "p",
+          "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102",
+          "AgD//e1MhN4cPWse2k7j9uDeSJXh4byL1c9JTV11om7nOSWTFQZnMoSQL/zWpHLlO5U8ekWwERlaXpZ3KVAlpttJY1yimPHVAnjSD8ye4R1+XG5PedIlOp4dP1Thr2SLtKZRKrkZhpTybNK+wK1xMI6F8oxEQIw6zCgFSm+y9kOYCAY="
+        ],
+        [
+          "p",
+          "5d45cb81aa765d69ca52e3869491ecf0e8fdf6a63d64e65b5213647ee4973ae5",
+          "AsfHdqSXprAOagpeAJeIM7f1mTpSQXvvZTW1hoEp60VW/sRDxlfkKYf7V3wa/EoqB2fcd3g9UZupWPrkPblKxn5ySZlfrA2nNuUEBrSfB2LWSDX9oIqM+SMTnWpd/lkiK3lgtbLHZPSojJiT6i1BNRelpoOZMZqUSTtXtwHhtY6IOxc="
+        ],
+        [
+          "p",
+          "c3bb02673c15e350c1a10d91a9a78f63ee0b4b3f3e4611e06d40c245308bd613",
+          "AvUHNyTX3UhDqfyRjLa7FlKcZaF07i0keQYWAHdIBJ0xVtoF5e8cSC4CD9nMUXcTpBq12n9B6J+/xlFNazPz2iDTZR1NnbQ21Zpp1NRgwshEyudbnXtYZVeTBjPfV752X8vh2/u1ZrtdIhZa/W0JKvRvr25IKT4DeNZN6GlfdbFgocA="
+        ]
+      ],
+      "content": "Aq497lQpKzpb8QnEUxagF2zAjfSk+fLm3fGXwuVShYt2wLKSpUQ5pDSb7gaXKGPXs/AWHx2E02XwBP0KJCjWlKwIV6MVoL6t3xFRHyRQFMM4/cVHcbnVAOI4Zc66WptmQu+oztVOFkaD40gJfw+zuo2+WisX6Ad5MKPKYxOqkqhWknY8KqEJp5vN7aIMSoEKxRmMpfoI2WDtQfOM54JXXvsLsYByGEclDA6FY/45kVXIfJCYAZQTkTYT8i7tPdnA2UEjWkT8s8uet6ekd4+1WBqwXYqoMktdThwmilrn9BfmZhub12lEcfKwKFfF2ZVKCe++xiWTGRZ1I3Us1zjvvc/AZv3SDDymcWXy/rQNxSkIMLa2bNewsBLSMK8+rSHHtkDH",
+      "id": "acb43b9b66b712cd2e10b00c8dd8891f4bb49329bce0bde195ce858fc4670301",
+      "sig": "58a29f5bbd4e029cc06a74e56bc445627f3bb3ced69579822ae2db490950f9c3c0259be946acbb23d2c34cb30f7f9998ab73b2d8965fae8d2735a0c1ecd84ef2"
+    },
+    "rumor": {
+      "id": "f8d4823e03676d1017d0481aec2f68bafd956b15b75931f3027d1f1c6a2a40a4",
+      "pubkey": "5d45cb81aa765d69ca52e3869491ecf0e8fdf6a63d64e65b5213647ee4973ae5",
+      "created_at": 1763000060,
+      "kind": 9,
+      "tags": [
+        [
+          "h",
+          "fixturespace01"
+        ],
+        [
+          "channel",
+          "general"
+        ]
+      ],
+      "content": "hello from the fixture"
+    },
+    "sealed": {
+      "pubkey": "5d45cb81aa765d69ca52e3869491ecf0e8fdf6a63d64e65b5213647ee4973ae5",
+      "created_at": 1763000060,
+      "kind": 4290,
+      "tags": [
+        [
+          "h",
+          "fixturespace01"
+        ],
+        [
+          "epoch",
+          "200013a76bca3727"
+        ]
+      ],
+      "content": "AsOw0Y9URIobkY5UMmRFFnAIQ8TSltu2Vq4y+fOsSe/+cqZ4wy90Nyfh1VCgVSxAmjwYmJzg60fxbpE6EtcCMtKwbLpWH5cpQxE0CBfkqO0CyD2CwShgiHprhjqx2JYOs8jQax7cEfmEes8eP4CF4GbT+NEM9mPcoMQint63R/5MpmR9/Ekd368q1sraT0rhOO3k+LXQjJAb6NWouIcZilELttYnSkb51NmUdayx0NvyNOEQleGWkSTjU6XCLw42HbkbTULl+fqrBkYMMyxMhh75f/s9VSoN8Bnsk/alExhY6AEJwZZzlOyPcjUmwpwMJG3t7KmLs94hFVW5RxNoysOK0jSBD0ubnicqyfmISuTruCfTat4nb36cbLTyC8MKtym0TTHqBJaGXTwrZzLRjupl5H81zWmLeFOWV19Btmc9B8KIWJoFHC3n/Hk9RnG35N44SYFCCQffJH8eTkaY7G2FOt56LM7gqZ8g3RjLt57ygngBmBThf9sV3PDNh5WTod+3",
+      "id": "5f2b4808bf64908978b1d3e2b42f0a6aeb54be474e19bce3aebae5a462288601",
+      "sig": "0634aacab09eb240df8370bc7667048dc961e1ae4d80c25efae948875f44f582bb1e2e413bbbf9cf2d42b71ce12bf259d4ae28e7b79ff713b6ccc1be0929f2c6"
+    }
+  },
+  "epoch1": {
+    "key": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff00112233445566778899aabbccddeeff",
+    "epochId": "6d3b6765bc8dbceb",
+    "contentKey": "5afe770389c15b4734129781d0dd51ae652b5ee50f7475c0d46d409622fc64ef",
+    "grantKey": "8ebb46bf2e84c4b35b07de549b561c368eddceda60fe6583a92453d475bcd928",
+    "payload": {
+      "v": 1,
+      "space": "fixturespace01",
+      "epoch": "6d3b6765bc8dbceb",
+      "seq": 1,
+      "prev": "200013a76bca3727",
+      "managers": [
+        "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102"
+      ],
+      "history": "epoch",
+      "at": 1763003600
+    },
+    "grant": {
+      "pubkey": "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102",
+      "created_at": 1763003600,
+      "kind": 4291,
+      "tags": [
+        [
+          "h",
+          "fixturespace01"
+        ],
+        [
+          "epoch",
+          "6d3b6765bc8dbceb"
+        ],
+        [
+          "eph",
+          "4830ee3e5a3494563ccff18fa674f7c90159e8127dd7bc5f427384ff6d40e740"
+        ],
+        [
+          "p",
+          "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102",
+          "Al6EnJAWJ46pX8S5AKe5s4aS2xgSDopOusmVFu1DR6Hd8X44ydoByrOjqwwWrH4tUeXPi23NyLdXInAydaiazXpoFw+8N5hKPYSi/5guiaFS3vE2z+CQc8qJprg6QI+NVs1ntF1RB11QRdZ70MwdMYDLQyO/u08/Cato+9xHDMKmyLg="
+        ],
+        [
+          "p",
+          "5d45cb81aa765d69ca52e3869491ecf0e8fdf6a63d64e65b5213647ee4973ae5",
+          "ApmkhZ47yIVIHFWMz14UNRgvb7heRu+OHg8/ffua9YNgp1Wuo88IxH6TzZ4maJZz85Tt3hqGPxVVbhQRbAfvRsV8rtaY289t1jIYnyZlzK1HSS2LvZhRHyIwc6h7U92OmSyqtLXKU0LFaH9bCGGd4Fzxa3FjI4o2/Yox/17gFiQboHA="
+        ]
+      ],
+      "content": "Ai42O4CdylUy4rw9Zqte1nyxRYnlRSduaHHYLCYoLcvL9+iQuL3058RiFHn+Ek5VRZmPoU22xTBoA8rawaO4oKz41wTx5VHRSS6Vsd5uOxos5J9T9rwAVmJ4q25QhMi/K/ricSpE36J4lHWbGVBJBRxWYcdxeoaTwzDTFcCNLt6sJaLwOG3WxTJmqGXOGss/7mubfRhTvz5YScAOlJGsj986yPDwggYdHUHCGUGVx+L0KI9l8pGSa+oKmlsOLhQQ94yBXtV6Di0x2wlQgFNs2+VICzYix2VYVtxuXHPdNa9uPF5Qwc1s6ZJkDP4JalBUzxYpFzl4Sx4N6amYNu4PlplpoKBIy7Otiugm01co+XTsc219gEmla0N8urbMexiOrN26",
+      "id": "5004bb343a259383ed8df577a337bec0a71136cfd07537a4f5c01d13f8f79e1f",
+      "sig": "4616e02a6799fc9060f4a091b0231e04a9a2ba5069622fa2840cf51433fc178ec0f471770eeb34ff21bbb03b6ad417724a8d1e4c698742c1ea6bff2226d3924c"
+    },
+    "rumor": {
+      "id": "ad45d755a9804169bf56bb48598b66d9cc1c20e9f486f6677e1a74eca8f785ce",
+      "pubkey": "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102",
+      "created_at": 1763003700,
+      "kind": 9,
+      "tags": [
+        [
+          "h",
+          "fixturespace01"
+        ],
+        [
+          "channel",
+          "general"
+        ]
+      ],
+      "content": "after the rotation"
+    },
+    "sealed": {
+      "pubkey": "a64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102",
+      "created_at": 1763003700,
+      "kind": 4290,
+      "tags": [
+        [
+          "h",
+          "fixturespace01"
+        ],
+        [
+          "epoch",
+          "6d3b6765bc8dbceb"
+        ]
+      ],
+      "content": "Amr/vRHoO93hlP600Q1ssjA0jvoTiSMHJHi48BVK9sh1Qn38w0nCX32xFytArlIG/MFLHYR0NnsZaLDZmtoYcOz/eVLBDd1u122QZ25RjMbp5xfSSDML/MSkbxIf8H0Qx5x07XS4svcYuwbQ5Bla57ie0x8o5erHm95eJWg0tzZd4xRCZ+lDPv9eWyYZn7zDQ5r11y+6XIOdTRubThKsuB2WMeF2FGlbuLYdqWANAH41NZQw/gOded8PeBbnHNMJCv8wFylW5DilNMNU8OGz95grbwtK3LNILASbACd6p87ohFWrBGqTWBGiStsZjdba0guQqEfCW1mHIdV4x8JwlMNbkFHqze8bXhsoS+re8vdAo3sCoXZslGBz1gJyQRdnN9xTEmwzzQ84nx/6Dlf9XFCtNR3ZBTCm5O1W/YuLXLyhqwhLqxMx+LJQD5eXVzsvLlH8XNGE4uxanD7nqf5ozwiYxHVBFTSvhE1qc0W90ryY48skOWoMoJT1H+/GwSa/Ubyr",
+      "id": "e6cc3e6a43547b06479ade08210977f49780266113f2696d82ed4515e01c0bcb",
+      "sig": "8c928c5826c0796105be20f070940dcf0b3bae6e004d406f860fd66231dfad8416a6ffe98344dbadc53ecde23e4e1621b4e51f91633be29196d04ab43aca4303"
+    }
+  }
+}
