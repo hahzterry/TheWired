@@ -18,6 +18,7 @@ import { DMSidebar } from "../../features/dm/DMSidebar";
 import { ProfileCard } from "../../features/identity/ProfileCard";
 import { useDMUnreadCount } from "../../features/dm/useDMContacts";
 import { VoiceStatusBar } from "../../features/voice/VoiceStatusBar";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { useResizeHandle } from "./useResizeHandle";
 import { FRIENDS_FEED_ID } from "../../features/friends/friendsFeedConstants";
 
@@ -25,7 +26,19 @@ interface SidebarProps {
   expanded: boolean;
 }
 
-export function Sidebar({ expanded }: SidebarProps) {
+export function Sidebar(props: SidebarProps) {
+  return (
+    <ErrorBoundary
+      variant="panel"
+      label="sidebar"
+      className={cn("glass flex-none border-r border-border", props.expanded ? "w-60" : "hidden")}
+    >
+      <SidebarInner {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function SidebarInner({ expanded }: SidebarProps) {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const isLoggedIn = useAppSelector((s) => !!s.identity.pubkey);

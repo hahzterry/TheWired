@@ -4,6 +4,7 @@ import {
   Wand2, Music, ListOrdered, ChevronDown, ChevronUp, Disc3, Image, KeyRound,
 } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadAudio, uploadCoverArt } from "@/lib/api/music";
 import { buildAlbumEvent, buildTrackEvent, buildPrivateAlbumEvent, buildPrivateTrackEvent, buildProjectProfileEvent } from "./musicEventBuilder";
@@ -46,7 +47,7 @@ interface CreateAlbumModalProps {
 
 type UploadPhase = "idle" | "parsing" | "ready" | "uploading";
 
-export function CreateAlbumModal({ open, onClose, album }: CreateAlbumModalProps) {
+function CreateAlbumModalInner({ open, onClose, album }: CreateAlbumModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const allTracks = useAppSelector((s) => s.music.tracks);
   const isMine = useIsMine();
@@ -1039,3 +1040,5 @@ export function CreateAlbumModal({ open, onClose, album }: CreateAlbumModalProps
     </Modal>
   );
 }
+
+export const CreateAlbumModal = withModalBoundary(CreateAlbumModalInner, "create-album");

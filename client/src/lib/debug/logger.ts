@@ -39,7 +39,8 @@ export type LogCategory =
   | "perf"  // main-thread health (event-loop lag spikes)
   | "latency" // per-message receive latency, by relay (chat delivery timing)
   | "feed"  // profile / space feed throughput (note arrivals, LoadMore)
-  | "call"; // voice/video: RTC signaling, ICE, LiveKit tracks, audio attach
+  | "call" // voice/video: RTC signaling, ICE, LiveKit tracks, audio attach
+  | "crash"; // caught render errors + global error/rejection capture (redacted)
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -62,6 +63,7 @@ const CATEGORY_COLORS: Record<LogCategory, string> = {
   latency: "#e879f9",
   feed: "#10b981",
   call: "#4ade80",
+  crash: "#f87171",
 };
 
 const LS_KEY = "wired:debug";
@@ -343,10 +345,11 @@ function buildApi(): WiredDebugApi {
           "  relays()                  — relay connection snapshot",
           "  session()                 — snapshot: account + top subs + recent lag spikes + relays",
           "  calls()                   — voice/call snapshot: state, PC + ICE stats, tracks, LiveKit room",
+          "  crashes()                 — local crash log (redacted; also copies to clipboard)",
           "  dump({cats,level,sinceSec}) — export recent trace (also copies to clipboard)",
           "  clear()                   — clear the trace buffer",
           "  categories: startup, identity, relay, sub, pipeline, profile, idb, spaces,",
-          "              nav, perf, feed, zap, nwc, lnurl, call",
+          "              nav, perf, feed, zap, nwc, lnurl, call, crash",
         ].join("\n"),
       );
     },

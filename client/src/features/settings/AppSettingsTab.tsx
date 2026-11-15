@@ -9,6 +9,7 @@ import { useProfile } from "../profile/useProfile";
 import { AddAccountModal } from "../identity/AddAccountModal";
 import { useEndCallConfirm } from "../calling/EndCallConfirmDialog";
 import { Avatar } from "../../components/ui/Avatar";
+import { DiagnosticsSection } from "./DiagnosticsSection";
 import { useAppUpdater } from "../../hooks/useAppUpdater";
 import { RefreshCw, Download, RotateCcw, Check, AlertCircle, Map, Plus, Trash2, Users, Minus, Plus as PlusIcon, ZoomIn } from "lucide-react";
 import {
@@ -179,6 +180,9 @@ export function AppSettingsTab() {
 
       {/* Updates (Tauri only) */}
       {isTauri && <UpdateSection />}
+
+      {/* Local crash log */}
+      <DiagnosticsSection />
 
       {/* App info */}
       <div className="rounded-lg border border-border bg-panel p-4">

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Zap, X } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Avatar } from "@/components/ui/Avatar";
 import { useProfile } from "@/features/profile/useProfile";
 import { useAppSelector } from "@/store/hooks";
@@ -13,7 +14,7 @@ import {
 
 /** Full list of zaps on an event: who zapped, how much, and their comment.
  *  Cross-client — every NIP-57 receipt we've seen for this event. */
-export function ZapListModal({
+function ZapListModalInner({
   eventId,
   onClose,
 }: {
@@ -85,3 +86,5 @@ function ZapListRow({ entry }: { entry: ZapReceiptEntry }) {
     </div>
   );
 }
+
+export const ZapListModal = withModalBoundary(ZapListModalInner, "zap-list");

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Spinner } from "../../components/ui/Spinner";
 import { ImageUpload } from "../../components/ui/ImageUpload";
 import { useAppSelector } from "../../store/hooks";
@@ -20,7 +21,7 @@ interface ProfileEditModalProps {
   onClose: () => void;
 }
 
-export function ProfileEditModal({ onClose }: ProfileEditModalProps) {
+function ProfileEditModalInner({ onClose }: ProfileEditModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const existingProfile = useAppSelector((s) => s.identity.profile);
   const profileCreatedAt = useAppSelector((s) => s.identity.profileCreatedAt);
@@ -153,3 +154,5 @@ export function ProfileEditModal({ onClose }: ProfileEditModalProps) {
     </Modal>
   );
 }
+
+export const ProfileEditModal = withModalBoundary(ProfileEditModalInner, "profile-edit");

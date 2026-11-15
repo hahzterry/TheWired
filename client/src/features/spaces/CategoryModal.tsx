@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X, Trash2, Shield, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { useSpaceChannels } from "./useSpaceChannels";
 import { usePermissions } from "./usePermissions";
@@ -18,7 +19,7 @@ interface CategoryModalProps {
 
 /** Create a subfolder, or rename / set permissions on / delete one. The body
  *  mounts fresh on every open, so nothing typed last time leaks into the next. */
-export function CategoryModal(props: CategoryModalProps) {
+function CategoryModalInner(props: CategoryModalProps) {
   if (!props.open) return null;
   return <CategoryModalBody {...props} />;
 }
@@ -159,3 +160,5 @@ function CategoryModalBody({ open, onClose, spaceId, categoryId }: CategoryModal
     </>
   );
 }
+
+export const CategoryModal = withModalBoundary(CategoryModalInner, "category");

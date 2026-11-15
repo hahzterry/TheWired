@@ -30,6 +30,8 @@ import { getAutoUpdatesEnabled } from "../features/settings/AppSettingsTab";
 import { useAppUpdater } from "../hooks/useAppUpdater";
 import { useZoomShortcuts } from "../hooks/useZoomShortcuts";
 import { useEmbeddedRelayAutostart } from "../features/settings/useEmbeddedRelayAutostart";
+import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { BoundaryResetProvider } from "./BoundaryResetProvider";
 
 // Lazy: the AI chat tree (react-markdown / rehype-highlight / marked) only loads
 // the first time the user opens the AI tab, then stays mounted (keep-alive).
@@ -87,8 +89,17 @@ function OnboardingOverlays() {
 
   return (
     <>
-      {showProfileWizard && <ProfileWizard />}
-      {showAppTour && <AppTour />}
+      {/* Onboarding is optional chrome: if it throws, drop it and keep the app. */}
+      {showProfileWizard && (
+        <ErrorBoundary variant="inline" scope="overlay" label="profile-wizard" fallback={null}>
+          <ProfileWizard />
+        </ErrorBoundary>
+      )}
+      {showAppTour && (
+        <ErrorBoundary variant="inline" scope="overlay" label="app-tour" fallback={null}>
+          <AppTour />
+        </ErrorBoundary>
+      )}
     </>
   );
 }
@@ -121,20 +132,25 @@ function MainContent() {
     <>
       {/* Music view — kept alive so audio playback doesn't restart on sidebar switch */}
       <div className={isMusic ? "flex flex-1 flex-col overflow-hidden" : "hidden"}>
-        <MusicRouter />
+        <ErrorBoundary variant="panel" label="music-view">
+          <MusicRouter />
+        </ErrorBoundary>
       </div>
 
       {/* AI view — kept alive so streaming survives a sidebar switch */}
       {aiEverOpened && (
         <div className={isAI ? "flex flex-1 flex-col overflow-hidden" : "hidden"}>
-          <Suspense fallback={<AILoadingFallback />}>
-            <AIChatView />
-          </Suspense>
+          <ErrorBoundary variant="panel" label="ai-view">
+            <Suspense fallback={<AILoadingFallback />}>
+              <AIChatView />
+            </Suspense>
+          </ErrorBoundary>
         </div>
       )}
 
       {/* Spaces view */}
       <div className={isMusic || isAI ? "hidden" : "flex flex-1 flex-col overflow-hidden"}>
+        <ErrorBoundary variant="panel" label="spaces-view">
         {isFriendsFeed ? (
           <FriendsFeedPanel />
         ) : !activeChannelId ? (
@@ -156,6 +172,7 @@ function MainContent() {
             <ChannelPanel />
           </SpaceView>
         )}
+        </ErrorBoundary>
       </div>
     </>
   );
@@ -199,13 +216,19 @@ export default function App() {
     <ThemeProvider>
       <BrowserRouter>
         <NavigationLogger />
-        {shouldAutoUpdate ? (
-          <AutoUpdateGate>
-            <AppRoutes />
-          </AutoUpdateGate>
-        ) : (
-          <AppRoutes />
-        )}
+        <BoundaryResetProvider>
+          {/* Route level: catches the auth gate, the login screen and the
+              shell itself. Panels and items inside the shell have their own. */}
+          <ErrorBoundary variant="screen" label="routes">
+            {shouldAutoUpdate ? (
+              <AutoUpdateGate>
+                <AppRoutes />
+              </AutoUpdateGate>
+            ) : (
+              <AppRoutes />
+            )}
+          </ErrorBoundary>
+        </BoundaryResetProvider>
         <ZoomIndicator />
       </BrowserRouter>
     </ThemeProvider>

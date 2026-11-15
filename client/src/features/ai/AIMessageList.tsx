@@ -9,6 +9,7 @@ import {
 import { AIMessageBubble } from "./AIMessageBubble";
 import { PendingWriteCard } from "./gate/PendingWriteCard";
 import { isAtBottom, nextStick } from "./scrollFollow";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 export function AIMessageList({ conversationId }: { conversationId: string }) {
   const messageIds = useAppSelector(selectMessageIdsForConversation(conversationId));
@@ -91,15 +92,18 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
         <div ref={contentRef} className="mx-auto max-w-3xl py-4">
           {messageIds.map((id, i) => (
-            <AIMessageBubble
-              key={id}
-              messageId={id}
-              conversationId={conversationId}
-              isLast={i === messageIds.length - 1}
-            />
+            <ItemBoundary key={id} id={id} label="ai-message" noun="message" className="mx-4 my-2">
+              <AIMessageBubble
+                messageId={id}
+                conversationId={conversationId}
+                isLast={i === messageIds.length - 1}
+              />
+            </ItemBoundary>
           ))}
           {pendingWriteIds.map((id) => (
-            <PendingWriteCard key={id} id={id} />
+            <ItemBoundary key={id} id={id} label="ai-pending-write" noun="request" className="mx-4 my-2">
+              <PendingWriteCard id={id} />
+            </ItemBoundary>
           ))}
         </div>
       </div>

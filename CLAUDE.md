@@ -192,6 +192,13 @@ Toggleable AI assistant in `features/ai/`. 3-tier engine (detect local Ollama/LM
 - **The agent never signs.** Read tools auto-run (results framed untrusted via `frameUntrustedBlock`); write tools register a `PendingWrite` and are signed ONLY on human Approve in `gate/approveWrite.ts`.
 - Untrusted model output: `AIMarkdown` scheme-allowlists URLs, no `rehype-raw`; images are click-to-load. See `docs/AI_ENGINE.md`.
 
+### Error Containment (Client)
+Render errors are contained by `ErrorBoundary` (`components/ui/ErrorBoundary.tsx`) at five levels: app root (`main.tsx`), route level (`App.tsx`), each shell panel, modals, and each item in a list of untrusted event data. A boundary resets on Retry, when its `resetKeys` change, and on navigation (`BoundaryResetProvider` supplies the epoch: pathname + sidebar mode + active space/channel + music view).
+- **New list of event-derived items** → wrap each item at its call site in `<ItemBoundary id={…} label="…" noun="…">`. Parse the event *inside* the wrapped component, not in the parent's `.map`, or the throw escapes the item.
+- **New modal** → export it through `withModalBoundary(Inner, "label")` (`components/ui/withModalBoundary.tsx`); its fallback is a dismissible dialog.
+- **Crash log** (`lib/crash/`): a bounded, redacted ring buffer in `localStorage["wired:crashlog"]`, fed by boundaries and by global `error` / `unhandledrejection` handlers, surfaced only through "Copy diagnostics" (fallback UI + Settings → App) and `wiredDebug.crashes()`. It stays on the device. Records are built from an `Error`'s name, message and stack only and pass through `redact.ts`; never add props, state or event data to a record, and `label` must be a constant.
+- **Dev fault injection**: `wiredDebug.crash("<scope>:<label>", { id })` makes that boundary's content throw; `wiredDebug.crash()` disarms. Compiled out of production builds.
+
 ### State Management (Client)
 - Redux is the single source of truth for all UI state
 - `eventsSlice` uses `createEntityAdapter` keyed by event ID

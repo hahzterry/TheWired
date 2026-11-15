@@ -18,6 +18,7 @@ import { matchMusicEmbed } from "@/lib/content/musicEmbeds";
 import { MusicEmbedShapeContext, type MusicEmbedShape } from "./musicEmbedContext";
 import { EmbedSurfaceContext } from "./embedSurface";
 import { MediaGallery, SmartImage, SmartVideo } from "../media";
+import { ErrorBoundary, ItemBoundary } from "../ui/ErrorBoundary";
 
 interface RichContentProps {
   content: string;
@@ -45,7 +46,27 @@ interface RichContentProps {
   layout?: "flow" | "message";
 }
 
-export function RichContent({
+/**
+ * Event content is the least trusted input the app renders, and every surface
+ * (notes, chat, DMs, profiles) funnels it through here. The boundary keeps a
+ * body that cannot be rendered from taking its card, row or page with it: the
+ * author, timestamp and actions around it still draw.
+ */
+export function RichContent(props: RichContentProps) {
+  return (
+    <ErrorBoundary
+      variant="inline"
+      scope="item"
+      label="rich-content"
+      noun="content"
+      resetKeys={[props.content]}
+    >
+      <RichContentInner {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function RichContentInner({
   content,
   emojiTags,
   event,
@@ -279,26 +300,34 @@ function RichSegment({
       // Already rendered as a dedicated quote card elsewhere — don't duplicate.
       if (suppressEventIds?.includes(segment.id)) return null;
       return (
-        <EmbeddedNote
-          idRef={{
-            id: segment.id,
-            relays: segment.relays,
-            author: segment.author,
-            kind: segment.kind,
-          }}
-        />
+        <ItemBoundary id={segment.id} label="embedded-note" noun="quoted note">
+          <EmbeddedNote
+            idRef={{
+              id: segment.id,
+              relays: segment.relays,
+              author: segment.author,
+              kind: segment.kind,
+            }}
+          />
+        </ItemBoundary>
       );
 
     case "addr-ref":
       return (
-        <EmbeddedNote
-          addrRef={{
-            kind: segment.kind,
-            pubkey: segment.pubkey,
-            identifier: segment.identifier,
-            relays: segment.relays,
-          }}
-        />
+        <ItemBoundary
+          id={`${segment.kind}:${segment.pubkey}:${segment.identifier}`}
+          label="embedded-note"
+          noun="quoted note"
+        >
+          <EmbeddedNote
+            addrRef={{
+              kind: segment.kind,
+              pubkey: segment.pubkey,
+              identifier: segment.identifier,
+              relays: segment.relays,
+            }}
+          />
+        </ItemBoundary>
       );
 
     case "url": {

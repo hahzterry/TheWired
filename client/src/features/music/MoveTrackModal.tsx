@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { X, ChevronLeft } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { buildTrackEvent, buildAlbumEvent } from "./musicEventBuilder";
 import { signAndPublish } from "@/lib/nostr/publish";
@@ -18,7 +19,7 @@ interface MoveTrackModalProps {
   onBack?: () => void;
 }
 
-export function MoveTrackModal({ track, onClose, onBack }: MoveTrackModalProps) {
+function MoveTrackModalInner({ track, onClose, onBack }: MoveTrackModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const albums = useAppSelector((s) => s.music.albums);
   const isMine = useIsMine();
@@ -272,3 +273,5 @@ export function MoveTrackModal({ track, onClose, onBack }: MoveTrackModalProps) 
     </Modal>
   );
 }
+
+export const MoveTrackModal = withModalBoundary(MoveTrackModalInner, "move-track");

@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { X, Search, Users } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { FollowCard } from "./FollowCard";
 import { Spinner } from "../../components/ui/Spinner";
 import { profileCache } from "../../lib/nostr/profileCache";
@@ -14,7 +15,7 @@ interface FollowListModalProps {
   onClose: () => void;
 }
 
-export function FollowListModal({ pubkeys, loading, mode, onClose }: FollowListModalProps) {
+function FollowListModalInner({ pubkeys, loading, mode, onClose }: FollowListModalProps) {
   const [search, setSearch] = useState("");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
@@ -109,3 +110,5 @@ export function FollowListModal({ pubkeys, loading, mode, onClose }: FollowListM
     </Modal>
   );
 }
+
+export const FollowListModal = withModalBoundary(FollowListModalInner, "follow-list");

@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useStore } from "react-redux";
 import { PhoneOff } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { ModalBoundary } from "@/components/ui/ModalBoundary";
 import { Button } from "@/components/ui/Button";
 import { useAppSelector } from "@/store/hooks";
 import type { RootState } from "@/store";
@@ -163,7 +164,9 @@ export function useEndCallConfirm() {
   }, [pending]);
 
   const dialog = pending ? (
-    <EndCallConfirmDialog pending={pending} onCancel={cancel} onConfirm={confirm} />
+    <ModalBoundary label="end-call-confirm" onClose={cancel}>
+      <EndCallConfirmDialog pending={pending} onCancel={cancel} onConfirm={confirm} />
+    </ModalBoundary>
   ) : null;
 
   return { confirmIfInCall, dialog };
