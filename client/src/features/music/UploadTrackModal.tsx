@@ -1,6 +1,7 @@
 import { useState, useRef, useMemo } from "react";
 import { X, Upload, Music } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadAudio, uploadCoverArt } from "@/lib/api/music";
 import { buildAlbumEvent, buildTrackEvent, buildPrivateTrackEvent } from "./musicEventBuilder";
@@ -42,7 +43,7 @@ interface UploadTrackModalProps {
   defaultChannelId?: string;
 }
 
-export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibility, defaultSpaceId, defaultChannelId }: UploadTrackModalProps) {
+function UploadTrackModalInner({ open, onClose, defaultAlbumRef, defaultVisibility, defaultSpaceId, defaultChannelId }: UploadTrackModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const allAlbums = useAppSelector((s) => s.music.albums);
   const isMine = useIsMine();
@@ -439,3 +440,5 @@ export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibi
     </Modal>
   );
 }
+
+export const UploadTrackModal = withModalBoundary(UploadTrackModalInner, "upload-track");

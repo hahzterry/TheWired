@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ArrowLeft, Users, AlertCircle } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
 import { Avatar } from "../../components/ui/Avatar";
@@ -52,7 +53,7 @@ function parseInviteCode(input: string): string {
   return trimmed;
 }
 
-export function JoinSpaceModal({ open, onClose, initialCode, onImportInstead }: JoinSpaceModalProps) {
+function JoinSpaceModalInner({ open, onClose, initialCode, onImportInstead }: JoinSpaceModalProps) {
   const { joinSpace } = useSpace();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
@@ -344,3 +345,5 @@ export function JoinSpaceModal({ open, onClose, initialCode, onImportInstead }: 
     </Modal>
   );
 }
+
+export const JoinSpaceModal = withModalBoundary(JoinSpaceModalInner, "join-space");

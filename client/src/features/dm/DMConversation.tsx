@@ -23,6 +23,7 @@ import { useCall } from "@/features/calling/useCall";
 import { useZap } from "@/features/wallet/WalletProvider";
 import { SearchPanel } from "@/features/search/SearchPanel";
 import type { MessageSearchResult } from "@/features/search/useMessageSearch";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 interface DMConversationProps {
   partnerPubkey: string;
@@ -497,6 +498,7 @@ export function DMConversation({ partnerPubkey, onBack }: DMConversationProps) {
               {i === dividerIndex && (
                 <UnreadDivider ref={dividerRef} onFaded={handleDividerFaded} />
               )}
+              <ItemBoundary id={msg.wrapId} label="dm-message" noun="message" className="mx-4 my-1">
               <DMMessage
                 message={msg}
                 partnerPubkey={partnerPubkey}
@@ -511,6 +513,7 @@ export function DMConversation({ partnerPubkey, onBack }: DMConversationProps) {
                 allMessages={messages}
                 onJumpToMessage={(targetWrapId) => scrollToMessage(targetWrapId, msg.wrapId)}
               />
+              </ItemBoundary>
             </div>
           ))}
           </div>

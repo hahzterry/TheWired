@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { X, Search, Plus, Rss, Lock } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { ImageUpload } from "../../components/ui/ImageUpload";
 import { Avatar } from "../../components/ui/Avatar";
 import { useAppSelector } from "../../store/hooks";
@@ -110,7 +111,7 @@ function FeedSourceChip({ pubkey, onRemove }: { pubkey: string; onRemove: () => 
   );
 }
 
-export function CreateSpaceModal({
+function CreateSpaceModalInner({
   open,
   onClose,
   onCreate,
@@ -826,3 +827,5 @@ export function CreateSpaceModal({
     </Modal>
   );
 }
+
+export const CreateSpaceModal = withModalBoundary(CreateSpaceModalInner, "create-space");

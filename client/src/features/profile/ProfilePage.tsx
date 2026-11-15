@@ -73,6 +73,7 @@ import type { ProfileTab } from "./profileSettings";
 import type { ProfileFeedItem } from "./useProfileNotes";
 import type { LongFormArticle } from "../../types/media";
 import { createLogger, shortKey } from "../../lib/debug/logger";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 const feedLog = createLogger("feed");
 
@@ -914,14 +915,15 @@ function FeedTab({
     <EngagementCollectorProvider relayUrls={PROFILE_RELAYS}>
     <div className="flex flex-col gap-3">
       {items.map((item, i) => (
-        <ProfileNoteCard
-          key={item.event.id}
-          item={item}
-          index={i}
-          anchorId={item.event.id}
-          showThreadContext={showThreadContext}
-          animationDelay={i < 15 ? i * 40 : undefined}
-        />
+        <ItemBoundary key={item.event.id} id={item.event.id} label="profile-note" noun="note">
+          <ProfileNoteCard
+            item={item}
+            index={i}
+            anchorId={item.event.id}
+            showThreadContext={showThreadContext}
+            animationDelay={i < 15 ? i * 40 : undefined}
+          />
+        </ItemBoundary>
       ))}
 
       {/* Auto-load next page when sentinel is visible */}
@@ -998,10 +1000,12 @@ function ReadsTab({
           className="animate-fade-in-up"
           style={{ animationDelay: `${Math.min(i, 15) * 40}ms` }}
         >
-          <ArticleCard
-            article={article}
-            onClick={() => navigate(`/article/${article.eventId}`)}
-          />
+          <ItemBoundary id={article.eventId} label="article-card" noun="article">
+            <ArticleCard
+              article={article}
+              onClick={() => navigate(`/article/${article.eventId}`)}
+            />
+          </ItemBoundary>
         </div>
       ))}
 

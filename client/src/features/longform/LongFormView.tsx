@@ -101,6 +101,7 @@ export function LongFormView() {
               isLoading={meta.isLoadingMore}
               hasMore={meta.hasMore}
               onLoadMore={loadMore}
+              error={meta.loadMoreError}
             />
           </div>
         )}

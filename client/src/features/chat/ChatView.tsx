@@ -23,6 +23,7 @@ import { profileCache } from "../../lib/nostr/profileCache";
 import { usePollVotesSub } from "../polls/usePollVotesSub";
 import { EVENT_KINDS } from "../../types/nostr";
 import { AlertCircle, RefreshCw, Lock, ArrowDown } from "lucide-react";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 export function ChatView() {
   const dispatch = useAppDispatch();
@@ -283,6 +284,7 @@ export function ChatView() {
                 {i === unreadStartIndex && (
                   <UnreadDivider ref={dividerRef} onFaded={handleDividerFaded} />
                 )}
+                <ItemBoundary id={event.id} label="chat-message" noun="message" className="mx-4 my-1">
                 <ChatMessage
                   event={event}
                   displayContent={displayContent}
@@ -308,6 +310,7 @@ export function ChatView() {
                   onEdit={(ev) => setEditingMessage({ event: ev, displayContent })}
                   onJumpToMessage={(targetId) => scrollToMessage(targetId, event.id)}
                 />
+                </ItemBoundary>
               </div>
             ))}
             {pendingMessages.map((msg) => (
@@ -316,7 +319,9 @@ export function ChatView() {
                 className="flex items-center gap-2 px-4 py-1.5 opacity-60"
               >
                 <div className="min-w-0 flex-1 text-sm text-soft">
-                  <RichContent content={msg.content} event={pendingMediaContext} layout="message" />
+                  <ItemBoundary id={msg.tempId} label="chat-pending" noun="message">
+                    <RichContent content={msg.content} event={pendingMediaContext} layout="message" />
+                  </ItemBoundary>
                 </div>
                 {msg.status === "pending" && <Spinner size="sm" />}
                 {msg.status === "failed" && (

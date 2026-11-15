@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { X, Upload, Music, FileAudio, ChevronLeft } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadAudio } from "@/lib/api/music";
 import { buildTrackEvent, buildPrivateTrackEvent } from "./musicEventBuilder";
@@ -63,7 +64,7 @@ function formatMime(mime?: string): string {
   return map[mime] ?? mime;
 }
 
-export function ReplaceAudioModal({ track, onClose, onBack }: ReplaceAudioModalProps) {
+function ReplaceAudioModalInner({ track, onClose, onBack }: ReplaceAudioModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [newDuration, setNewDuration] = useState<number | undefined>(undefined);
@@ -268,3 +269,5 @@ export function ReplaceAudioModal({ track, onClose, onBack }: ReplaceAudioModalP
     </Modal>
   );
 }
+
+export const ReplaceAudioModal = withModalBoundary(ReplaceAudioModalInner, "replace-audio");

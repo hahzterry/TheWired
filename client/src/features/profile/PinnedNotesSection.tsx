@@ -5,6 +5,7 @@ import { usePinnedNotes } from "./usePinnedNotes";
 import { PINNED_PREVIEW } from "./pinList";
 import { Spinner } from "@/components/ui/Spinner";
 import type { ProfileFeedItem } from "./useProfileNotes";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 interface PinnedNotesSectionProps {
   pubkey: string;
@@ -50,7 +51,9 @@ export function PinnedNotesSection({ pubkey }: PinnedNotesSectionProps) {
               key={event.id}
               className="relative rounded-xl border-l-2 border-primary/40"
             >
-              <ProfileNoteCard item={item} />
+              <ItemBoundary id={event.id} label="pinned-note" noun="note">
+                <ProfileNoteCard item={item} />
+              </ItemBoundary>
             </div>
           );
         })}

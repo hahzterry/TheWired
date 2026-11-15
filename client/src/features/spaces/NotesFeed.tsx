@@ -39,6 +39,7 @@ import {
 import { selectHiddenPubkeySet } from "../../store/slices/feedPrefsSlice";
 import { isEventVisibleInFeed } from "../friends/feedVisibility";
 import { FeedPrefsButton } from "../friends/FeedPrefsButton";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 /** How many cards to add to the rendered window each time the sentinel is hit. */
 const RENDER_PAGE = 30;
@@ -289,13 +290,15 @@ export function NotesFeed() {
                 className={index < 15 ? "animate-fade-in-up" : undefined}
                 style={index < 15 ? { animationDelay: `${index * 50}ms` } : undefined}
               >
-                {event.kind === EVENT_KINDS.REPOST ? (
-                  <RepostCard event={event} />
-                ) : event.kind === EVENT_KINDS.POLL ? (
-                  <PollNoteCard event={event} />
-                ) : (
-                  <NoteCard event={event} />
-                )}
+                <ItemBoundary id={event.id} label="note" noun="note">
+                  {event.kind === EVENT_KINDS.REPOST ? (
+                    <RepostCard event={event} />
+                  ) : event.kind === EVENT_KINDS.POLL ? (
+                    <PollNoteCard event={event} />
+                  ) : (
+                    <NoteCard event={event} />
+                  )}
+                </ItemBoundary>
               </div>
             ))}
             {/* Reveal more rendered cards as you approach the end; once the whole
@@ -305,6 +308,7 @@ export function NotesFeed() {
               isLoading={meta.isLoadingMore}
               hasMore={!hasMoreLocal && meta.hasMore}
               onLoadMore={loadMore}
+              error={meta.loadMoreError}
             />
           </div>
         )}

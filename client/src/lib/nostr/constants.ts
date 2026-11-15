@@ -53,6 +53,34 @@ export const RECONNECT = {
   STORM_WINDOW: 5_000,
   /** Cooldown when storm detected in ms */
   STORM_COOLDOWN: 10_000,
+  /** Consecutive failed connects after which a relay counts as dead. A fan-out
+   *  target (one the user never chose) then stops being dialed for the
+   *  session. A chosen relay is never dropped: it keeps its normal backoff,
+   *  capped at MAX_DELAY like before. */
+  STRIKE_LIMIT: 3,
+  /** A chosen relay that is waiting out its backoff is dialed at once when the
+   *  app asks for it again (the user sends a message to a space whose host
+   *  just came back), but at most this often per relay, so "make sure it is
+   *  connected" calls cannot hammer a relay that is down. */
+  KICK_INTERVAL: 5_000,
+  /** The network only counts as "back" (strikes cleared, everything redialed)
+   *  when no outside relay had been connected for at least this long... */
+  NETWORK_DOWN_MIN: 10_000,
+  /** ...and at most this often. Without both, one flapping relay that happens
+   *  to be the only outside relay would replay every dead relay's dials on
+   *  each flap. The browser `online` event is not limited. */
+  RESTORE_MIN_INTERVAL: 60_000,
+  /** A socket has to stay open this long before the connect counts as a
+   *  success. One that opens and closes sooner is a failed connect, so a relay
+   *  that accepts and immediately hangs up cannot reset its own backoff. */
+  STABLE_AFTER: 5_000,
+  /** A connect attempt that has not opened by now is abandoned and counted as
+   *  failed (a black-holed host otherwise sits in "connecting" for minutes). */
+  CONNECT_TIMEOUT: 15_000,
+  /** Dials allowed back to back before the rest of a burst is spaced out. */
+  DIAL_BURST: 4,
+  /** Gap between queued dials once a burst is being spaced out, in ms. */
+  DIAL_SPACING: 40,
 } as const;
 
 /** Subscription limits */

@@ -15,6 +15,15 @@ const log = createLogger("sub");
  *  more events exist (#78). */
 export type EoseReason = "all-eose" | "timeout" | "no-relays";
 
+/** What onEOSE reports. `sentTo` is the number of relays the REQ was actually
+ *  written to by then: 0 means the request never left the client (no relay
+ *  connected, or every relay's subscription cap was full). Absent only when
+ *  the answer raced the bookkeeping (a relay that EOSEs on the same tick). */
+export interface EoseInfo {
+  reason: EoseReason;
+  sentTo?: number;
+}
+
 /** Backstop for the all-EOSE wait: if some relay never EOSEs (was stripped by
  *  the indexer guard, disconnected mid-flight, etc.), fire onEOSE anyway so the
  *  UI's "loading" state can clear. Mirrors profileCache.flushBatch's BATCH_TIMEOUT_MS. */
@@ -33,7 +42,7 @@ interface ManagedSubscription {
   filters: NostrFilter[];
   relayUrls: string[];
   eoseReceived: Map<string, boolean>;
-  onEOSE?: (info: { reason: EoseReason }) => void;
+  onEOSE?: (info: EoseInfo) => void;
   isActive: boolean;
   createdAt: number;
   /** Most recent event created_at we've seen on this sub */
@@ -53,10 +62,12 @@ class SubscriptionManagerImpl {
   subscribe(opts: {
     filters: NostrFilter[];
     relayUrls?: string[];
-    onEOSE?: (info: { reason: EoseReason }) => void;
+    onEOSE?: (info: EoseInfo) => void;
     /** EOSE backstop timeout (ms). Defaults to EOSE_TIMEOUT_MS; pagination passes
      *  a longer value so a slow relay doesn't falsely report "done". */
     timeoutMs?: number;
+    /** A request the user is waiting on (see SubscribeOptions.priority). */
+    priority?: boolean;
   }): string {
     const id = nanoid(SUBSCRIPTION.MAX_SUB_ID_LENGTH);
     // Normalize so the EOSE quorum keys match relayManager's connection keys —
@@ -69,10 +80,12 @@ class SubscriptionManagerImpl {
     // Mirror relayManager's indexer strip: if the filters aren't all in indexer
     // kinds {0,3,10002}, the indexer relays will never be subscribed AND therefore
     // never EOSE — tracking them in eoseReceived would wedge `allEose` permanently.
+    // Same for a fan-out relay that struck out this session: relayManager will
+    // not dial it again, so it must not hold the quorum until the timeout.
     const indexerSafe = isIndexerSafe(opts.filters);
-    const trackedUrls = indexerSafe
-      ? requestedUrls
-      : requestedUrls.filter((u) => !INDEXER_URL_SET.has(u));
+    const trackedUrls = requestedUrls.filter(
+      (u) => (indexerSafe || !INDEXER_URL_SET.has(u)) && !relayManager.isSessionDropped(u),
+    );
 
     const eoseReceived = new Map<string, boolean>();
     for (const url of trackedUrls) {
@@ -86,7 +99,13 @@ class SubscriptionManagerImpl {
         clearTimeout(sub.eoseTimer);
         sub.eoseTimer = null;
       }
-      sub.onEOSE?.({ reason });
+      const sentTo =
+        reason === "no-relays"
+          ? 0
+          : sub.relaySubId
+            ? relayManager.getSubscriptionDelivery(sub.relaySubId).sent
+            : undefined;
+      sub.onEOSE?.({ reason, sentTo });
     };
 
     const sub: ManagedSubscription = {
@@ -124,6 +143,7 @@ class SubscriptionManagerImpl {
     sub.relaySubId = relayManager.subscribe({
       filters: opts.filters,
       relayUrls: requestedUrls,
+      priority: opts.priority,
       onEvent: (event, relayUrl) => {
         if (!sub.isActive) return;
         sub.eventCount++;
@@ -163,7 +183,8 @@ class SubscriptionManagerImpl {
     filters: NostrFilter[];
     relayUrls?: string[];
     timeoutMs?: number;
-  }): Promise<{ reason: EoseReason }> {
+    priority?: boolean;
+  }): Promise<EoseInfo> {
     return new Promise((resolve) => {
       // onEOSE can run before subscribe() has returned the id (a relay that
       // answers on the same tick); remember that and close right after.
@@ -173,6 +194,7 @@ class SubscriptionManagerImpl {
         filters: opts.filters,
         relayUrls: opts.relayUrls,
         timeoutMs: opts.timeoutMs,
+        priority: opts.priority,
         onEOSE: (info) => {
           done = true;
           if (subId) this.close(subId);

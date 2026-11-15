@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X, Search, Send, ChevronLeft } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Avatar } from "@/components/ui/Avatar";
 import { useAppSelector } from "@/store/hooks";
 import { useUserSearch } from "@/features/search/useUserSearch";
@@ -40,7 +41,7 @@ function ContactRow({
   );
 }
 
-export function RecipientPickerModal({
+function RecipientPickerModalInner({
   open,
   onClose,
   onBack,
@@ -175,3 +176,5 @@ export function RecipientPickerModal({
     </Modal>
   );
 }
+
+export const RecipientPickerModal = withModalBoundary(RecipientPickerModalInner, "recipient-picker");

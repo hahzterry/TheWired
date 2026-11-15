@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X, Folder, FolderPlus, Check, ChevronLeft } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { selectFolders } from "./musicSelectors";
 import { createFolder, toggleFolderMembership } from "./folderActions";
@@ -16,7 +17,7 @@ interface AddToFolderModalProps {
 
 /** File a track or project into folders: tap to add, tap again to take it
  *  out. Folders are private and follow you to your other devices. */
-export function AddToFolderModal({ open, onClose, onBack, itemAddrId }: AddToFolderModalProps) {
+function AddToFolderModalInner({ open, onClose, onBack, itemAddrId }: AddToFolderModalProps) {
   const folders = useAppSelector(selectFolders);
   const [naming, setNaming] = useState(false);
 
@@ -83,3 +84,5 @@ export function AddToFolderModal({ open, onClose, onBack, itemAddrId }: AddToFol
     </>
   );
 }
+
+export const AddToFolderModal = withModalBoundary(AddToFolderModalInner, "add-to-folder");

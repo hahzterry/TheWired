@@ -36,6 +36,10 @@ export const relaysSlice = createSlice({
     removeRelay(state, action: PayloadAction<string>) {
       delete state.connections[action.payload];
     },
+    /** Drop every connection row at once (relayManager.disconnectAll). */
+    clearRelayConnections(state) {
+      state.connections = {};
+    },
     setDisabledRelays(state, action: PayloadAction<string[]>) {
       state.disabledRelays = action.payload;
     },
@@ -77,6 +81,7 @@ export const {
   setRelayStatus,
   addRelay,
   removeRelay,
+  clearRelayConnections,
   setDisabledRelays,
   updateLatency,
   incrementEventCount,

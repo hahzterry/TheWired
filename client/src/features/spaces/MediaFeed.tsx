@@ -29,6 +29,8 @@ import { useFeedPagination } from "./useFeedPagination";
 import { FeedToolbar } from "./FeedToolbar";
 import { LoadMoreButton } from "./LoadMoreButton";
 import { RevealSentinel } from "../../components/ui/RevealSentinel";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
+import { ModalBoundary } from "@/components/ui/ModalBoundary";
 
 const feedLog = createLogger("feed");
 
@@ -891,33 +893,17 @@ export function MediaFeed() {
         ) : (
           <>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {visibleItems.map((item) => {
-                if (item.type === "embed") {
-                  return (
-                    <EmbedThumbnail
-                      key={item.key}
-                      item={item}
-                      onClick={() => handleExpand(item)}
-                    />
-                  );
-                }
-                if (item.type === "video") {
-                  return (
-                    <VideoThumbnail
-                      key={item.key}
-                      item={item}
-                      onClick={() => handleExpand(item)}
-                    />
-                  );
-                }
-                return (
-                  <ImageThumbnail
-                    key={item.key}
-                    item={item}
-                    onClick={() => handleExpand(item)}
-                  />
-                );
-              })}
+              {visibleItems.map((item) => (
+                <ItemBoundary key={item.key} id={item.key} label="media-tile" noun="media">
+                  {item.type === "embed" ? (
+                    <EmbedThumbnail item={item} onClick={() => handleExpand(item)} />
+                  ) : item.type === "video" ? (
+                    <VideoThumbnail item={item} onClick={() => handleExpand(item)} />
+                  ) : (
+                    <ImageThumbnail item={item} onClick={() => handleExpand(item)} />
+                  )}
+                </ItemBoundary>
+              ))}
             </div>
             {/* Reveal more rendered tiles as you approach the end; once the whole
                 fetched set is shown, fall back to fetching more from the relay. */}
@@ -926,6 +912,7 @@ export function MediaFeed() {
               isLoading={meta.isLoadingMore}
               hasMore={!hasMoreLocal && meta.hasMore}
               onLoadMore={loadMore}
+              error={meta.loadMoreError}
             />
           </>
         )}
@@ -934,13 +921,19 @@ export function MediaFeed() {
       {/* Expanded media — overlay so the grid (and its scroll position) stays mounted */}
       {activeItem && (
         <div className="absolute inset-0 z-30 flex flex-col bg-background">
-          {activeItem.type === "embed" ? (
-            <ExpandedEmbedView item={activeItem} onClose={() => setActiveItem(null)} />
-          ) : activeItem.type === "video" ? (
-            <ExpandedVideoView item={activeItem} onClose={() => setActiveItem(null)} />
-          ) : (
-            <ExpandedImageView item={activeItem} onClose={() => setActiveItem(null)} />
-          )}
+          <ModalBoundary
+            contained
+            label="media-expanded"
+            onClose={() => setActiveItem(null)}
+          >
+            {activeItem.type === "embed" ? (
+              <ExpandedEmbedView item={activeItem} onClose={() => setActiveItem(null)} />
+            ) : activeItem.type === "video" ? (
+              <ExpandedVideoView item={activeItem} onClose={() => setActiveItem(null)} />
+            ) : (
+              <ExpandedImageView item={activeItem} onClose={() => setActiveItem(null)} />
+            )}
+          </ModalBoundary>
         </div>
       )}
     </div>
