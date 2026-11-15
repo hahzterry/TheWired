@@ -1,0 +1,334 @@
+{
+  "strict": [
+    "src/components/ui/"
+  ],
+  "files": {
+    "src/components/chat/AttachmentPreview.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/components/chat/GifPicker.tsx": {
+      "wired-a11y/icon-button-has-name": 3
+    },
+    "src/components/chat/GifPreview.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/components/content/EmbeddedNote.tsx": {
+      "jsx-a11y/click-events-have-key-events": 2,
+      "jsx-a11y/no-static-element-interactions": 2
+    },
+    "src/components/content/FormattingToolbar.tsx": {
+      "jsx-a11y/control-has-associated-label": 1
+    },
+    "src/components/content/MusicPostMedia.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-noninteractive-element-interactions": 1
+    },
+    "src/components/layout/RightPanel.tsx": {
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/components/layout/Sidebar.tsx": {
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/components/media/SmartImage.tsx": {
+      "jsx-a11y/click-events-have-key-events": 3,
+      "jsx-a11y/no-noninteractive-element-interactions": 3
+    },
+    "src/components/sharing/RecipientPickerModal.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/components/sharing/SpacePickerModal.tsx": {
+      "wired-a11y/icon-button-has-name": 3
+    },
+    "src/features/calling/CallController.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/features/chat/ChatEditBanner.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/chat/ChatReply.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/chat/ChatView.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/dm/DMConversation.tsx": {
+      "wired-a11y/icon-button-has-name": 3
+    },
+    "src/features/dm/DMSidebar.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/dm/NewDMModal.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/emoji/EmojiSetManager.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/identity/AddAccountModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/listenTogether/CallNowPlaying.tsx": {
+      "wired-a11y/icon-button-has-name": 3
+    },
+    "src/features/listenTogether/DJTransferModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/listenTogether/ListenTogetherPicker.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/listenTogether/NowPlayingPanel.tsx": {
+      "wired-a11y/icon-button-has-name": 4
+    },
+    "src/features/listenTogether/NowPlayingStrip.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/features/longform/ArticleEditor.tsx": {
+      "jsx-a11y/label-has-associated-control": 1
+    },
+    "src/features/longform/ArticleVisibilityPicker.tsx": {
+      "jsx-a11y/label-has-associated-control": 1
+    },
+    "src/features/longform/CoverImageField.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/features/media/EnhancedVideoPlayer.tsx": {
+      "jsx-a11y/click-events-have-key-events": 3,
+      "jsx-a11y/no-static-element-interactions": 3,
+      "wired-a11y/icon-button-has-name": 4
+    },
+    "src/features/media/ReelsView.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/AlbumActionPanel.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/AnnotationComposer.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/CreateAlbumModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 3,
+      "wired-a11y/icon-button-has-name": 4
+    },
+    "src/features/music/CreateProposalModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 3,
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/music/DuplicateTrackModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 1,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/EditTrackModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 5,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/FeaturedArtistsInput.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/music/GenrePicker.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/HashtagInput.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/MoveTrackModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 3,
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/music/MusicPostModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/PlaybackBar.tsx": {
+      "wired-a11y/icon-button-has-name": 8
+    },
+    "src/features/music/QueueContent.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/ReleaseNotesModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/ReplaceAudioModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 2,
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/music/SearchInput.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/SpaceAlbumDetail.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/TrackCard.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/features/music/TrackRow.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/UploadTrackModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 5,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/VisibilityPicker.tsx": {
+      "jsx-a11y/label-has-associated-control": 1
+    },
+    "src/features/music/panel/PanelHeader.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/playbackBar/ExpandedBar.tsx": {
+      "wired-a11y/icon-button-has-name": 8
+    },
+    "src/features/music/playbackBar/NowPlayingOverlay.tsx": {
+      "jsx-a11y/click-events-have-key-events": 2,
+      "jsx-a11y/no-static-element-interactions": 2,
+      "wired-a11y/icon-button-has-name": 8
+    },
+    "src/features/music/playbackBar/ProgressBar.tsx": {
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/features/music/views/AlbumDetail.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/music/views/ProjectHistory.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/music/views/ProjectProposals.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/notifications/NotificationBell.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/notifications/NotificationToast.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/onboarding/ProfileWizard.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/polls/PollCard.tsx": {
+      "jsx-a11y/no-static-element-interactions": 1
+    },
+    "src/features/profile/FollowListModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/profile/NoteCard.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/profile/NoteThreadPage.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/profile/ProfileMusicTab.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/profile/ProfilePage.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/profile/ProfileShowcaseTab.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/profile/ShowcasePickerModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/profile/UserPopoverCard.tsx": {
+      "jsx-a11y/no-static-element-interactions": 1,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/search/SearchPanel.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/search/UserSearchInput.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/settings/AISettingsTab.tsx": {
+      "jsx-a11y/label-has-associated-control": 4
+    },
+    "src/features/settings/AppSettingsTab.tsx": {
+      "jsx-a11y/control-has-associated-label": 1
+    },
+    "src/features/settings/NotificationSettingsTab.tsx": {
+      "jsx-a11y/control-has-associated-label": 1
+    },
+    "src/features/settings/RelaySettingsTab.tsx": {
+      "jsx-a11y/control-has-associated-label": 1
+    },
+    "src/features/spaces/CreateSpaceModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 7,
+      "wired-a11y/icon-button-has-name": 3
+    },
+    "src/features/spaces/ImportSpaceModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 1,
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/spaces/InviteGenerateModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 4,
+      "wired-a11y/icon-button-has-name": 3
+    },
+    "src/features/spaces/JoinSpaceModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 1,
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/spaces/MemberList.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/spaces/OnboardingBanner.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/spaces/RelayPicker.tsx": {
+      "jsx-a11y/label-has-associated-control": 1
+    },
+    "src/features/spaces/SpaceActionModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/spaces/SpaceList.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/spaces/WelcomeChecklist.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/spaces/notes/NoteActionBar.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/spaces/notes/ReplyComposer.tsx": {
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/spaces/settings/GeneralTab.tsx": {
+      "jsx-a11y/label-has-associated-control": 4
+    },
+    "src/features/spaces/settings/MembersTab.tsx": {
+      "jsx-a11y/click-events-have-key-events": 1,
+      "jsx-a11y/no-static-element-interactions": 1,
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/spaces/settings/NotificationsTab.tsx": {
+      "jsx-a11y/control-has-associated-label": 1,
+      "jsx-a11y/label-has-associated-control": 1
+    },
+    "src/features/spaces/settings/OnboardingTab.tsx": {
+      "jsx-a11y/control-has-associated-label": 1,
+      "jsx-a11y/label-has-associated-control": 5,
+      "wired-a11y/icon-button-has-name": 2
+    },
+    "src/features/spaces/settings/RelaysTab.tsx": {
+      "jsx-a11y/label-has-associated-control": 2
+    },
+    "src/features/spaces/settings/RolesTab.tsx": {
+      "jsx-a11y/control-has-associated-label": 1,
+      "jsx-a11y/label-has-associated-control": 3
+    },
+    "src/features/spaces/settings/SpaceSettingsModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/wallet/ZapListModal.tsx": {
+      "wired-a11y/icon-button-has-name": 1
+    },
+    "src/features/wallet/ZapModal.tsx": {
+      "jsx-a11y/label-has-associated-control": 1,
+      "wired-a11y/icon-button-has-name": 1
+    }
+  }
+}
