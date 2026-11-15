@@ -57,6 +57,12 @@ interface NoteCardProps {
    * pinned/standalone uses) so back-nav can land on this exact card.
    */
   anchorId?: string;
+  /**
+   * Play the entrance animation (default true). A virtualized feed turns it
+   * off after its first paint, so a card does not fade in again every time it
+   * scrolls back into the rendered window.
+   */
+  animate?: boolean;
 }
 
 export const ProfileNoteCard = memo(function ProfileNoteCard({
@@ -65,6 +71,7 @@ export const ProfileNoteCard = memo(function ProfileNoteCard({
   showThreadContext,
   animationDelay,
   anchorId,
+  animate = true,
 }: NoteCardProps) {
   const myPubkey = useAppSelector((s) => s.identity.pubkey);
   const dispatch = useAppDispatch();
@@ -89,6 +96,8 @@ export const ProfileNoteCard = memo(function ProfileNoteCard({
   }, [myPubkey, item.event.id, item.reposterPubkey, dispatch]);
 
   // Fetch engagement for this card when it scrolls into view (see collector).
+  // Inside a virtualized feed there is no collector in context: the feed
+  // reports its rendered range itself, and this is a no-op.
   const engagementRef = useEngagementReporter(item.event.id, index);
 
   if (item.repostedEventId) {
@@ -97,8 +106,8 @@ export const ProfileNoteCard = memo(function ProfileNoteCard({
       <div
         ref={engagementRef}
         data-feed-anchor={anchorId}
-        className="animate-fade-in-up"
-        style={animationDelay ? { animationDelay: `${animationDelay}ms` } : undefined}
+        className={animate ? "animate-fade-in-up" : undefined}
+        style={animate && animationDelay ? { animationDelay: `${animationDelay}ms` } : undefined}
       >
         <RepostHeader
           pubkey={item.reposterPubkey!}
@@ -113,8 +122,8 @@ export const ProfileNoteCard = memo(function ProfileNoteCard({
     <div
       ref={engagementRef}
       data-feed-anchor={anchorId}
-      className="animate-fade-in-up"
-      style={animationDelay ? { animationDelay: `${animationDelay}ms` } : undefined}
+      className={animate ? "animate-fade-in-up" : undefined}
+      style={animate && animationDelay ? { animationDelay: `${animationDelay}ms` } : undefined}
     >
       <NoteCardInner
         event={item.event}
