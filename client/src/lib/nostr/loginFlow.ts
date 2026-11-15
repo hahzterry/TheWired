@@ -11,16 +11,11 @@ import {
 } from "../../store/slices/identitySlice";
 import type { SignerType, MuteEntry } from "../../store/slices/identitySlice";
 import {
-  addRelay,
   clearRelayConnections,
-  removeRelay,
-  setRelayStatus,
-  updateLatency,
 } from "../../store/slices/relaysSlice";
 import type { RelayListEntry } from "../../types/relay";
 import { relayManager } from "./relayManager";
 import { subscriptionManager } from "./subscriptionManager";
-import { handlePotentialKick } from "./kickHandler";
 import { parseRelayList } from "./nip65";
 import { loadAndApplyDisabledRelays } from "./relayList";
 import { parseDMRelayList, clearDMRelayCache } from "./dmRelayList";
@@ -92,7 +87,7 @@ import { signAndPublish } from "./publish";
 import { buildDMRelayListEvent } from "./eventBuilder";
 import { profileCache } from "./profileCache";
 import { parseProfile } from "../../features/profile/profileParser";
-import { loadDMState, startDMPersistence, cancelPendingSave as cancelDMSave, flushPendingSave as flushDMSave, wireSelfWrapOutboxAcks } from "../../features/dm/dmPersistence";
+import { loadDMState, startDMPersistence, cancelPendingSave as cancelDMSave, flushPendingSave as flushDMSave } from "../../features/dm/dmPersistence";
 import { loadDMReadState, startDMReadStateSync, cancelPendingSave as cancelDMReadStateSave, flushPendingSave as flushDMReadStateSave } from "../../features/dm/dmReadState";
 import { startGiftWrapReconciliation } from "../../features/dm/dmSync";
 import { loadFollowerState, startFollowerPersistence, cancelPendingSave as cancelFollowerSave, flushPendingSave as flushFollowerSave } from "./followerPersistence";
@@ -131,6 +126,7 @@ import { musicTokenCache } from "../cache/tokenCache";
 import { abandonMediaSessions } from "../webrtc/mediaSession";
 import { endMediaSessionsForAccountChange } from "../../features/calling/accountChangeMedia";
 import { loginState } from "./login/state";
+import { wireRelayStatusBridge } from "./login/relayBridge";
 import { getSigner, getSignerTimeoutMs, saveNip46Connection, loadNip46Connection, closeSignerIfRemote, createSessionSigner, type Nip46Connection, type LoginSignerType } from "./login/signerSession";
 export { getSigner, getSignerTimeoutMs };
 
@@ -165,61 +161,6 @@ const MUTE_TAG_MAP: Record<string, "pubkey" | "tag" | "word" | "event"> = {
   word: "word",
   e: "event",
 };
-
-/** Wire relay status changes from relayManager → Redux store */
-function wireRelayStatusBridge(): void {
-  relayManager.setGlobalCallbacks({
-    onOK: (eventId, success, message, relayUrl) => {
-      // First success clears the publish-outbox row (audit #34).
-      publishOutbox.handleOK(eventId, success, relayUrl);
-      if (!success) {
-        console.warn(`[relay] ${relayUrl} rejected ${eventId.slice(0, 8)}: ${message}`);
-        // Reactive kick detection: if the relay rejected this event because
-        // we're no longer a member, sync membership and clean up locally.
-        // No-op for any other rejection.
-        void handlePotentialKick(eventId, success, message);
-      }
-    },
-    onStatusChange: (url, status, error) => {
-      const state = store.getState().relays.connections[url];
-      if (!state) {
-        // First time seeing this relay -- add it
-        const conn = relayManager.getAllConnections().get(url);
-        store.dispatch(
-          addRelay({
-            url,
-            status,
-            mode: conn?.mode ?? "read+write",
-            latencyMs: conn?.getLatency() ?? 0,
-            eventCount: conn?.getEventCount() ?? 0,
-            error,
-          }),
-        );
-      } else {
-        store.dispatch(setRelayStatus({ url, status }));
-      }
-
-      if (status === "connected") {
-        const conn = relayManager.getAllConnections().get(url);
-        if (conn) {
-          store.dispatch(updateLatency({ url, latencyMs: conn.getLatency() }));
-        }
-      }
-    },
-    // Keep the Redux connections record in lockstep with relayManager:
-    // disconnect() (disable toggle, removed relay, mode-change recreate,
-    // bootstrap pruning) drops the row instead of leaving a ghost entry.
-    onRelayRemoved: (url) => {
-      store.dispatch(removeRelay(url));
-    },
-  });
-
-  // On any relay reconnect, re-publish un-acked outbox events (a relay that
-  // dropped mid-publish never sent its OK). Idempotent + in-flight-guarded (#34).
-  relayManager.onReconnect(() => void publishOutbox.replay());
-  // A replayed DM self-wrap's OK also clears its message's sync warning.
-  wireSelfWrapOutboxAcks();
-}
 
 /** Ingest the logged-in user's own kind:0 from any subscription: parse it (which
  *  preserves fields we don't model, e.g. lud06), reconcile through the freshness
