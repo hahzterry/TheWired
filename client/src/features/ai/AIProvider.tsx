@@ -10,6 +10,7 @@ import { loadConversationsForAccount } from "./conversationActions";
 import { loadAIPrefs } from "./aiPrefs";
 import { loadWebSearchKey, resetWebSearch } from "./tools/webSearch";
 import { abortAllTurns } from "./engine/streamRunner";
+import { initManagedEngine, teardownManagedEngine } from "./engine/managedEngine";
 
 /**
  * Effect-only root: loads the active account's AI providers (from the keychain)
@@ -30,7 +31,9 @@ export function AIProvider() {
     // so a late finish can't write the previous account's reply into the new one.
     abortAllTurns();
     if (pubkey && aiEnabled) {
-      void loadProvidersForAccount(pubkey);
+      // The built-in engine registers itself as a provider, so it follows the
+      // account's own providers (desktop only; a no-op on the web).
+      void loadProvidersForAccount(pubkey).then(() => initManagedEngine());
       void loadConversationsForAccount(pubkey);
       void loadWebSearchKey(pubkey);
     } else {
@@ -40,6 +43,8 @@ export function AIProvider() {
       // Features-tab copy.
       resetLLMManager();
       resetWebSearch();
+      // A disabled feature runs nothing: stop the built-in engine too.
+      teardownManagedEngine();
     }
   }, [pubkey, aiEnabled]);
 

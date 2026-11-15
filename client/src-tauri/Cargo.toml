@@ -38,7 +38,7 @@ tauri-plugin-process = "2"
 # so it links the SQLite backend and exposes `run_embedded`.
 thewired-relay = { path = "../../services/relay", features = ["embedded"] }
 # Spawning + reading output from the cloudflared tunnel child process (M7).
-tokio = { version = "1", features = ["process", "io-util", "time", "sync", "rt"] }
+tokio = { version = "1", features = ["process", "io-util", "time", "sync", "rt", "fs", "macros"] }
 # Download-on-enable of the cloudflared helper (M7). reqwest is already in the
 # tree via tauri-plugin-http; flate2 + tar extract the macOS .tgz release.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
@@ -53,6 +53,9 @@ zeroize = "1"
 # rfd's build script refuses both at once on Linux.
 rfd = { version = "0.16", default-features = false, features = ["gtk3"] }
 serde_yaml_ng = "0.10"
+# Managed AI engine (llm.rs): total memory + free disk space for the
+# "will it run / will it fit" checks, and reaping a leftover engine process.
+sysinfo = { version = "0.36.1", default-features = false, features = ["system", "disk"] }
 
 # macOS: native keychain with Touch ID biometric access control
 [target.'cfg(target_os = "macos")'.dependencies]

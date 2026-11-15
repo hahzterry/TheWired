@@ -27,7 +27,7 @@ import type { LLMProvider } from "./types";
 import { makeOpenAICompatProvider } from "./providers/openaiCompat";
 import { makeAnthropicProvider } from "./providers/anthropic";
 import { detectLocalEngines } from "./detectLocal";
-import { getPreset } from "./providerCatalog";
+import { MANAGED_PROVIDER_ID, pickDefaultProvider } from "./tiers";
 
 const providers = new Map<string, LLMProvider>();
 const apiKeys = new Map<string, string>(); // id → key (kept here, NEVER in Redux)
@@ -61,7 +61,9 @@ function buildProvider(config: AIProviderConfig): LLMProvider {
 
 async function persistConfigs(): Promise<void> {
   if (!activePubkey) return;
-  const list = [...configs.values()];
+  // The built-in engine is runtime state, never a stored provider: its address
+  // and key change on every launch.
+  const list = [...configs.values()].filter((c) => c.id !== MANAGED_PROVIDER_ID);
   if (list.length === 0) {
     await deleteSecret(llmProvidersKey(activePubkey));
     return;
@@ -81,6 +83,7 @@ export async function loadProvidersForAccount(pubkey: string): Promise<void> {
   providers.clear();
   apiKeys.clear();
   configs.clear();
+  managedTransport = null;
 
   const raw = await getSecret(llmProvidersKey(pubkey));
   if (gen !== generation) return; // superseded while reading the blob
@@ -88,6 +91,7 @@ export async function loadProvidersForAccount(pubkey: string): Promise<void> {
     try {
       const blob = JSON.parse(raw) as StoredConfig;
       for (const config of blob.providers ?? []) {
+        if (config.id === MANAGED_PROVIDER_ID) continue; // reserved id
         configs.set(config.id, config);
         if (config.keyRequired) {
           const key = await getSecret(llmApiKeySecret(pubkey, config.id));
@@ -111,6 +115,9 @@ export async function upsertProvider(
   apiKey?: string | null,
 ): Promise<string> {
   if (!activePubkey) throw new Error("Log in before configuring AI providers.");
+  if (input.id === MANAGED_PROVIDER_ID) {
+    throw new Error("The built-in engine is managed from Settings → AI.");
+  }
   const gen = generation;
   const id = input.id ?? nanoid(8);
   const config: AIProviderConfig = { ...input, id };
@@ -139,6 +146,7 @@ export async function upsertProvider(
 }
 
 export async function removeProvider(id: string): Promise<void> {
+  if (id === MANAGED_PROVIDER_ID) return; // owned by managedEngine.ts
   const gen = generation;
   providers.delete(id);
   apiKeys.delete(id);
@@ -231,39 +239,92 @@ export function providerNeedsKey(id: string): boolean {
 }
 
 /**
- * Pick a sensible default provider + model for a new conversation: the first
- * connected provider, preferring its configured default model, else its first
- * advertised model.
+ * Pick a sensible default provider + model for a new conversation: the user's
+ * saved default, else the best engine tier available (installed local engine →
+ * built-in engine → cloud). See `tiers.ts`.
  */
 export function getDefaultProviderAndModel(): {
   providerId: string;
   model: string;
 } | null {
   const ai = store.getState().ai;
-  const status = ai.providerStatus;
+  return pickDefaultProvider([...configs.values()], ai.providerStatus, ai.prefs);
+}
 
-  // 1. The user's chosen default, if that provider still exists.
-  const prefId = ai.prefs.defaultProviderId;
-  if (prefId && configs.has(prefId)) {
-    const config = configs.get(prefId)!;
-    const model =
-      ai.prefs.defaultModel ?? config.defaultModel ?? status[prefId]?.models?.[0]?.id;
-    if (model) return { providerId: prefId, model };
-  }
+// --- Built-in (managed) engine ------------------------------------------------
+// `managedEngine.ts` talks to the native side and decides WHEN the engine is
+// available; this module is the only place its per-launch access key is held.
+// The key sits in `apiKeys` next to the cloud keys: memory only, never Redux,
+// and (unlike cloud keys) never the keychain either.
 
-  for (const config of configs.values()) {
-    const s = status[config.id];
-    if (s?.status !== "connected") continue;
-    const model = config.defaultModel ?? s.models?.[0]?.id;
-    if (model) return { providerId: config.id, model };
+let managedTransport: LLMProvider | null = null;
+
+/**
+ * Show the built-in engine as a provider (model picker, default selection).
+ * `provider` is the facade from `managedEngine.ts` that starts the engine on
+ * first use; `connected` reflects whether it is running right now.
+ */
+export function registerManagedProvider(
+  provider: LLMProvider,
+  config: Omit<AIProviderConfig, "id" | "kind" | "keyRequired">,
+  models: AIModelInfo[],
+  connected: boolean,
+): void {
+  if (!activePubkey) return;
+  const full: AIProviderConfig = {
+    ...config,
+    id: MANAGED_PROVIDER_ID,
+    kind: "local-llama",
+    // The engine's key is internal: the user is never asked for one.
+    keyRequired: false,
+  };
+  configs.set(MANAGED_PROVIDER_ID, full);
+  providers.set(MANAGED_PROVIDER_ID, provider);
+  store.dispatch(upsertProviderConfig(full));
+  store.dispatch(
+    patchProviderStatus({
+      providerId: MANAGED_PROVIDER_ID,
+      patch: { status: connected ? "connected" : "unknown", lastError: null, models },
+    }),
+  );
+}
+
+export function unregisterManagedProvider(): void {
+  setManagedCredentials(null);
+  if (!configs.has(MANAGED_PROVIDER_ID) && !providers.has(MANAGED_PROVIDER_ID)) return;
+  configs.delete(MANAGED_PROVIDER_ID);
+  providers.delete(MANAGED_PROVIDER_ID);
+  store.dispatch(removeProviderConfig(MANAGED_PROVIDER_ID));
+}
+
+/**
+ * Hand over (or drop) the running engine's address and per-launch key. The key
+ * goes into the in-memory key map and nowhere else.
+ */
+export function setManagedCredentials(
+  connection: { baseUrl: string; apiKey: string } | null,
+): void {
+  if (!connection || !activePubkey) {
+    apiKeys.delete(MANAGED_PROVIDER_ID);
+    managedTransport = null;
+    return;
   }
-  // Fall back to any configured provider with a known model (even if untested).
-  for (const config of configs.values()) {
-    const fallback =
-      config.defaultModel ?? getPreset(config.kind)?.defaultModels?.[0];
-    if (fallback) return { providerId: config.id, model: fallback };
-  }
-  return null;
+  apiKeys.set(MANAGED_PROVIDER_ID, connection.apiKey);
+  managedTransport = makeOpenAICompatProvider(
+    {
+      id: MANAGED_PROVIDER_ID,
+      kind: "local-llama",
+      label: "Built-in engine",
+      baseUrl: connection.baseUrl,
+      keyRequired: false,
+    },
+    () => apiKeys.get(MANAGED_PROVIDER_ID) ?? null,
+  );
+}
+
+/** The OpenAI-compatible client for the running engine, or null when stopped. */
+export function getManagedTransport(): LLMProvider | null {
+  return managedTransport;
 }
 
 /** Full teardown: logout, account switch, or the AI feature flag turning off.
@@ -275,6 +336,7 @@ export function resetLLMManager(): void {
   providers.clear();
   apiKeys.clear();
   configs.clear();
+  managedTransport = null;
   activePubkey = null;
   store.dispatch(setProviders([]));
   store.dispatch(clearProviderStatus());
