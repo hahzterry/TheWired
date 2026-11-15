@@ -30,7 +30,7 @@ import { BOOTSTRAP_RELAYS, PROFILE_RELAYS } from "./constants";
 import { profileCache } from "./profileCache";
 import { loadDMState, startDMPersistence, cancelPendingSave as cancelDMSave, flushPendingSave as flushDMSave } from "../../features/dm/dmPersistence";
 import { loadDMReadState, startDMReadStateSync, cancelPendingSave as cancelDMReadStateSave, flushPendingSave as flushDMReadStateSave } from "../../features/dm/dmReadState";
-import { loadFollowerState, startFollowerPersistence, cancelPendingSave as cancelFollowerSave, flushPendingSave as flushFollowerSave } from "./followerPersistence";
+import { cancelPendingSave as cancelFollowerSave, flushPendingSave as flushFollowerSave } from "./followerPersistence";
 import { loadFriendRequestState, startFriendRequestPersistence, cancelPendingSave as cancelFriendRequestSave, flushPendingSave as flushFriendRequestSave } from "./friendRequestPersistence";
 import { loadNotificationState, startNotificationPersistence, cancelPendingSave as cancelNotificationSave, flushPendingSave as flushNotificationSave } from "../../features/notifications/notificationPersistence";
 import { resetEventPipelineCaches } from "./eventPipeline";
@@ -41,8 +41,6 @@ import { initLastChannelCache, clearLastChannelCache } from "../db/lastChannelCa
 import { clearAllUserState } from "../db/userStateStore";
 import { resetAll } from "../../store";
 import {
-  setKnownFollowers,
-  addKnownFollower,
   setAccounts,
   setSwitchingAccount,
   type AccountEntry,
@@ -63,6 +61,7 @@ import { musicTokenCache } from "../cache/tokenCache";
 import { abandonMediaSessions } from "../webrtc/mediaSession";
 import { endMediaSessionsForAccountChange } from "../../features/calling/accountChangeMedia";
 import { loginState } from "./login/state";
+import { subscribeFollowers } from "./login/followers";
 import { subscribeGiftWraps } from "./login/giftWrapSub";
 import { hydrateMusicFromCache, subscribeMusic } from "./login/music";
 import { loadAndReconcileSpaces } from "./login/spaces";
@@ -94,68 +93,6 @@ interface LegacySession {
 
 function isMultiAccountSession(s: unknown): s is MultiAccountSession {
   return !!s && typeof s === "object" && "accounts" in s && Array.isArray((s as MultiAccountSession).accounts);
-}
-
-/** performLogin step 7h: cached followers, then the live follower subscription. */
-async function subscribeFollowers(pubkey: string): Promise<void> {
-  // Step 7h: Load cached followers, then subscribe for kind:3 events that tag us.
-  // Use all connected read relays (not just bootstrap) so user-configured relays are included.
-  // Buffer follower pubkeys until EOSE, then MERGE with cached set (never shrink).
-  await loadFollowerState();
-  loginState.cleanupFollowerPersistence = startFollowerPersistence();
-
-  const followerBuffer: string[] = [];
-  let followerMerged = false;
-
-  const mergeFollowers = () => {
-    if (followerMerged) return;
-    // #77 — the 10s safety timer (and the standing subscription) can fire AFTER an
-    // account switch. Without this guard, account A's buffered followers get merged
-    // into account B's knownFollowers (and persisted there). Bail if we're no longer
-    // the active identity.
-    if (store.getState().identity.pubkey !== pubkey) return;
-    followerMerged = true;
-    clearTimeout(followerTimer);
-    // Merge buffered followers with cached set — always union, never replace with smaller
-    const cached = store.getState().identity.knownFollowers;
-    const merged = Array.from(new Set([...cached, ...followerBuffer]));
-    store.dispatch(setKnownFollowers(merged));
-  };
-
-  relayManager.subscribe({
-    filters: [
-      {
-        kinds: [EVENT_KINDS.FOLLOW_LIST],
-        "#p": [pubkey],
-        limit: 500,
-      },
-    ],
-    relayUrls: PROFILE_RELAYS,
-    onEvent: (event) => {
-      // Stale-subscription guard (#77): ignore deliveries after an account switch.
-      if (store.getState().identity.pubkey !== pubkey) return;
-      // Only care about events that include us in their follow list
-      if (event.pubkey === pubkey) return;
-      const followsUs = event.tags.some(
-        (t) => t[0] === "p" && t[1] === pubkey,
-      );
-      if (!followsUs) return;
-
-      if (!followerMerged) {
-        // Still buffering — collect pubkeys
-        if (!followerBuffer.includes(event.pubkey)) {
-          followerBuffer.push(event.pubkey);
-        }
-      } else {
-        // Post-merge: genuinely new follower
-        store.dispatch(addKnownFollower(event.pubkey));
-      }
-    },
-    onEOSE: mergeFollowers,
-  });
-
-  // Safety: merge whatever we have if no EOSE arrives
-  const followerTimer = setTimeout(mergeFollowers, 10_000);
 }
 
 /** performLogin step 8: record this account in the multi-account session. */
