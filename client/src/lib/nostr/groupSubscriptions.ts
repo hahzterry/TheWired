@@ -645,7 +645,7 @@ export function loadMoreFriendsFeed(channelType: string): void {
   );
 
   const previousOldest = meta.oldestAt;
-  fetchPage(filters).then((info) => settleLoadMore(contextId, previousOldest, info));
+  fetchPage(filters, { priority: true }).then((info) => settleLoadMore(contextId, previousOldest, info));
 }
 
 // ── Feed pagination ──────────────────────────────────────────────
@@ -661,21 +661,23 @@ const PAGINATION_TIMEOUT_MS = 30_000;
 const READ_RELAY_GRACE_MS = 4_000;
 
 /**
- * One page of a feed, asked for because the user is looking at it (refresh,
- * "load more"). It is a priority subscription: each relay keeps a couple of
- * subscription slots that standing subs cannot take, so the REQ goes out even
- * when an account's background subs have filled the relay's cap. Before this,
- * the REQ sat in the deferred queue until the 30 s timeout and the button did
- * nothing. Auto-closes on every path.
+ * One page of a feed as a one-shot that auto-closes on every path.
+ *
+ * `priority` is for "load more" only — the one request here that exists
+ * because the user clicked. On a relay whose cap is full of standing subs a
+ * priority request borrows a slot instead of waiting in the deferred queue
+ * (before, the REQ sat there until the 30 s timeout and the button did
+ * nothing). Refreshes, including the automatic first fetch of a feed, stay
+ * ordinary subscriptions so they cannot crowd a "load more" out.
  */
-async function fetchPage(filters: NostrFilter[]): Promise<EoseInfo> {
+async function fetchPage(filters: NostrFilter[], opts: { priority?: boolean } = {}): Promise<EoseInfo> {
   if (!(await relayManager.waitForReadRelay(READ_RELAY_GRACE_MS))) {
     return { reason: "no-relays", sentTo: 0 };
   }
   return subscriptionManager.subscribeOnce({
     filters,
     timeoutMs: PAGINATION_TIMEOUT_MS,
-    priority: true,
+    ...(opts.priority ? { priority: true } : {}),
   });
 }
 
@@ -772,5 +774,5 @@ export function loadMoreSpaceFeed(
   };
 
   const previousOldest = meta.oldestAt;
-  fetchPage([filter]).then((info) => settleLoadMore(contextId, previousOldest, info));
+  fetchPage([filter], { priority: true }).then((info) => settleLoadMore(contextId, previousOldest, info));
 }

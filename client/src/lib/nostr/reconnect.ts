@@ -2,21 +2,23 @@ import { RECONNECT } from "./constants";
 
 /**
  * How hard the client holds on to a relay.
- * - `app`: the platform relay. Always retried, backoff capped at MAX_DELAY.
+ * - `app`: the platform relay. Always retried.
  * - `pinned`: a relay the user or the app chose (own relay list, DM relays, a
- *   space host, bootstrap and indexer relays). Always retried; once it has
- *   struck out the cap rises to DEAD_MAX_DELAY.
+ *   space host, bootstrap and indexer relays). Always retried.
  * - `transient`: a relay dialed only because someone else's data points at it
  *   (outbox fan-out, a DM recipient's inbox, search). Dropped for the session
  *   once it strikes out.
+ *
+ * Every tier backs off on the same schedule, capped at MAX_DELAY; the tier
+ * only decides whether a dead relay is given up on, and the dial order.
  */
 export type RelayTier = "app" | "pinned" | "transient";
 
 /** Compute backoff delay with jitter */
-export function computeBackoff(attempt: number, maxDelay: number = RECONNECT.MAX_DELAY): number {
+export function computeBackoff(attempt: number): number {
   const exponential = Math.min(
     RECONNECT.BASE_DELAY * Math.pow(2, attempt),
-    maxDelay,
+    RECONNECT.MAX_DELAY,
   );
   const jitter = exponential * RECONNECT.JITTER * (Math.random() * 2 - 1);
   return Math.round(exponential + jitter);
@@ -25,12 +27,6 @@ export function computeBackoff(attempt: number, maxDelay: number = RECONNECT.MAX
 /** True once `strikes` consecutive failed connects mark a relay as dead. */
 export function isStruckOut(strikes: number): boolean {
   return strikes >= RECONNECT.STRIKE_LIMIT;
-}
-
-/** Backoff cap for a relay of `tier` that has failed `strikes` times in a row. */
-export function maxDelayFor(tier: RelayTier, strikes: number): number {
-  if (tier === "app" || !isStruckOut(strikes)) return RECONNECT.MAX_DELAY;
-  return RECONNECT.DEAD_MAX_DELAY;
 }
 
 /** Detect reconnection storms (multiple relays dropping at once) */

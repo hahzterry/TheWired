@@ -90,6 +90,10 @@ class RelayManagerImpl {
   private tearingDown = false;
   /** Whether any non-loopback relay was connected at the last status change. */
   private hadNetworkEvidence = false;
+  /** When the last outside relay went away (null: never had one, or one is up). */
+  private networkLostAt: number | null = null;
+  /** When noteNetworkEvidence last ran a restore. */
+  private lastEvidenceRestoreAt = 0;
 
   constructor() {
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -120,7 +124,7 @@ class RelayManagerImpl {
     broadcast?: boolean;
     /** Whether this sub is allowed to target indexer-only relays. */
     indexerSafe?: boolean;
-    /** User-initiated request: uses each relay's reserved slots (see RelayConnection.subscribe). */
+    /** User-initiated request: gets a slot even on a full relay (see RelayConnection.subscribe). */
     priority?: boolean;
   }>();
 
@@ -175,7 +179,9 @@ class RelayManagerImpl {
    *  reconcileUserRelays / connectFromConfig, which do honor it.
    *
    *  A plain connect() marks the relay as chosen: it is retried forever (with
-   *  capped backoff) and never dropped. Pass `transient` for a relay dialed
+   *  capped backoff) and never dropped, and calling it again while the relay
+   *  backs off dials at once (at most every RECONNECT.KICK_INTERVAL per
+   *  relay). Pass `transient` for a relay dialed
    *  only because someone else's data points at it (outbox fan-out, search):
    *  after RECONNECT.STRIKE_LIMIT failed connects it is dropped for the session. */
   connect(url: string, mode: RelayMode = "read+write", opts: { transient?: boolean } = {}): RelayConnection {
@@ -189,7 +195,15 @@ class RelayManagerImpl {
       // A relay first dialed for a peer's inbox is now wanted for the user's
       // own reasons: allow AUTH and answer any challenge it already sent.
       if (!opts.transient && this.peerOnly.delete(k)) existing.tryAuth();
-      this.enqueueDial(existing);
+      if (existing.isIdle()) {
+        this.enqueueDial(existing);
+      } else if (!opts.transient) {
+        // The app wants a chosen relay that is waiting out its backoff — e.g.
+        // the user is sending to a space whose host just came back. Dial now
+        // instead of making the send wait for the retry timer; rate-limited
+        // per relay inside kick(). A transient caller never shortens a backoff.
+        existing.kick();
+      }
       return existing;
     }
 
@@ -379,25 +393,41 @@ class RelayManagerImpl {
     if (!this.hasNetworkEvidence(k)) return false;
     const conn = this.connections.get(k);
     if (!conn) return false;
-    const subIds = conn.getSubscriptionIds();
+    // Only the subscriptions this relay never answered: one it already sent
+    // EOSE for must not get a second, made-up one.
+    const unanswered = conn.getUnansweredSubscriptionIds();
     relayLog.info(`${shortRelay(k)} unreachable, not dialing it again this session`);
     this.disconnect(k);
     this.sessionDropped.add(k);
-    // Subscriptions still waiting on this relay get their end-of-stored-events
-    // now: it will never answer, and an EOSE quorum must not sit out its
-    // timeout for it.
-    for (const subId of subIds) this.onEOSECallbacks.get(subId)?.(subId, k);
+    // They get their end-of-stored-events now: the relay will never answer,
+    // and an EOSE quorum must not sit out its timeout for it.
+    for (const subId of unanswered) this.onEOSECallbacks.get(subId)?.(subId, k);
     return true;
   }
 
   /** Track whether the network has come back without the browser saying so
-   *  (wake from sleep, VPN flap): the first outside relay to connect after
-   *  none were connected clears every other relay's backoff. */
+   *  (wake from sleep, VPN flap): an outside relay connecting after none had
+   *  been connected for NETWORK_DOWN_MIN clears every other relay's backoff,
+   *  at most once per RESTORE_MIN_INTERVAL. A single relay that drops and is
+   *  back a second later is that relay flapping, not the network returning;
+   *  treating every such flap as a restore redialed every dead relay again. */
   private noteNetworkEvidence(): void {
     const has = this.hasNetworkEvidence();
-    const regained = has && !this.hadNetworkEvidence;
+    const had = this.hadNetworkEvidence;
     this.hadNetworkEvidence = has;
-    if (regained) this.handleNetworkRestored();
+    const now = Date.now();
+    if (had && !has) {
+      this.networkLostAt = now;
+      return;
+    }
+    if (!has || had) return;
+    const lostAt = this.networkLostAt;
+    this.networkLostAt = null;
+    if (lostAt === null) return; // first outside relay of the session: nothing to restore
+    if (now - lostAt < RECONNECT.NETWORK_DOWN_MIN) return;
+    if (now - this.lastEvidenceRestoreAt < RECONNECT.RESTORE_MIN_INTERVAL) return;
+    this.lastEvidenceRestoreAt = now;
+    this.handleNetworkRestored();
   }
 
   /** The network is back (browser `online`, or a relay just connected after
@@ -489,6 +519,8 @@ class RelayManagerImpl {
     this.sessionDropped.clear();
     this.nip11Requested.clear();
     this.hadNetworkEvidence = false;
+    this.networkLostAt = null;
+    this.lastEvidenceRestoreAt = 0;
     this.pendingSubscriptions.clear();
     this.publishOKCallbacks.clear();
     this.everConnected.clear();

@@ -2,7 +2,7 @@ import type { NostrEvent, NostrFilter, RelayMessage, ClientMessage } from "../..
 import { Negentropy, NegentropyStorageVector } from "@ishtarservices/core";
 import type { RelayMode, RelayStatus } from "../../types/relay";
 import type { RelayEOSECallback, RelayOKCallback, RelayStatusCallback } from "./types";
-import { computeBackoff, isStruckOut, maxDelayFor, StormDetector, type RelayTier } from "./reconnect";
+import { computeBackoff, isStruckOut, StormDetector, type RelayTier } from "./reconnect";
 import { RECONNECT } from "./constants";
 import { createLogger } from "../debug/logger";
 
@@ -37,15 +37,13 @@ type InternalEventCallback = (subId: string, event: NostrEvent, relayUrl: string
  *  comfortable headroom; per-relay NIP-11 can still narrow this. */
 const DEFAULT_MAX_SUBS = 100;
 
-/** Slots of a relay's cap that only priority (user-initiated) subscriptions may
- *  take. Standing subs stop at `cap - reserve`, so a "load more" the user just
- *  asked for always has a free slot instead of waiting in the deferred queue
- *  behind background subs. Tiny caps reserve less so they stay usable. */
-export function reservedSlots(maxSubscriptions: number): number {
-  if (maxSubscriptions >= 20) return 2;
-  if (maxSubscriptions >= 5) return 1;
-  return 0;
-}
+/** How many standing subs may be parked (temporarily CLOSEd) at once to make
+ *  room for priority requests on a full relay. */
+const MAX_PARKED_SUBS = 2;
+/** Our relay answers a client CLOSE with `CLOSED <id> ""`. For this long after
+ *  parking a sub, that acknowledgement is ignored instead of being read as the
+ *  relay dropping the sub. */
+const PARK_ACK_WINDOW_MS = 10_000;
 
 interface DeferredSub {
   subId: string;
@@ -92,6 +90,8 @@ export class RelayConnection {
   private stable = false;
   private stableTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the last socket was created (rate-limits kick()). */
+  private lastDialAt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptions = new Map<string, NostrFilter[]>();
   private pendingEOSE = new Set<string>();
@@ -104,12 +104,24 @@ export class RelayConnection {
   private maxSubscriptions = DEFAULT_MAX_SUBS;
   /** Overflow queue: subs that couldn't be sent because we're at the cap. */
   private deferredSubs: DeferredSub[] = [];
-  /** User-initiated subs (pagination): may use the reserved slots and jump the
-   *  deferred queue. */
+  /** User-initiated subs ("load more"): may borrow a standing sub's slot on a
+   *  full relay and jump the deferred queue. */
   private prioritySubs = new Set<string>();
   /** Subs whose REQ has been written to a socket at least once. Lets callers
    *  tell "asked and got nothing" from "never left the client". */
   private reqSent = new Set<string>();
+  /** Subs this relay has answered with EOSE at least once (kept across
+   *  reconnects, cleared when the sub closes). */
+  private eoseReceived = new Set<string>();
+  /** Subs whose REQ is live on the CURRENT socket (cleared when it closes). */
+  private onWire = new Set<string>();
+  /** Standing subs temporarily CLOSEd so a priority request fits on a full
+   *  relay. They sit at the head of the standing deferred queue and are
+   *  re-sent as soon as a slot frees. */
+  private parked = new Set<string>();
+  /** subId → when the CLOSE that parked it went out, until the relay's
+   *  acknowledgement (`CLOSED <id> ""`) arrives or the window passes. */
+  private parkAcks = new Map<string, number>();
   /** Warn once per connection lifetime when the cap is first hit. Silent
    *  deferral was the failure mode that hid the original NIP-29 chat bug —
    *  surface it so future regressions don't quietly queue forever. */
@@ -198,9 +210,25 @@ export class RelayConnection {
     this.open();
   }
 
+  /**
+   * Dial now although a retry is scheduled for later — for a relay the app
+   * asked for again (the user is sending to a space host that may be back).
+   * Rate-limited: nothing happens if this relay was dialed less than
+   * `minIntervalMs` ago, so repeated calls cannot hammer a relay that is down.
+   * A no-op while a socket exists. Returns true if it dialed.
+   */
+  kick(minIntervalMs: number = RECONNECT.KICK_INTERVAL): boolean {
+    if (this.ws || !this.reconnectTimer) return false;
+    if (Date.now() - this.lastDialAt < minIntervalMs) return false;
+    this.clearReconnectTimer();
+    this.open();
+    return true;
+  }
+
   private open(): void {
     this.setStatus("connecting");
     this.pingStart = Date.now();
+    this.lastDialAt = this.pingStart;
     this.stable = false;
 
     let ws: WebSocket;
@@ -277,6 +305,7 @@ export class RelayConnection {
       // the reconnect re-holds; heldReqs are rebuilt by resubscribe()).
       this.reqGate = "open";
       this.heldReqs.clear();
+      this.onWire.clear();
       this.lastAuthEventId = null;
       if (this.authWedgeTimer) {
         clearTimeout(this.authWedgeTimer);
@@ -363,6 +392,10 @@ export class RelayConnection {
     this.deferredSubs = [];
     this.prioritySubs.clear();
     this.reqSent.clear();
+    this.eoseReceived.clear();
+    this.onWire.clear();
+    this.parked.clear();
+    this.parkAcks.clear();
     this.closedRetries.clear();
     for (const t of this.reqRetryTimers.values()) clearTimeout(t);
     this.reqRetryTimers.clear();
@@ -408,6 +441,7 @@ export class RelayConnection {
       log.debug(`${this.shortUrl} REQ ${subId} ${summarizeFilters(filters)}`);
       this.ws.send(JSON.stringify(["REQ", subId, ...filters]));
       this.reqSent.add(subId);
+      this.onWire.add(subId);
     }
   }
 
@@ -534,21 +568,45 @@ export class RelayConnection {
     this.maxSubscriptions = max;
   }
 
-  /** Subs currently counted against the relay's cap (sent, or to be sent on
-   *  connect): all of them, and the standing (non-priority) ones. */
-  private sentCounts(): { total: number; standing: number } {
-    let deferredPriority = 0;
-    for (const d of this.deferredSubs) if (d.priority) deferredPriority++;
-    const total = this.subscriptions.size - this.deferredSubs.length;
-    return { total, standing: total - (this.prioritySubs.size - deferredPriority) };
+  /** Subs counted against the relay's cap: sent, or to be sent on connect. */
+  private sentCount(): number {
+    return this.subscriptions.size - this.deferredSubs.length;
   }
 
-  /** Whether one more sub of this class fits, given the counts WITHOUT it.
-   *  Standing subs may hold at most `cap − reserve` slots; a priority request
-   *  may take any free slot up to the cap. */
-  private fits(priority: boolean, counts: { total: number; standing: number }): boolean {
-    if (counts.total >= this.maxSubscriptions) return false;
-    return priority || counts.standing < this.maxSubscriptions - reservedSlots(this.maxSubscriptions);
+  /**
+   * Make room for a priority request on a full relay: CLOSE one standing sub
+   * and queue it to be re-sent the moment a slot frees (normally when the
+   * priority one-shot closes, under a second later). The most recently opened
+   * standing sub is picked — the long-lived ones an account opens at login
+   * (DMs, background chat) come first in the map. Nothing is parked for good:
+   * the sub stays tracked and keeps its place at the head of the queue.
+   * Returns false when nothing can be parked (socket not open, limit reached,
+   * no standing sub on the wire).
+   */
+  private parkOne(): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (this.reqGate === "holding") return false;
+    if (this.parked.size >= MAX_PARKED_SUBS) return false;
+    const waiting = new Set(this.deferredSubs.map((d) => d.subId));
+    const ids = [...this.subscriptions.keys()];
+    for (let i = ids.length - 1; i >= 0; i--) {
+      const subId = ids[i];
+      if (this.prioritySubs.has(subId) || waiting.has(subId) || !this.onWire.has(subId)) continue;
+      this.ws.send(JSON.stringify(["CLOSE", subId]));
+      this.onWire.delete(subId);
+      this.parked.add(subId);
+      this.parkAcks.set(subId, Date.now());
+      this.pendingEOSE.delete(subId);
+      this.clearReqRetry(subId);
+      const firstStanding = this.deferredSubs.findIndex((d) => !d.priority);
+      this.deferredSubs.splice(firstStanding === -1 ? this.deferredSubs.length : firstStanding, 0, {
+        subId,
+        filters: this.subscriptions.get(subId)!,
+        priority: false,
+      });
+      return true;
+    }
+    return false;
   }
 
   /** Queue a sub that cannot be sent yet. Priority subs go ahead of every
@@ -566,9 +624,10 @@ export class RelayConnection {
 
   /**
    * Track a subscription and send its REQ when the relay's cap allows.
-   * `priority` marks a request the user is waiting on (pagination): it may use
-   * the reserved slots, and if even those are taken it goes to the front of
-   * the deferred queue.
+   * `priority` marks a request the user is waiting on (pagination). On a full
+   * relay it borrows a slot from a standing sub (see parkOne); if that is not
+   * possible it goes to the front of the deferred queue. Standing subs always
+   * get the relay's full cap.
    */
   subscribe(subId: string, filters: NostrFilter[], opts: { priority?: boolean } = {}): void {
     const priority = opts.priority === true;
@@ -578,12 +637,12 @@ export class RelayConnection {
     else this.prioritySubs.delete(subId);
 
     // Enforce per-relay subscription cap — defer if sending this one would exceed it.
-    // The counts are post-set (they already include this sub), so take it out.
-    const counts = this.sentCounts();
-    counts.total--;
-    if (!priority) counts.standing--;
-    if (!this.fits(priority, counts)) {
+    // sentCount() is post-set (it already includes this sub).
+    if (this.sentCount() > this.maxSubscriptions) {
       this.defer({ subId, filters, priority });
+      // The deferred sub no longer counts as sent; a priority one may still
+      // go out now by borrowing a standing sub's slot.
+      if (priority && this.parkOne()) this.drainDeferred();
       return;
     }
 
@@ -598,9 +657,9 @@ export class RelayConnection {
     return this.reqSent.has(subId);
   }
 
-  /** Ids of every subscription tracked on this connection. */
-  getSubscriptionIds(): string[] {
-    return [...this.subscriptions.keys()];
+  /** Tracked subscriptions this relay has never answered with EOSE. */
+  getUnansweredSubscriptionIds(): string[] {
+    return [...this.subscriptions.keys()].filter((id) => !this.eoseReceived.has(id));
   }
 
   closeSubscription(subId: string): void {
@@ -608,13 +667,18 @@ export class RelayConnection {
     this.pendingEOSE.delete(subId);
     this.prioritySubs.delete(subId);
     this.reqSent.delete(subId);
+    this.eoseReceived.delete(subId);
     this.closedRetries.delete(subId);
     this.clearReqRetry(subId);
+    this.onWire.delete(subId);
+    this.parkAcks.delete(subId);
+    // A parked sub was already CLOSEd on the wire.
+    const wasParked = this.parked.delete(subId);
     // Remove from deferred queue if it was never sent
     this.deferredSubs = this.deferredSubs.filter((d) => d.subId !== subId);
     // Drop it from the AUTH hold queue too (so release doesn't resurrect it).
     this.heldReqs.delete(subId);
-    this.send(["CLOSE", subId]);
+    if (!wasParked) this.send(["CLOSE", subId]);
     // A slot opened — drain the next deferred sub
     this.drainDeferred();
   }
@@ -644,9 +708,10 @@ export class RelayConnection {
       this.drainDeferred(); // try next
       return;
     }
-    if (!this.fits(next.priority, this.sentCounts())) return;
+    if (this.sentCount() >= this.maxSubscriptions) return;
 
     this.deferredSubs.shift();
+    if (this.parked.delete(next.subId)) this.pendingEOSE.add(next.subId);
     this.sendReq(next.subId, next.filters);
   }
 
@@ -679,6 +744,7 @@ export class RelayConnection {
       }
       case "EOSE": {
         this.pendingEOSE.delete(msg[1]);
+        if (this.subscriptions.has(msg[1])) this.eoseReceived.add(msg[1]);
         this.closedRetries.delete(msg[1]); // succeeded — reset any retry counter
         this.onEOSE?.(msg[1], this.url);
         break;
@@ -737,7 +803,15 @@ export class RelayConnection {
         const reason = (msg[2] ?? "").toString();
         if (reason) {
           console.warn(`[relay] ${this.shortUrl} CLOSED ${subId}: ${reason}`);
+        } else {
+          // The relay acknowledging the CLOSE that parked this sub (it is
+          // still tracked, and re-sent or about to be): not the relay
+          // dropping it.
+          const parkedAt = this.parkAcks.get(subId);
+          this.parkAcks.delete(subId);
+          if (parkedAt !== undefined && Date.now() - parkedAt < PARK_ACK_WINDOW_MS) break;
         }
+        this.onWire.delete(subId);
         // "too many subscriptions" is recoverable — the relay is momentarily full.
         // Re-defer the sub (bounded) so it's re-sent when a local slot frees,
         // instead of silently dropping it and letting the 5 s EOSE backstop mask
@@ -799,7 +873,11 @@ export class RelayConnection {
         this.pendingEOSE.delete(subId);
         this.prioritySubs.delete(subId);
         this.reqSent.delete(subId);
+        this.eoseReceived.delete(subId);
         this.closedRetries.delete(subId);
+        if (this.parked.delete(subId)) {
+          this.deferredSubs = this.deferredSubs.filter((d) => d.subId !== subId);
+        }
         break;
       }
       case "AUTH": {
@@ -859,16 +937,19 @@ export class RelayConnection {
     // Server state is fresh after reconnect — re-decide what's deferred from scratch.
     this.deferredSubs = [];
 
+    this.parked.clear();
+    this.parkAcks.clear();
+
     const toSend: Array<[string, NostrFilter[]]> = [];
-    const counts = { total: 0, standing: 0 };
     for (const entry of entries) {
-      const priority = this.prioritySubs.has(entry[0]);
-      if (this.fits(priority, counts)) {
+      if (toSend.length < this.maxSubscriptions) {
         toSend.push(entry);
-        counts.total++;
-        if (!priority) counts.standing++;
       } else {
-        this.deferredSubs.push({ subId: entry[0], filters: entry[1], priority });
+        this.deferredSubs.push({
+          subId: entry[0],
+          filters: entry[1],
+          priority: this.prioritySubs.has(entry[0]),
+        });
       }
     }
     if (this.deferredSubs.length > 0) {
@@ -904,7 +985,7 @@ export class RelayConnection {
   private scheduleReconnect(): void {
     this.clearReconnectTimer();
     const stormCooldown = this.stormDetector.getCooldown();
-    const backoff = computeBackoff(this.reconnectAttempts, maxDelayFor(this.tier(), this.strikes));
+    const backoff = computeBackoff(this.reconnectAttempts);
     const delay = Math.max(backoff, stormCooldown);
     this.reconnectAttempts++;
 

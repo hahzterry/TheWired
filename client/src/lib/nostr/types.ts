@@ -28,9 +28,9 @@ export interface SubscribeOptions {
   relayUrls?: string[];
   onEvent: RelayEventCallback;
   onEOSE?: RelayEOSECallback;
-  /** A request the user is waiting on (pagination). It may use each relay's
-   *  reserved subscription slots and jumps the deferred queue. Keep it for
-   *  short-lived one-shot subs: a standing priority sub eats the reserve. */
+  /** A request the user is waiting on ("load more"). On a relay whose cap is
+   *  full it borrows a slot from a standing sub until it closes, and it jumps
+   *  the deferred queue. Only for short-lived one-shot subs. */
   priority?: boolean;
 }
 

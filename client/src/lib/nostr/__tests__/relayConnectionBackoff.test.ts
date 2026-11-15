@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { RelayConnection, reservedSlots } from "../relayConnection";
-import { StormDetector, computeBackoff, isStruckOut, maxDelayFor, type RelayTier } from "../reconnect";
+import { RelayConnection } from "../relayConnection";
+import { StormDetector, computeBackoff, isStruckOut, type RelayTier } from "../reconnect";
 import { RECONNECT } from "../constants";
 
 /**
  * Dead-relay policy and priority subscriptions, at the single-connection level:
- * strike counting, the backoff schedule per tier, session drop for fan-out
- * relays only, reset on a stable connection and on resetBackoff(), the connect
- * timeout, and the reserved subscription slots a user-initiated request uses.
+ * strike counting, the backoff schedule, session drop for fan-out relays only,
+ * reset on a stable connection and on resetBackoff(), the connect timeout, the
+ * rate-limited kick for a relay the app asks for again, and how a
+ * user-initiated request gets a slot on a relay whose cap is full.
  */
 
 class MockWebSocket {
@@ -107,9 +108,7 @@ describe("reconnect policy helpers", () => {
     expect([0, 1, 2, 3, 4, 5].map((n) => computeBackoff(n))).toEqual([1000, 2000, 4000, 8000, 16_000, 32_000]);
     expect(computeBackoff(6)).toBe(60_000); // 64 s capped to MAX_DELAY
     expect(computeBackoff(20)).toBe(60_000);
-    expect(computeBackoff(8, RECONNECT.DEAD_MAX_DELAY)).toBe(256_000);
-    expect(computeBackoff(9, RECONNECT.DEAD_MAX_DELAY)).toBe(300_000);
-    expect(computeBackoff(500, RECONNECT.DEAD_MAX_DELAY)).toBe(300_000); // no overflow
+    expect(computeBackoff(5000)).toBe(60_000); // no overflow
   });
 
   it("applies ±25% jitter around the nominal delay", () => {
@@ -129,11 +128,9 @@ describe("reconnect policy helpers", () => {
     expect(isStruckOut(3)).toBe(true);
   });
 
-  it("only a struck-out, non-app relay gets the long cap", () => {
-    expect(maxDelayFor("app", 50)).toBe(RECONNECT.MAX_DELAY);
-    expect(maxDelayFor("pinned", 2)).toBe(RECONNECT.MAX_DELAY);
-    expect(maxDelayFor("pinned", 3)).toBe(RECONNECT.DEAD_MAX_DELAY);
-    expect(maxDelayFor("transient", 3)).toBe(RECONNECT.DEAD_MAX_DELAY);
+  it("has one backoff cap, the 60 s it always was", () => {
+    expect(RECONNECT.MAX_DELAY).toBe(60_000);
+    expect("DEAD_MAX_DELAY" in RECONNECT).toBe(false);
   });
 });
 
@@ -166,17 +163,27 @@ describe("RelayConnection — strikes and backoff", () => {
     expect(gaps.slice(-4)).toEqual([60_000, 60_000, 60_000, 60_000]);
   });
 
-  it("lets a struck-out chosen relay back off further, capped at DEAD_MAX_DELAY, and never stops", () => {
+  // Regression: a dead chosen relay briefly backed off up to 5 minutes, so a
+  // space host that was down for two minutes stayed unreachable for four more.
+  it("keeps a struck-out chosen relay on the 60 s cap, and never stops retrying it", () => {
     const strikeOut = vi.fn(() => true);
     const conn = createConn("pinned", strikeOut);
     conn.connect();
     for (let i = 0; i < 14; i++) expect(failAndWaitForRedial()).toBe(true);
     const gaps = dialTimes.slice(1).map((t, i) => t - dialTimes[i]);
-    expect(gaps.slice(0, 9)).toEqual([1000, 2000, 4000, 8000, 16_000, 32_000, 64_000, 128_000, 256_000]);
-    expect(gaps.slice(-3)).toEqual([300_000, 300_000, 300_000]);
+    expect(gaps).toEqual([1000, 2000, 4000, 8000, 16_000, 32_000, ...Array(8).fill(60_000)]);
     expect(conn.getStrikes()).toBe(14);
     // A chosen relay is never offered up for dropping.
     expect(strikeOut).not.toHaveBeenCalled();
+  });
+
+  it("with the worst jitter a relay that comes back is retried within 75 s", () => {
+    vi.mocked(Math.random).mockReturnValue(1); // +25% on every delay
+    const conn = createConn("pinned");
+    conn.connect();
+    for (let i = 0; i < 12; i++) failAndWaitForRedial();
+    const gaps = dialTimes.slice(1).map((t, i) => t - dialTimes[i]);
+    expect(Math.max(...gaps)).toBe(75_000);
   });
 
   it("defaults to never dropping when no tier is supplied", () => {
@@ -297,6 +304,92 @@ describe("RelayConnection — strikes and backoff", () => {
     expect(sockets).toHaveLength(1);
   });
 
+  describe("kick — the app asks again for a relay that is backing off", () => {
+    /** A relay that failed 5 times and now waits 16 s for its next dial. */
+    function backingOff(): RelayConnection {
+      const conn = createConn("pinned");
+      conn.connect();
+      for (let i = 0; i < 4; i++) failAndWaitForRedial();
+      latest().simulateClose();
+      return conn;
+    }
+
+    it("dials at once instead of waiting out the backoff", () => {
+      const conn = backingOff();
+      const count = sockets.length;
+      vi.advanceTimersByTime(6000); // the relay has come back meanwhile
+      expect(sockets).toHaveLength(count);
+      expect(conn.kick()).toBe(true);
+      expect(sockets).toHaveLength(count + 1);
+      latest().simulateOpen();
+      expect(conn.getStatus()).toBe("connected");
+    });
+
+    it("is rate-limited: no second dial within KICK_INTERVAL of the last one", () => {
+      const conn = backingOff();
+      const count = sockets.length;
+      // The scheduled dial failed a moment ago: a kick right now would hammer.
+      expect(conn.kick()).toBe(false);
+      vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL - 1);
+      expect(conn.kick()).toBe(false);
+      expect(sockets).toHaveLength(count);
+      vi.advanceTimersByTime(1);
+      expect(conn.kick()).toBe(true);
+      expect(sockets).toHaveLength(count + 1);
+
+      // That dial fails too: kicks are refused for another KICK_INTERVAL.
+      latest().simulateClose();
+      for (let i = 0; i < 50; i++) conn.kick();
+      expect(sockets).toHaveLength(count + 1);
+      vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+      expect(conn.kick()).toBe(true);
+      expect(sockets).toHaveLength(count + 2);
+    });
+
+    it("a dead relay kicked as hard as possible is dialed at most once per KICK_INTERVAL", () => {
+      const conn = backingOff();
+      const count = sockets.length;
+      const start = Date.now();
+      // Kick every 100 ms for a minute; every dial fails immediately.
+      for (let t = 0; t < 600; t++) {
+        vi.advanceTimersByTime(100);
+        conn.kick();
+        if (latest().readyState === MockWebSocket.CONNECTING) latest().simulateClose();
+      }
+      const dials = sockets.length - count;
+      const elapsed = Date.now() - start;
+      expect(dials).toBeLessThanOrEqual(Math.ceil(elapsed / RECONNECT.KICK_INTERVAL));
+      expect(dials).toBeGreaterThan(0);
+    });
+
+    it("a failed kick counts as a strike and the backoff carries on from where it was", () => {
+      const conn = backingOff(); // 5 strikes, 16 s scheduled
+      vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+      conn.kick();
+      const at = Date.now();
+      const count = sockets.length;
+      latest().simulateClose();
+      expect(conn.getStrikes()).toBe(6);
+      // The next step of the same schedule (32 s): the kick neither reset the
+      // backoff nor left the old 16 s timer running.
+      vi.advanceTimersByTime(31_999);
+      expect(sockets).toHaveLength(count);
+      vi.advanceTimersByTime(1);
+      expect(sockets).toHaveLength(count + 1);
+      expect(Date.now() - at).toBe(32_000);
+    });
+
+    it("does nothing while a socket is connecting or open, or before the first dial", () => {
+      const conn = createConn("pinned");
+      expect(conn.kick(0)).toBe(false); // never dialed: connect() is the way in
+      conn.connect();
+      expect(conn.kick(0)).toBe(false);
+      latest().simulateOpen();
+      expect(conn.kick(0)).toBe(false);
+      expect(sockets).toHaveLength(1);
+    });
+  });
+
   it("resetBackoff clears strikes and hands the dial back to the caller", () => {
     const conn = createConn("pinned");
     conn.connect();
@@ -344,7 +437,7 @@ describe("RelayConnection — strikes and backoff", () => {
   });
 });
 
-describe("RelayConnection — reserved slots for user-initiated requests", () => {
+describe("RelayConnection — a user-initiated request on a relay whose cap is full", () => {
   function connected(max: number): { conn: RelayConnection; ws: MockWebSocket } {
     const conn = createConn("app");
     conn.setMaxSubscriptions(max);
@@ -352,73 +445,154 @@ describe("RelayConnection — reserved slots for user-initiated requests", () =>
     latest().simulateOpen();
     return { conn, ws: latest() };
   }
+  const frameLog = (ws: MockWebSocket) =>
+    ws.sent.map((s) => JSON.parse(s) as unknown[]).map((m) => `${m[0]} ${m[1]}`);
 
-  it("reserves 2 slots on normal caps, 1 on small ones, none on tiny ones", () => {
-    expect(reservedSlots(100)).toBe(2);
-    expect(reservedSlots(20)).toBe(2);
-    expect(reservedSlots(10)).toBe(1);
-    expect(reservedSlots(5)).toBe(1);
-    expect(reservedSlots(4)).toBe(0);
-  });
-
-  it("standing subs stop at cap − reserve", () => {
-    const { conn, ws } = connected(10);
-    for (let i = 1; i <= 12; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
-    expect(reqIds(ws)).toHaveLength(9);
-    expect(reqIds(ws)).not.toContain("bg-10");
-    for (let i = 1; i <= 12; i++) expect(conn.hasSubscription(`bg-${i}`)).toBe(true);
-  });
-
-  it("sends a priority request at once while standing subs have the cap saturated", () => {
+  // Regression: two slots used to be held back from standing subs, so an
+  // account at the cap had two background subs deferred for good.
+  it("standing subs get the relay's full cap", () => {
     const { conn, ws } = connected(100);
-    for (let i = 1; i <= 140; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
-    expect(reqIds(ws)).toHaveLength(98);
+    for (let i = 1; i <= 100; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    expect(reqIds(ws)).toHaveLength(100);
+    expect(reqIds(ws)).toContain("bg-99");
+    expect(reqIds(ws)).toContain("bg-100");
+    for (const max of [3, 10, 20]) {
+      const c = connected(max);
+      for (let i = 1; i <= max + 2; i++) c.conn.subscribe(`s-${i}`, [{ kinds: [9] }]);
+      expect(reqIds(c.ws)).toHaveLength(max);
+    }
+  });
 
-    conn.subscribe("page-1", [{ kinds: [1], until: 1000, limit: 30 }], { priority: true });
+  it("uses a free slot when there is one, closing nothing", () => {
+    const { conn, ws } = connected(100);
+    for (let i = 1; i <= 99; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    conn.subscribe("page-1", [{ kinds: [1], limit: 30 }], { priority: true });
     expect(reqIds(ws)).toContain("page-1");
-    expect(conn.wasReqSent("page-1")).toBe(true);
-    expect(conn.wasReqSent("bg-120")).toBe(false);
-    // Never more REQs on the wire than the relay allows.
-    expect(reqIds(ws)).toHaveLength(99);
-    // Nothing was closed to make room.
     expect(closeIds(ws)).toEqual([]);
   });
 
-  it("frees the reserved slot again when the request closes, so every page gets through", () => {
+  it("on a full relay: parks one standing sub, sends the request, and restores the sub when it closes", () => {
     const { conn, ws } = connected(100);
-    for (let i = 1; i <= 140; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    for (let i = 1; i <= 100; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9], "#h": [`g${i}`] }]);
+    const before = ws.sent.length;
+
+    conn.subscribe("page-1", [{ kinds: [1], until: 1000, limit: 30 }], { priority: true });
+    // CLOSE first so the relay never sees more than its cap, then the REQ.
+    expect(frameLog(ws).slice(before)).toEqual(["CLOSE bg-100", "REQ page-1"]);
+    expect(conn.wasReqSent("page-1")).toBe(true);
+    // The parked sub is still tracked — borrowed from, not dropped.
+    expect(conn.hasSubscription("bg-100")).toBe(true);
+
+    conn.closeSubscription("page-1");
+    expect(frameLog(ws).slice(before + 2)).toEqual(["CLOSE page-1", "REQ bg-100"]);
+    // Re-sent with its own filters.
+    expect(JSON.parse(ws.sent[ws.sent.length - 1])).toEqual(["REQ", "bg-100", { kinds: [9], "#h": ["g100"] }]);
+    // Net effect on the relay: exactly the 100 standing subs again.
+    const live = new Set<string>();
+    for (const f of frameLog(ws)) {
+      const [type, id] = f.split(" ");
+      if (type === "REQ") live.add(id);
+      else live.delete(id);
+    }
+    expect(live.size).toBe(100);
+    expect(live.has("bg-100")).toBe(true);
+  });
+
+  it("never has more than the cap live on the relay, page after page", () => {
+    const { conn, ws } = connected(20);
+    for (let i = 1; i <= 20; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    const live = new Set<string>();
+    let peak = 0;
+    let seen = 0;
+    const replay = () => {
+      for (const raw of ws.sent.slice(seen)) {
+        const m = JSON.parse(raw) as string[];
+        if (m[0] === "REQ") live.add(m[1]);
+        else if (m[0] === "CLOSE") live.delete(m[1]);
+        peak = Math.max(peak, live.size);
+      }
+      seen = ws.sent.length;
+    };
     for (let page = 1; page <= 8; page++) {
       conn.subscribe(`page-${page}`, [{ kinds: [1], limit: 30 }], { priority: true });
-      expect(reqIds(ws)).toContain(`page-${page}`);
+      replay();
+      expect(live.has(`page-${page}`)).toBe(true);
       conn.closeSubscription(`page-${page}`);
+      replay();
     }
-    // The freed slot never leaked to a standing sub.
-    expect(reqIds(ws).filter((id) => id.startsWith("bg-"))).toHaveLength(98);
+    expect(peak).toBe(20);
+    expect(live.size).toBe(20);
+    for (let i = 1; i <= 20; i++) expect(live.has(`bg-${i}`)).toBe(true);
   });
 
-  it("queues a priority request ahead of standing subs when even the reserve is taken", () => {
-    const { conn, ws } = connected(10); // 9 standing + 1 reserved
-    for (let i = 1; i <= 12; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
-    conn.subscribe("page-1", [{ kinds: [1] }], { priority: true }); // takes the reserved slot
-    conn.subscribe("page-2", [{ kinds: [1] }], { priority: true }); // cap is full
-    conn.subscribe("page-3", [{ kinds: [1] }], { priority: true });
-    expect(reqIds(ws)).toContain("page-1");
-    expect(reqIds(ws)).not.toContain("page-2");
+  it("parks the most recently opened standing sub, not the long-lived ones opened first", () => {
+    const { conn, ws } = connected(5);
+    for (const id of ["dm-inbox", "bg-chat", "feed", "profile-1", "engagement-9"]) conn.subscribe(id, [{ kinds: [1] }]);
+    conn.subscribe("page-1", [{ kinds: [1] }], { priority: true });
+    expect(closeIds(ws)).toEqual(["engagement-9"]);
+  });
 
-    // The next slot to free goes to the waiting priority requests, in order,
-    // not to bg-10 which has been waiting longer.
+  it("the relay's acknowledgement of the parking CLOSE does not drop the sub", () => {
+    const { conn, ws } = connected(5);
+    for (let i = 1; i <= 5; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    conn.subscribe("page-1", [{ kinds: [1] }], { priority: true });
+    ws.simulateMessage(["CLOSED", "bg-5", ""]); // our relay answers every CLOSE this way
+    expect(conn.hasSubscription("bg-5")).toBe(true);
     conn.closeSubscription("page-1");
-    expect(reqIds(ws).slice(-1)).toEqual(["page-2"]);
-    conn.closeSubscription("page-2");
-    expect(reqIds(ws).slice(-1)).toEqual(["page-3"]);
-    expect(reqIds(ws)).not.toContain("bg-10");
-    // A standing slot freeing still serves the standing queue.
-    conn.closeSubscription("page-3");
-    conn.closeSubscription("bg-1");
-    expect(reqIds(ws).slice(-1)).toEqual(["bg-10"]);
+    expect(reqIds(ws).slice(-1)).toEqual(["bg-5"]);
+
+    // A later, unprompted CLOSED for it is still honoured.
+    ws.simulateMessage(["CLOSED", "bg-5", "blocked: gone"]);
+    expect(conn.hasSubscription("bg-5")).toBe(false);
   });
 
-  it("re-sends priority requests first after a reconnect and keeps the reserve", () => {
+  it("an acknowledgement that arrives after the sub was already restored is ignored too", () => {
+    const { conn, ws } = connected(5);
+    for (let i = 1; i <= 5; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    conn.subscribe("page-1", [{ kinds: [1] }], { priority: true });
+    conn.closeSubscription("page-1"); // cancelled at once: bg-5 is back on the wire
+    ws.simulateMessage(["CLOSED", "bg-5", ""]); // the ack of the earlier CLOSE, late
+    expect(conn.hasSubscription("bg-5")).toBe(true);
+  });
+
+  it("a parked sub closed by the app meanwhile is not sent again, and gets no second CLOSE", () => {
+    const { conn, ws } = connected(5);
+    for (let i = 1; i <= 5; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    conn.subscribe("page-1", [{ kinds: [1] }], { priority: true });
+    conn.closeSubscription("bg-5");
+    expect(closeIds(ws).filter((id) => id === "bg-5")).toHaveLength(1);
+    conn.closeSubscription("page-1");
+    expect(reqIds(ws).filter((id) => id === "bg-5")).toHaveLength(1); // only the original REQ
+  });
+
+  it("restores the parked sub ahead of subs that were already waiting for a slot", () => {
+    const { conn, ws } = connected(5);
+    for (let i = 1; i <= 8; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]); // bg-6..8 deferred
+    conn.subscribe("page-1", [{ kinds: [1] }], { priority: true });
+    expect(closeIds(ws)).toEqual(["bg-5"]); // the newest one that was on the wire
+    conn.closeSubscription("page-1");
+    expect(reqIds(ws).slice(-1)).toEqual(["bg-5"]); // back first, not bg-6
+    conn.closeSubscription("bg-1");
+    expect(reqIds(ws).slice(-1)).toEqual(["bg-6"]);
+  });
+
+  it("parks at most two subs; a third concurrent request waits at the front of the queue", () => {
+    const { conn, ws } = connected(5);
+    for (let i = 1; i <= 7; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    for (const id of ["page-1", "page-2", "page-3"]) conn.subscribe(id, [{ kinds: [1] }], { priority: true });
+    expect(closeIds(ws)).toEqual(["bg-5", "bg-4"]);
+    expect(reqIds(ws)).toContain("page-2");
+    expect(reqIds(ws)).not.toContain("page-3");
+    // The next slot goes to the waiting request, then the parked subs return.
+    conn.closeSubscription("page-1");
+    expect(reqIds(ws).slice(-1)).toEqual(["page-3"]);
+    conn.closeSubscription("page-2");
+    conn.closeSubscription("page-3");
+    expect(reqIds(ws).slice(-2).sort()).toEqual(["bg-4", "bg-5"]);
+    expect(reqIds(ws)).not.toContain("bg-6");
+  });
+
+  it("re-sends a priority request first after a reconnect, with nothing left parked", () => {
     const { conn, ws } = connected(10);
     for (let i = 1; i <= 12; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
     conn.subscribe("page-1", [{ kinds: [1] }], { priority: true });
@@ -432,8 +606,12 @@ describe("RelayConnection — reserved slots for user-initiated requests", () =>
     vi.advanceTimersByTime(2000); // let the staggered resubscribe batches run
     const ids = reqIds(ws2);
     expect(ids[0]).toBe("page-1");
-    expect(ids).toHaveLength(10); // 1 priority + 9 standing = the cap
+    expect(ids).toHaveLength(10); // the cap: the request plus nine standing subs
     expect(new Set(ids).size).toBe(10); // each REQ once
+    expect(closeIds(ws2)).toEqual([]);
+    // When it closes, the standing subs that did not fit follow in order.
+    conn.closeSubscription("page-1");
+    expect(reqIds(ws2).slice(-1)).toEqual(["bg-10"]);
   });
 
   it("re-queues a priority request the relay CLOSED for too-many-subscriptions at the front", () => {
@@ -443,7 +621,18 @@ describe("RelayConnection — reserved slots for user-initiated requests", () =>
     ws.simulateMessage(["CLOSED", "page-1", "error: too many subscriptions"]);
     expect(conn.hasSubscription("page-1")).toBe(true);
     conn.closeSubscription("bg-1");
-    expect(reqIds(ws).slice(-1)).toEqual(["page-1"]); // ahead of bg-10..12
+    expect(reqIds(ws).slice(-1)).toEqual(["page-1"]); // ahead of everything else waiting
+  });
+
+  it("does not park anything while the socket is down; the reconnect sorts it out", () => {
+    const conn = createConn("app");
+    conn.setMaxSubscriptions(3);
+    conn.connect();
+    for (let i = 1; i <= 3; i++) conn.subscribe(`bg-${i}`, [{ kinds: [9] }]);
+    conn.subscribe("page-1", [{ kinds: [1] }], { priority: true });
+    expect(latest().sent).toEqual([]);
+    latest().simulateOpen();
+    expect(reqIds(latest())).toEqual(["page-1", "bg-1", "bg-2"]);
   });
 
   it("reports whether a REQ ever left the client", () => {
@@ -455,6 +644,20 @@ describe("RelayConnection — reserved slots for user-initiated requests", () =>
     expect(conn.wasReqSent("early")).toBe(true);
     conn.closeSubscription("early");
     expect(conn.wasReqSent("early")).toBe(false);
+  });
+
+  it("knows which subscriptions the relay has not answered yet", () => {
+    const { conn, ws } = connected(10);
+    conn.subscribe("a", [{ kinds: [1] }]);
+    conn.subscribe("b", [{ kinds: [1] }]);
+    ws.simulateMessage(["EOSE", "a"]);
+    expect(conn.getUnansweredSubscriptionIds()).toEqual(["b"]);
+    // Still "answered" after a reconnect re-sends it: the consumer has its EOSE.
+    vi.advanceTimersByTime(RECONNECT.STABLE_AFTER);
+    ws.simulateClose();
+    vi.advanceTimersByTime(1000);
+    latest().simulateOpen();
+    expect(conn.getUnansweredSubscriptionIds()).toEqual(["b"]);
   });
 });
 

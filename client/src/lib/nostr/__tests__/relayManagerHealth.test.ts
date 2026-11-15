@@ -70,6 +70,15 @@ function failDials(url: string, times: number): void {
   }
 }
 
+/** Put `urls` into backoff together: at least 5 failed connects each, the last
+ *  one just now, so every one of them is waiting 16 s or more. */
+function failTogether(urls: string[]): void {
+  for (const url of urls) failDials(url, 4);
+  for (const url of urls) {
+    if (lastSocket(url).readyState === MockWebSocket.CONNECTING) lastSocket(url).fail();
+  }
+}
+
 /** Connect a relay that proves the network is up. */
 function connectOutsideRelay(): MockWebSocket {
   relayManager.connect(DAMUS);
@@ -148,6 +157,25 @@ describe("relayManager — dead fan-out relays are dropped for the session", () 
     expect(onEOSE).toHaveBeenCalledWith(subId, DEAD);
   });
 
+  it("does not send a second end-of-stored-events to a subscription the relay already answered", () => {
+    connectOutsideRelay();
+    const answered = vi.fn();
+    const waiting = vi.fn();
+    const a = relayManager.subscribe({ filters: [{ kinds: [1], authors: ["a"] }], relayUrls: [DEAD], onEvent: noop, onEOSE: answered });
+    // The relay is up for a moment and answers the first subscription…
+    lastSocket(DEAD).open();
+    lastSocket(DEAD).onmessage?.({ data: JSON.stringify(["EOSE", a]) });
+    expect(answered).toHaveBeenCalledTimes(1);
+    // …then a second one is opened, and the relay dies before answering it.
+    const b = relayManager.subscribe({ filters: [{ kinds: [1], authors: ["b"] }], relayUrls: [DEAD], onEvent: noop, onEOSE: waiting });
+    failDials(DEAD, 4); // the drop of the live socket, then three failed connects
+    expect(has(DEAD)).toBe(false);
+
+    expect(waiting).toHaveBeenCalledTimes(1);
+    expect(waiting).toHaveBeenCalledWith(b, DEAD);
+    expect(answered).toHaveBeenCalledTimes(1); // no made-up second EOSE
+  });
+
   it("drops a relay that accepts the socket and hangs up straight away", () => {
     connectOutsideRelay();
     relayManager.subscribe({ filters: [{ kinds: [1] }], relayUrls: [DEAD], onEvent: noop });
@@ -213,7 +241,8 @@ describe("relayManager — chosen relays are retried forever, never dropped", ()
     expect(Math.max(...gaps)).toBe(RECONNECT.MAX_DELAY);
   });
 
-  it("keeps retrying a relay from the user's own list, with the longer cap once it is dead", () => {
+  // Regression: the cap for a dead chosen relay was briefly 5 minutes.
+  it("keeps retrying a relay from the user's own list, never more than 60 s apart", () => {
     connectOutsideRelay();
     relayManager.reconcileUserRelays([{ url: "wss://mine.example", mode: "read+write" }]);
     failDials("wss://mine.example", 12);
@@ -221,8 +250,28 @@ describe("relayManager — chosen relays are retried forever, never dropped", ()
     expect(relayManager.isSessionDropped("wss://mine.example")).toBe(false);
     const times = sockets.map((s, i) => [s.url, dialedAt[i]] as const).filter(([u]) => u === "wss://mine.example").map(([, t]) => t);
     const gaps = times.slice(1).map((t, i) => t - times[i]);
-    expect(gaps.slice(0, 4)).toEqual([1000, 2000, 4000, 8000]);
-    expect(Math.max(...gaps)).toBe(RECONNECT.DEAD_MAX_DELAY);
+    expect(gaps).toEqual([1000, 2000, 4000, 8000, 16_000, 32_000, ...Array(6).fill(RECONNECT.MAX_DELAY)]);
+  });
+
+  it("a space host that is down for two minutes is retried within a minute of coming back", () => {
+    connectOutsideRelay();
+    relayManager.pinRelay(HOST);
+    relayManager.subscribe({ filters: [{ kinds: [9], "#h": ["g"] }], relayUrls: [HOST], onEvent: noop });
+    const start = Date.now();
+    // Every dial fails for two minutes.
+    while (Date.now() - start < 120_000) {
+      if (lastSocket(HOST).readyState === MockWebSocket.CONNECTING) lastSocket(HOST).fail();
+      vi.advanceTimersByTime(250);
+    }
+    // The host is back: the next scheduled dial is at most 60 s away.
+    const before = socketsFor(HOST).length;
+    const backAt = Date.now();
+    while (socketsFor(HOST).length === before || lastSocket(HOST).readyState !== MockWebSocket.CONNECTING) {
+      vi.advanceTimersByTime(250);
+    }
+    expect(Date.now() - backAt).toBeLessThanOrEqual(RECONNECT.MAX_DELAY);
+    lastSocket(HOST).open();
+    expect(relayManager.getAllConnections().get(HOST)!.getStatus()).toBe("connected");
   });
 
   it("keeps retrying a relay a feature connected explicitly (space host on send)", () => {
@@ -275,6 +324,96 @@ describe("relayManager — chosen relays are retried forever, never dropped", ()
     expect(socketsFor(DEAD)).toHaveLength(4);
     failDials(DEAD, 6);
     expect(has(DEAD)).toBe(true); // now a chosen relay: never dropped
+  });
+});
+
+describe("relayManager — asking again for a chosen relay that is backing off", () => {
+  /** A space host that failed 5 connects and now waits 16 s for the next one. */
+  function hostInBackoff() {
+    connectOutsideRelay();
+    relayManager.connect(HOST, "read+write");
+    failDials(HOST, 4);
+    lastSocket(HOST).fail();
+    return socketsFor(HOST).length;
+  }
+
+  // Regression: connect() became a no-op while a retry was pending, so a send
+  // to a host that had just come back waited for the backoff (and timed out).
+  it("connect() dials at once, so a send to a host that came back does not wait for the backoff", async () => {
+    const dials = hostInBackoff();
+    vi.advanceTimersByTime(6000); // the host is back; its next scheduled dial is still 10 s away
+
+    // What useChat does before publishing.
+    relayManager.connect(HOST, "read+write");
+    const waiting = relayManager.waitForConnection(HOST, 10_000);
+    expect(socketsFor(HOST)).toHaveLength(dials + 1);
+    lastSocket(HOST).open();
+    await expect(waiting).resolves.toBe(true);
+  });
+
+  it("is rate-limited per relay: calls in quick succession dial once", () => {
+    const dials = hostInBackoff();
+    vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+    for (let i = 0; i < 25; i++) relayManager.connect(HOST, "read+write");
+    expect(socketsFor(HOST)).toHaveLength(dials + 1);
+    // That dial fails; more "make sure it is connected" calls right away do nothing.
+    lastSocket(HOST).fail();
+    for (let i = 0; i < 25; i++) relayManager.connect(HOST, "read+write");
+    expect(socketsFor(HOST)).toHaveLength(dials + 1);
+    vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+    relayManager.connect(HOST, "read+write");
+    expect(socketsFor(HOST)).toHaveLength(dials + 2);
+  });
+
+  it("one relay's kick does not use up another's", () => {
+    connectOutsideRelay();
+    relayManager.connect(HOST, "read+write");
+    relayManager.connect("wss://host-two.example", "read+write");
+    failTogether([HOST, "wss://host-two.example"]);
+    vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+    const a = socketsFor(HOST).length;
+    const b = socketsFor("wss://host-two.example").length;
+    relayManager.connect(HOST);
+    relayManager.connect("wss://host-two.example");
+    expect(socketsFor(HOST)).toHaveLength(a + 1);
+    expect(socketsFor("wss://host-two.example")).toHaveLength(b + 1);
+  });
+
+  it("the user's own relays and the app relay are kicked the same way", () => {
+    connectOutsideRelay();
+    relayManager.reconcileUserRelays([{ url: "wss://mine.example", mode: "read+write" }]);
+    relayManager.connect(APP_RELAY);
+    failTogether(["wss://mine.example", APP_RELAY]);
+    vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+    const mine = socketsFor("wss://mine.example").length;
+    const app = socketsFor(APP_RELAY).length;
+    relayManager.reconcileUserRelays([{ url: "wss://mine.example", mode: "read+write" }]);
+    relayManager.connect(APP_RELAY, "read+write");
+    expect(socketsFor("wss://mine.example")).toHaveLength(mine + 1);
+    expect(socketsFor(APP_RELAY)).toHaveLength(app + 1);
+  });
+
+  it("a transient caller never shortens a backoff", () => {
+    connectOutsideRelay();
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false); // keep the fan-out relay from being dropped
+    relayManager.subscribe({ filters: [{ kinds: [1] }], relayUrls: [DEAD], onEvent: noop });
+    failDials(DEAD, 4);
+    lastSocket(DEAD).fail();
+    vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+    const dials = socketsFor(DEAD).length;
+    relayManager.connect(DEAD, "read", { transient: true });
+    relayManager.subscribe({ filters: [{ kinds: [1], authors: ["b"] }], relayUrls: [DEAD], onEvent: noop });
+    relayManager.connectPeer(DEAD);
+    expect(socketsFor(DEAD)).toHaveLength(dials);
+  });
+
+  it("does not touch a relay that is connected or connecting", () => {
+    connectOutsideRelay();
+    relayManager.connect(HOST);
+    for (let i = 0; i < 10; i++) relayManager.connect(HOST);
+    lastSocket(HOST).open();
+    for (let i = 0; i < 10; i++) relayManager.connect(HOST);
+    expect(socketsFor(HOST)).toHaveLength(1);
   });
 });
 
@@ -333,21 +472,110 @@ describe("relayManager — strikes reset", () => {
     expect(relayManager.isSessionDropped(DEAD)).toBe(false); // eligible again when next needed
   });
 
-  it("when the network evidently returns (a relay connects after none were): clears the others' backoff", () => {
-    const damus = connectOutsideRelay();
-    vi.advanceTimersByTime(RECONNECT.STABLE_AFTER);
-    relayManager.connect(HOST);
-    // Everything goes down together.
-    damus.fail();
-    failDials(HOST, 5);
-    lastSocket(HOST).fail(); // HOST now waits ~32 s
-    const hostDials = socketsFor(HOST).length;
+  describe("the network evidently returning (an outside relay connects after none were)", () => {
+    /** Outside relay up and stable, HOST chosen. */
+    function setup() {
+      const damus = connectOutsideRelay();
+      vi.advanceTimersByTime(RECONNECT.STABLE_AFTER);
+      relayManager.connect(HOST);
+      return damus;
+    }
+    /** Take the outside relay down and keep its dials failing for `ms`. */
+    function outage(ms: number) {
+      lastSocket(DAMUS).fail();
+      const start = Date.now();
+      while (Date.now() - start < ms) {
+        vi.advanceTimersByTime(250);
+        if (lastSocket(DAMUS).readyState === MockWebSocket.CONNECTING && Date.now() - start < ms) lastSocket(DAMUS).fail();
+      }
+      // Wait for its next dial and let it through.
+      while (lastSocket(DAMUS).readyState !== MockWebSocket.CONNECTING) vi.advanceTimersByTime(250);
+    }
 
-    // The first relay to get through proves the network is back.
-    vi.advanceTimersByTime(1500);
-    lastSocket(DAMUS).open();
-    expect(socketsFor(HOST)).toHaveLength(hostDials + 1);
-    expect(relayManager.getAllConnections().get(HOST)!.getStrikes()).toBe(0);
+    it("after a real outage: clears the others' backoff and redials them at once", () => {
+      setup();
+      lastSocket(DAMUS).fail();
+      failDials(HOST, 5);
+      lastSocket(HOST).fail(); // HOST now waits 32 s
+      const hostDials = socketsFor(HOST).length;
+      // The outside relay has been gone for well over NETWORK_DOWN_MIN by now.
+      while (lastSocket(DAMUS).readyState !== MockWebSocket.CONNECTING) vi.advanceTimersByTime(250);
+      lastSocket(DAMUS).open();
+      expect(socketsFor(HOST)).toHaveLength(hostDials + 1);
+      expect(relayManager.getAllConnections().get(HOST)!.getStrikes()).toBe(0);
+    });
+
+    // Regression: every flap of the only outside relay used to count as "the
+    // network is back" and replayed each dead relay's dials.
+    it("a relay that flaps (gone for a second or two) restores nothing", () => {
+      setup();
+      relayManager.subscribe({ filters: [{ kinds: [1] }], relayUrls: [DEAD], onEvent: noop });
+      failDials(DEAD, 3);
+      failDials(HOST, 5);
+      lastSocket(HOST).fail();
+      expect(relayManager.isSessionDropped(DEAD)).toBe(true);
+      const hostDials = socketsFor(HOST).length;
+      const strikes = relayManager.getAllConnections().get(HOST)!.getStrikes();
+
+      for (let flap = 0; flap < 5; flap++) {
+        lastSocket(DAMUS).fail();
+        vi.advanceTimersByTime(1500); // back after its 1 s reconnect delay
+        lastSocket(DAMUS).open();
+        vi.advanceTimersByTime(RECONNECT.STABLE_AFTER);
+      }
+      expect(relayManager.isSessionDropped(DEAD)).toBe(true);
+      expect(socketsFor(DEAD)).toHaveLength(3);
+      expect(relayManager.getAllConnections().get(HOST)!.getStrikes()).toBeGreaterThanOrEqual(strikes);
+      // HOST was only dialed by its own schedule (at most once in those ~32 s).
+      expect(socketsFor(HOST).length - hostDials).toBeLessThanOrEqual(1);
+    });
+
+    it("restores at most once per RESTORE_MIN_INTERVAL, however often the relay goes away for long", () => {
+      setup();
+      relayManager.subscribe({ filters: [{ kinds: [1] }], relayUrls: [DEAD], onEvent: noop });
+      failDials(DEAD, 3);
+
+      outage(RECONNECT.NETWORK_DOWN_MIN + 1000);
+      lastSocket(DAMUS).open(); // first long outage ends: restore, DEAD gets another chance
+      expect(socketsFor(DEAD)).toHaveLength(4);
+      failDials(DEAD, 3);
+      expect(relayManager.isSessionDropped(DEAD)).toBe(true);
+      expect(socketsFor(DEAD)).toHaveLength(6);
+
+      vi.advanceTimersByTime(RECONNECT.STABLE_AFTER);
+      outage(RECONNECT.NETWORK_DOWN_MIN + 1000);
+      lastSocket(DAMUS).open(); // a second long outage within the minute: no restore
+      expect(socketsFor(DEAD)).toHaveLength(6);
+      expect(relayManager.isSessionDropped(DEAD)).toBe(true);
+
+      vi.advanceTimersByTime(RECONNECT.RESTORE_MIN_INTERVAL);
+      outage(RECONNECT.NETWORK_DOWN_MIN + 1000);
+      lastSocket(DAMUS).open(); // a minute later it may restore again
+      expect(socketsFor(DEAD)).toHaveLength(7);
+    });
+
+    it("the first outside relay of a session restores nothing (there was no outage)", () => {
+      relayManager.connect(APP_RELAY);
+      lastSocket(APP_RELAY).open();
+      relayManager.connect(HOST);
+      failDials(HOST, 4);
+      lastSocket(HOST).fail();
+      const hostDials = socketsFor(HOST).length;
+      vi.advanceTimersByTime(RECONNECT.KICK_INTERVAL);
+      connectOutsideRelay();
+      expect(socketsFor(HOST)).toHaveLength(hostDials);
+    });
+
+    it("the browser `online` event is not rate-limited", () => {
+      setup();
+      for (let i = 0; i < 3; i++) {
+        failDials(HOST, 3);
+        lastSocket(HOST).fail();
+        const before = socketsFor(HOST).length;
+        window.dispatchEvent(new Event("online"));
+        expect(socketsFor(HOST)).toHaveLength(before + 1);
+      }
+    });
   });
 });
 
@@ -481,7 +709,7 @@ describe("relayManager — user-initiated requests get through a saturated cap",
 
   it("a standing sub is deferred, a priority one is on the wire immediately", () => {
     const ws = saturateAppRelay();
-    expect(reqIds(ws)).toHaveLength(98); // default cap 100, 2 reserved
+    expect(reqIds(ws)).toHaveLength(100); // standing subs use the whole cap
 
     const standing = relayManager.subscribe({ filters: [{ kinds: [1], limit: 30 }], onEvent: noop });
     expect(reqIds(ws)).not.toContain(standing);
@@ -490,16 +718,40 @@ describe("relayManager — user-initiated requests get through a saturated cap",
     const page = relayManager.subscribe({ filters: [{ kinds: [1], until: 1000, limit: 30 }], onEvent: noop, priority: true });
     expect(reqIds(ws)).toContain(page);
     expect(relayManager.getSubscriptionDelivery(page)).toEqual({ relays: 1, sent: 1 });
+    // It borrowed exactly one standing sub's slot…
+    const parked = frames(ws, "CLOSE").map((m) => m[1] as string);
+    expect(parked).toHaveLength(1);
+    // …and gives it back when it closes.
+    relayManager.closeSubscription(page);
+    expect(reqIds(ws).slice(-1)).toEqual(parked);
   });
 
-  it("delivers page after page while the cap stays saturated", () => {
+  it("delivers page after page while the cap stays saturated, with the relay never over its cap", () => {
     const ws = saturateAppRelay();
+    const live = new Set<string>();
+    let peak = 0;
+    let seen = 0;
+    const replay = () => {
+      for (const raw of ws.sent.slice(seen)) {
+        const m = JSON.parse(raw) as string[];
+        if (m[0] === "REQ") live.add(m[1]);
+        else if (m[0] === "CLOSE") live.delete(m[1]);
+        peak = Math.max(peak, live.size);
+      }
+      seen = ws.sent.length;
+    };
+    replay();
+    const standing = new Set(live);
     for (let n = 0; n < 10; n++) {
       const page = relayManager.subscribe({ filters: [{ kinds: [1], until: 1000 - n, limit: 30 }], onEvent: noop, priority: true });
-      expect(reqIds(ws)).toContain(page);
+      replay();
+      expect(live.has(page)).toBe(true);
       relayManager.closeSubscription(page);
+      replay();
     }
-    expect(reqIds(ws)).toHaveLength(108);
+    expect(peak).toBe(100);
+    // Every standing sub that was live before is live again afterwards.
+    expect(live).toEqual(standing);
   });
 
   it("keeps the priority when the request is forwarded to a relay that connects later", () => {
@@ -584,18 +836,41 @@ describe("relayManager — the app relay is left alone (sticky-contract regressi
     expectUntouched(app, subs);
   });
 
-  it("a priority request at a saturated cap closes none of its subscriptions", () => {
+  it("a priority request with room to spare closes none of its subscriptions", () => {
+    const { app, subs } = session(); // 12 subs on a cap of 100
+    const page = relayManager.subscribe({ filters: [{ kinds: [1], limit: 30 }], onEvent: noop, priority: true });
+    expect(reqIds(app)).toContain(page);
+    expect(frames(app, "CLOSE")).toEqual([]);
+    relayManager.closeSubscription(page);
+    expect(frames(app, "CLOSE").map((m) => m[1])).toEqual([page]);
+    for (const id of subs) expect(reqIds(app).filter((x) => x === id)).toHaveLength(1);
+    expect(socketsFor(APP_RELAY)).toHaveLength(1);
+  });
+
+  it("at a full cap it borrows one slot and gives it back; the socket and every other sub stay put", () => {
     const { app, subs } = session();
     for (let i = 0; i < 130; i++) {
       subs.push(relayManager.subscribe({ filters: [{ kinds: [7], "#e": [`e${i}`] }], relayUrls: [APP_RELAY], onEvent: noop }));
     }
-    const sentBefore = reqIds(app).length;
+    const liveBefore = reqIds(app); // the 100 that fit
+    expect(liveBefore).toHaveLength(100);
+
     const page = relayManager.subscribe({ filters: [{ kinds: [1], limit: 30 }], onEvent: noop, priority: true });
-    expect(reqIds(app)).toHaveLength(sentBefore + 1);
-    expect(frames(app, "CLOSE")).toEqual([]);
+    const closed = frames(app, "CLOSE").map((m) => m[1] as string);
+    expect(closed).toHaveLength(1); // one standing sub parked, no more
+    expect(liveBefore).toContain(closed[0]);
+    expect(reqIds(app)).toContain(page);
+
     relayManager.closeSubscription(page);
-    expect(frames(app, "CLOSE").map((m) => m[1])).toEqual([page]);
+    // The parked sub is back; nothing else was re-sent or closed.
+    expect(frames(app, "CLOSE").map((m) => m[1])).toEqual([closed[0], page]);
+    const ids = reqIds(app);
+    expect(ids.filter((x) => x === closed[0])).toHaveLength(2);
+    for (const id of liveBefore) if (id !== closed[0]) expect(ids.filter((x) => x === id)).toHaveLength(1);
+    // The long-lived subs opened first were never the ones borrowed from.
+    expect(subs.slice(0, 12)).not.toContain(closed[0]);
     expect(socketsFor(APP_RELAY)).toHaveLength(1);
+    expect(app.readyState).toBe(MockWebSocket.OPEN);
   });
 
   it("reconcile, pruning and repeated connect() calls still never recreate it", () => {

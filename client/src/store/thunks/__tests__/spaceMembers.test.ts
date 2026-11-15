@@ -390,6 +390,81 @@ describe("syncSpaceMembers thunk", () => {
       expect(store.getState().spaceConfig.members["space-1"]).toHaveLength(2);
     });
 
+    // The comparison is field by field (no JSON.stringify of both rosters on
+    // the main thread), so every field has to be covered.
+    describe("field-by-field comparison", () => {
+      const base = () => [
+        makeMember({ pubkey: "pk-1", joinedAt: 10, roles: [makeRole({ id: "r1", permissions: ["a", "b"], color: "#fff" })] }),
+        makeMember({ pubkey: "pk-2", joinedAt: 20, roles: [] }),
+      ];
+      async function changesAfter(fetched: SpaceMember[]) {
+        const store = createTestStore({
+          spaces: spacesState(["pk-1", "pk-2"]),
+          spaceConfig: { ...createTestStore().getState().spaceConfig, members: { "space-1": base() } },
+        });
+        mockFetch.mockResolvedValue(fetched);
+        return stateChanges(store, () => store.dispatch(syncSpaceMembers("space-1")));
+      }
+
+      it("identical data in fresh objects is no change", async () => {
+        expect(await changesAfter(base())).toBe(0);
+      });
+
+      const roleEdits: Array<[string, Partial<SpaceRole>]> = [
+        ["id", { id: "r2" }],
+        ["spaceId", { spaceId: "other" }],
+        ["name", { name: "Renamed" }],
+        ["position", { position: 1 }],
+        ["color", { color: "#000" }],
+        ["color removed", { color: undefined }],
+        ["isDefault", { isDefault: false }],
+        ["isAdmin", { isAdmin: true }],
+        ["a permission added", { permissions: ["a", "b", "c"] }],
+        ["a permission swapped", { permissions: ["a", "x"] }],
+        ["permissions reordered", { permissions: ["b", "a"] }],
+      ];
+      it.each(roleEdits)("a role's %s changing is a change", async (_label, edit) => {
+        const fetched = base();
+        fetched[0].roles[0] = { ...fetched[0].roles[0], ...edit };
+        expect(await changesAfter(fetched)).toBe(1); // roster only; the pubkey list is the same
+      });
+
+      it("a role added or removed is a change", async () => {
+        const added = base();
+        added[1].roles = [makeRole()];
+        expect(await changesAfter(added)).toBe(1);
+        const removed = base();
+        removed[0].roles = [];
+        expect(await changesAfter(removed)).toBe(1);
+      });
+
+      it("a different joinedAt is a change", async () => {
+        const fetched = base();
+        fetched[1].joinedAt = 21;
+        expect(await changesAfter(fetched)).toBe(1);
+      });
+
+      it("handles a roster of several thousand members, equal or differing only at the end", async () => {
+        const big = () =>
+          Array.from({ length: 5000 }, (_, i) =>
+            makeMember({ pubkey: `pk-${i}`, joinedAt: i, roles: [makeRole({ permissions: ["read", "write"] })] }),
+          );
+        const pubkeys = big().map((m) => m.pubkey);
+        const store = createTestStore({
+          spaces: spacesState(pubkeys),
+          spaceConfig: { ...createTestStore().getState().spaceConfig, members: { "space-1": big() } },
+        });
+        mockFetch.mockResolvedValue(big());
+        expect(await stateChanges(store, () => store.dispatch(syncSpaceMembers("space-1")))).toBe(0);
+
+        const changed = big();
+        changed[4999].roles[0].isAdmin = true;
+        mockFetch.mockResolvedValue(changed);
+        expect(await stateChanges(store, () => store.dispatch(syncSpaceMembers("space-1")))).toBe(1);
+        expect(store.getState().spaceConfig.members["space-1"][4999].roles[0].isAdmin).toBe(true);
+      });
+    });
+
     it("a reordered roster counts as a change", async () => {
       const store = createTestStore({
         spaces: spacesState(["pk-1", "pk-2"]),

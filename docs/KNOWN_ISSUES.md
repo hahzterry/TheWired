@@ -94,34 +94,41 @@ relays produced 97 fan-out dials in 150 s with no end in sight.
   or opens and closes again within `STABLE_AFTER` (5 s) is a strike. A
   connection that holds resets the count.
 - **Tiers.** `relayManager` classifies every relay at failure time:
-  - *app* — the platform relay. Retried forever, backoff capped at 60 s.
+  - *app* — the platform relay. Retried forever.
   - *pinned* — relays the user or the app chose: the user's relay list, DM
     relays, anything a feature `connect()`s explicitly, space hosts and mirrors
     (`pinRelay`, called by `groupSubscriptions`), bootstrap and indexer relays.
-    Retried forever; after `STRIKE_LIMIT` (3) strikes the backoff cap rises to
-    5 minutes.
+    Retried forever.
   - *transient* — relays dialed only because someone else's data names them:
     the auto-dial in `relayManager.subscribe` (outbox), a DM recipient's inbox
-    (`connectPeer`), the search relay. After 3 strikes the relay is **dropped
-    for the session**: 3 dials, then nothing. Subscriptions waiting on it get
-    an end-of-stored-events so no EOSE quorum sits out its timeout, and later
-    subscriptions skip it.
+    (`connectPeer`), the search relay. After `STRIKE_LIMIT` (3) strikes the
+    relay is **dropped for the session**: 3 dials, then nothing. Subscriptions
+    it never answered get an end-of-stored-events so no EOSE quorum sits out
+    its timeout, and later subscriptions skip it.
+
+  Every tier backs off on the same schedule as before (1, 2, 4 … capped at
+  60 s). The noise came from fan-out relays, and those are now dropped, so the
+  cap for chosen relays did not need to change.
 - **Not the relay's fault.** A transient relay is only dropped while some
   non-loopback relay is connected (and `navigator.onLine` is true). With the
   network down it keeps backing off instead.
-- **Reset.** The browser `online` event — or a relay connecting after none were
-  (wake from sleep) — clears strikes, redials whatever was backing off and
-  lifts session drops that a live subscription still wants.
-- `connect()` on a relay that is backing off no longer redials it (features
-  call it before every publish, which bypassed the backoff).
+- **Reset.** The browser `online` event clears strikes, redials whatever was
+  backing off and lifts session drops that a live subscription still wants.
+  So does an outside relay connecting after none had been connected for 10 s
+  (wake from sleep), at most once a minute — a single relay flapping does not
+  count.
+- **Asking again dials at once.** `relayManager.connect()` on a chosen relay
+  that is waiting out its backoff dials immediately (a send to a space whose
+  host just came back does not wait for the retry timer), at most once per
+  5 s per relay. Transient callers never shorten a backoff.
 - Failed dials no longer trip the reconnect-storm detector, and a past storm
   now expires on its own. Dead relays used to hold every healthy relay's
   reconnect to the 10 s storm cooldown.
 
 **Left as is:** a dead relay in the user's own list is still dialed (at most
-every 5 minutes) and still logs each attempt; that is the price of never
-dropping a relay the user chose. A relay dialed for a group-import preview is
-treated as chosen, not transient.
+once a minute, as before) and still logs each attempt; that is the price of
+never dropping a relay the user chose. A relay dialed for a group-import
+preview is treated as chosen, not transient.
 
 ### 5. "Load more" on accounts with many joined spaces (SHIPPED)
 
@@ -131,15 +138,17 @@ an account's standing subs filled a relay's cap, the REQ went to the back of
 then silently went back to "Load more".
 
 **Shipped:**
-- **Reserved slots** (`relayConnection.ts`, `reservedSlots`). Each relay keeps
-  2 slots of its cap (1 on caps under 20, none under 5) that only priority
-  subscriptions may take; standing subs stop at `cap − reserve`. If even the
-  reserve is taken, a priority sub goes to the front of the deferred queue and
-  is the first sent when a slot frees; on reconnect priority subs are re-sent
-  first.
-- **Pagination is priority** (`groupSubscriptions.ts`, `fetchPage`). Refresh and
-  "load more" for space feeds and the friends feed are priority one-shots
-  (`subscriptionManager.subscribeOnce({ priority: true })`).
+- **Priority requests borrow a slot** (`relayConnection.ts`). Standing subs
+  keep the relay's whole cap. When a priority subscription finds the relay
+  full, the connection CLOSEs one standing sub (the most recently opened one
+  on the wire), sends the priority REQ in its place, and re-sends the parked
+  sub the moment a slot frees — normally when the one-shot closes, well under
+  a second later. At most two subs are parked at a time; a third concurrent
+  priority request waits at the front of the deferred queue. On reconnect
+  priority subs are re-sent first.
+- **"Load more" is priority** (`groupSubscriptions.ts`, `fetchPage`), for space
+  feeds and the friends feed. Refreshes (including the automatic first fetch
+  of a feed) stay ordinary subscriptions so they cannot crowd it out.
 - **Error and retry.** `subscribeOnce` now reports how many relays the REQ was
   actually written to. If no read relay is connected (after a 4 s grace for a
   reconnect) or the request never left the client, the feed shows "Couldn't
@@ -147,9 +156,16 @@ then silently went back to "Load more".
   but not answered in time shows "The relays took too long to answer." State
   lives in `feed.meta[contextId].loadMoreError`.
 
-**Not covered:** the profile page's `LoadMoreSentinel` (`useProfileNotes`) is a
+**Trade-off:** the parked sub misses live events while it is closed. It is
+re-sent with its original filters, so stored events inside its `since`/`limit`
+window come back; a sub that only wants events newer than "now" can miss what
+arrived in that gap.
+
+**Not covered:** refresh on a saturated relay still waits for a slot, as it
+always did. The profile page's `LoadMoreSentinel` (`useProfileNotes`) is a
 separate path and still uses plain subscriptions. Which standing subs win the
-remaining slots is still decided in insertion order — see #8.
+slots when an account is over the cap is still decided in insertion order —
+see #8.
 
 ### 6. Media-feed video thumbnails — re-seek caching (SHIPPED, with residual)
 

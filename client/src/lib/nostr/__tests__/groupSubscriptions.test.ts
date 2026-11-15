@@ -42,6 +42,7 @@ import {
   loadMoreSpaceFeed,
   enterSpace,
   loadMoreFriendsFeed,
+  refreshFriendsFeed,
 } from "../groupSubscriptions";
 import { store, resetAll } from "@/store";
 import { setActiveChannel, setChannelSubscription } from "@/store/slices/spacesSlice";
@@ -453,10 +454,26 @@ describe("groupSubscriptions — load more is delivered or says why not", () => 
     expect(opts.filters[0]).toMatchObject({ authors: ["pk1"], until: 999 });
   });
 
-  it("refresh is a priority one-shot too", async () => {
-    refreshSpaceFeed(member(), "notes");
+  // Refreshes (the automatic first fetch of a feed among them) are ordinary
+  // one-shots: two of them must not be able to crowd a "load more" out.
+  it("a refresh is NOT a priority request, automatic or manual", async () => {
+    refreshSpaceFeed(member(), "notes", true);
+    refreshSpaceFeed(member(), "notes", false);
+    store.dispatch(setFollowList({ follows: ["f1"], createdAt: 5 }));
+    refreshFriendsFeed("notes", true);
+    refreshFriendsFeed("notes");
     await settle();
-    expect(subscribeOnce.mock.calls[0][0].priority).toBe(true);
+    expect(subscribeOnce).toHaveBeenCalledTimes(4);
+    for (const call of subscribeOnce.mock.calls) expect(call[0].priority).toBeUndefined();
+  });
+
+  it("only load more is priority, for space feeds and the friends feed", async () => {
+    loadMoreSpaceFeed(member(), "notes");
+    store.dispatch(setFollowList({ follows: ["f1"], createdAt: 5 }));
+    store.dispatch(trackFeedTimestamp({ contextId: `${FRIENDS_FEED_ID}:notes`, createdAt: 1000 }));
+    loadMoreFriendsFeed("notes");
+    await settle();
+    expect(subscribeOnce.mock.calls.map((c) => c[0].priority)).toEqual([true, true]);
   });
 
   it("shows the loading state while the request is out and clears it after", async () => {
