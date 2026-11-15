@@ -1,4 +1,4 @@
-import { subscriptionManager } from "./subscriptionManager";
+import { subscriptionManager, type EoseInfo } from "./subscriptionManager";
 import { relayManager } from "./relayManager";
 import { flushEventPipeline } from "./eventPipeline";
 import { buildChannelFilter, buildSpaceFeedFilter, chunkAuthorsFilter, splitChatFilters } from "./filterBuilder";
@@ -13,7 +13,7 @@ import { wiredLayoutDTag, obeliskLayoutDTags, authorizedLayoutAuthors } from "..
 import { wiredRelaysDTag, resolveRelaySet } from "../../features/spaces/relaySet";
 import { store } from "../../store";
 import { setChannelSubscription, removeChannelSubscription } from "../../store/slices/spacesSlice";
-import { setRefreshing, setLoadingMore, setHasMore } from "../../store/slices/feedSlice";
+import { setRefreshing, setLoadingMore, setLoadMoreError, setHasMore } from "../../store/slices/feedSlice";
 
 // ── Background chat subscriptions ────────────────────────────────
 // Always-on lightweight subs so notifications fire even when the user is
@@ -118,6 +118,11 @@ function openHostSub(host: string, since: number = defaultSince()): void {
   }
   const ids = [...(spacesByHost.get(host) ?? [])].filter(Boolean);
   if (ids.length === 0) return;
+
+  // A space host is the user's relay by choice (they joined a space on it):
+  // keep retrying it however long it is down, never drop it as a dead
+  // fan-out target.
+  relayManager.pinRelay(host);
 
   const subId = subscriptionManager.subscribe({
     filters: [
@@ -340,6 +345,7 @@ export function enterSpace(groupId: string, relayUrl: string, relayPubkey?: stri
   };
   if (relayPubkey) filter.authors = [relayPubkey];
 
+  relayManager.pinRelay(relayUrl); // the space's host: never dropped (see openHostSub)
   const subId = subscriptionManager.subscribe({
     filters: [filter],
     relayUrls: [relayUrl],
@@ -412,6 +418,7 @@ export function switchChannel(
   });
 
   // Chat reactions (kind:7) get their own filter so they don't eat the page.
+  relayManager.pinRelay(relayUrl);
   const subId = subscriptionManager.subscribe({
     filters: splitChatFilters(filter),
     relayUrls: [relayUrl],
@@ -471,11 +478,12 @@ export function switchSpaceChannel(
   // (authority) plus any mirrors (M9) — so history/live survive the authority
   // going offline; the pipeline dedups by event id. Feed channels (notes,
   // media, articles) use all read relays — members publish to their own relays.
+  const chatRelays = route.filterMode === "htag" ? resolveRelaySet(space) : undefined;
+  // The host and its mirrors are the space's relays, not fan-out targets.
+  for (const url of chatRelays ?? []) relayManager.pinRelay(url);
   const subId = subscriptionManager.subscribe({
     filters: splitChatFilters(filter),
-    relayUrls: route.filterMode === "htag"
-      ? resolveRelaySet(space)
-      : undefined,  // all read relays
+    relayUrls: chatRelays, // undefined = all read relays
   });
 
   store.dispatch(setChannelSubscription({ channelId: subKey, subId }));
@@ -609,9 +617,7 @@ export function refreshFriendsFeed(channelType: string, initial = false): void {
 
   // One-shot: subscribeOnce closes the sub on EOSE/timeout/no-relays, so it can't
   // leak (this previously needed a manual settled flag + timeout + close).
-  subscriptionManager
-    .subscribeOnce({ filters, timeoutMs: PAGINATION_TIMEOUT_MS })
-    .then(() => store.dispatch(setRefreshing({ contextId, value: false })));
+  fetchPage(filters).then(() => store.dispatch(setRefreshing({ contextId, value: false })));
 }
 
 /** Load older Friends Feed events */
@@ -639,20 +645,7 @@ export function loadMoreFriendsFeed(channelType: string): void {
   );
 
   const previousOldest = meta.oldestAt;
-
-  subscriptionManager
-    .subscribeOnce({ filters, timeoutMs: PAGINATION_TIMEOUT_MS })
-    .then(({ reason }) => {
-      store.dispatch(setLoadingMore({ contextId, value: false }));
-      // #78: only an honest all-relays EOSE concludes "no more older events". A
-      // timeout/no-relays says nothing about whether more exist → keep hasMore.
-      if (reason !== "all-eose") return;
-      flushEventPipeline(); // apply buffered events so oldestAt reflects this page
-      const updatedMeta = store.getState().feed.meta[contextId];
-      if (!updatedMeta || updatedMeta.oldestAt >= previousOldest) {
-        store.dispatch(setHasMore({ contextId, value: false }));
-      }
-    });
+  fetchPage(filters).then((info) => settleLoadMore(contextId, previousOldest, info));
 }
 
 // ── Feed pagination ──────────────────────────────────────────────
@@ -663,6 +656,49 @@ export function loadMoreFriendsFeed(channelType: string): void {
  */
 /** Timeout for one-shot pagination subscriptions (ms) */
 const PAGINATION_TIMEOUT_MS = 30_000;
+/** How long a page request waits for a read relay when none is connected (a
+ *  reconnect in progress) before reporting that it could not be sent. */
+const READ_RELAY_GRACE_MS = 4_000;
+
+/**
+ * One page of a feed, asked for because the user is looking at it (refresh,
+ * "load more"). It is a priority subscription: each relay keeps a couple of
+ * subscription slots that standing subs cannot take, so the REQ goes out even
+ * when an account's background subs have filled the relay's cap. Before this,
+ * the REQ sat in the deferred queue until the 30 s timeout and the button did
+ * nothing. Auto-closes on every path.
+ */
+async function fetchPage(filters: NostrFilter[]): Promise<EoseInfo> {
+  if (!(await relayManager.waitForReadRelay(READ_RELAY_GRACE_MS))) {
+    return { reason: "no-relays", sentTo: 0 };
+  }
+  return subscriptionManager.subscribeOnce({
+    filters,
+    timeoutMs: PAGINATION_TIMEOUT_MS,
+    priority: true,
+  });
+}
+
+/** Finish a "load more": end of feed, more to come, or a failure the user can retry. */
+function settleLoadMore(contextId: string, previousOldest: number, info: EoseInfo): void {
+  store.dispatch(setLoadingMore({ contextId, value: false }));
+  flushEventPipeline(); // apply buffered events so oldestAt reflects this page
+  const meta = store.getState().feed.meta[contextId];
+  const gotOlder = !!meta && meta.oldestAt < previousOldest;
+
+  if (info.reason === "all-eose") {
+    // #78: only an honest all-relays EOSE concludes "no more older events". A
+    // timeout/no-relays says nothing about whether more exist → keep hasMore.
+    if (!gotOlder) store.dispatch(setHasMore({ contextId, value: false }));
+    return;
+  }
+  // Some relay answered with older events; the slow ones cost nothing.
+  if (gotOlder) return;
+  // Nothing came back and it was not an honest end: say so, with a retry,
+  // instead of quietly returning to "Load more".
+  const unsent = info.reason === "no-relays" || info.sentTo === 0;
+  store.dispatch(setLoadMoreError({ contextId, value: unsent ? "unreachable" : "timeout" }));
+}
 
 /**
  * Refresh a space feed channel: fetch newer events (since newestAt).
@@ -703,9 +739,7 @@ export function refreshSpaceFeed(
 
   // Feed channels always use all read relays — members publish notes to their own
   // relays. One-shot: subscribeOnce closes the sub on every path (no leak).
-  subscriptionManager
-    .subscribeOnce({ filters: [filter], timeoutMs: PAGINATION_TIMEOUT_MS })
-    .then(() => store.dispatch(setRefreshing({ contextId, value: false })));
+  fetchPage([filter]).then(() => store.dispatch(setRefreshing({ contextId, value: false })));
 }
 
 /**
@@ -738,18 +772,5 @@ export function loadMoreSpaceFeed(
   };
 
   const previousOldest = meta.oldestAt;
-
-  subscriptionManager
-    .subscribeOnce({ filters: [filter], timeoutMs: PAGINATION_TIMEOUT_MS })
-    .then(({ reason }) => {
-      store.dispatch(setLoadingMore({ contextId, value: false }));
-      // #78: only an honest all-relays EOSE concludes "no more older events". A
-      // timeout/no-relays says nothing about whether more exist → keep hasMore.
-      if (reason !== "all-eose") return;
-      flushEventPipeline(); // apply buffered events so oldestAt reflects this page
-      const updatedMeta = store.getState().feed.meta[contextId];
-      if (!updatedMeta || updatedMeta.oldestAt >= previousOldest) {
-        store.dispatch(setHasMore({ contextId, value: false }));
-      }
-    });
+  fetchPage([filter]).then((info) => settleLoadMore(contextId, previousOldest, info));
 }

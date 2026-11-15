@@ -305,6 +305,7 @@ export function NotesFeed() {
               isLoading={meta.isLoadingMore}
               hasMore={!hasMoreLocal && meta.hasMore}
               onLoadMore={loadMore}
+              error={meta.loadMoreError}
             />
           </div>
         )}

@@ -2,12 +2,31 @@ import type { NostrEvent, NostrFilter, UnsignedEvent } from "../../types/nostr";
 import type { RelayMode } from "../../types/relay";
 import type { RelayEventCallback, RelayEOSECallback, RelayOKCallback, RelayStatusCallback, SubscribeOptions, RelayConfig } from "./types";
 import { RelayConnection } from "./relayConnection";
-import { StormDetector } from "./reconnect";
-import { APP_RELAY, BOOTSTRAP_RELAYS, INDEXER_RELAYS } from "./constants";
+import { StormDetector, type RelayTier } from "./reconnect";
+import { APP_RELAY, BOOTSTRAP_RELAYS, INDEXER_RELAYS, RECONNECT } from "./constants";
 import { normalizeRelayUrl } from "./relayUrl";
 import { createLogger, shortRelay } from "../debug/logger";
 
 const log = createLogger("sub");
+const relayLog = createLogger("relay");
+
+/** Loopback relays (dev relay, the embedded relay) stay reachable with no
+ *  network at all, so their being connected says nothing about the network. */
+function isLoopback(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === "localhost" || host === "[::1]" || host === "::1" || host.startsWith("127.");
+  } catch {
+    return false;
+  }
+}
+
+/** Dial order when a burst is being spaced out (lower dials first). */
+function dialRank(tier: RelayTier, mode: RelayMode): number {
+  if (tier === "app") return 0;
+  if (tier === "pinned") return mode === "read" ? 2 : 1;
+  return 3;
+}
 
 /** Kinds the indexer-only relays (purplepag.es / user.kindpag.es) actually serve:
  *  metadata, contacts, relay list. They reject everything else and have strict
@@ -51,6 +70,33 @@ class RelayManagerImpl {
    *  feature dials (space host, DM recipients, preview, search) keep working. */
   private userDisabled = new Set<string>();
 
+  /** Relays the user or the app chose this session (explicit connect(), a
+   *  space host, DM relays). With the platform relay, bootstrap/indexer relays
+   *  and the user's relay list they form the set that is never dropped. */
+  private pinned = new Set<string>();
+  /** Fan-out relays that struck out: not dialed again this session (until the
+   *  browser reports `online`, or the relay is explicitly chosen). */
+  private sessionDropped = new Set<string>();
+
+  /** Dials waiting their turn while a burst is being spaced out. */
+  private dialQueue: RelayConnection[] = [];
+  private dialTimer: ReturnType<typeof setTimeout> | null = null;
+  private dialBudget: number = RECONNECT.DIAL_BURST;
+  private lastDialAt = 0;
+  /** Relays whose NIP-11 document has been requested for the current connection. */
+  private nip11Requested = new Set<string>();
+  /** True inside disconnectAll(): per-relay status/removed callbacks are
+   *  skipped (the caller resets its whole view of the relays instead). */
+  private tearingDown = false;
+  /** Whether any non-loopback relay was connected at the last status change. */
+  private hadNetworkEvidence = false;
+
+  constructor() {
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("online", () => this.handleNetworkRestored());
+    }
+  }
+
   /** Canonical connection key: normalized URL (trailing slash stripped) so
    *  `wss://x/` and `wss://x` share one socket. Falls back to the raw string
    *  for unparseable input. */
@@ -74,6 +120,8 @@ class RelayManagerImpl {
     broadcast?: boolean;
     /** Whether this sub is allowed to target indexer-only relays. */
     indexerSafe?: boolean;
+    /** User-initiated request: uses each relay's reserved slots (see RelayConnection.subscribe). */
+    priority?: boolean;
   }>();
 
   /** Per-event-id callbacks for publish confirmation (used by publishWithConfirmation) */
@@ -124,21 +172,28 @@ class RelayManagerImpl {
    *  modes). Deliberately permissive: does NOT honor the user-disabled set, so
    *  transient feature dials (space host relays, DM recipients, group preview,
    *  search) always work. User-list-driven connects go through
-   *  reconcileUserRelays / connectFromConfig, which do honor it. */
-  connect(url: string, mode: RelayMode = "read+write"): RelayConnection {
+   *  reconcileUserRelays / connectFromConfig, which do honor it.
+   *
+   *  A plain connect() marks the relay as chosen: it is retried forever (with
+   *  capped backoff) and never dropped. Pass `transient` for a relay dialed
+   *  only because someone else's data points at it (outbox fan-out, search):
+   *  after RECONNECT.STRIKE_LIMIT failed connects it is dropped for the session. */
+  connect(url: string, mode: RelayMode = "read+write", opts: { transient?: boolean } = {}): RelayConnection {
     const k = this.key(url);
+    if (!opts.transient) {
+      this.pinned.add(k);
+      this.sessionDropped.delete(k);
+    }
     const existing = this.connections.get(k);
     if (existing) {
       // A relay first dialed for a peer's inbox is now wanted for the user's
       // own reasons: allow AUTH and answer any challenge it already sent.
-      if (this.peerOnly.delete(k)) existing.tryAuth();
-      existing.connect();
+      if (!opts.transient && this.peerOnly.delete(k)) existing.tryAuth();
+      this.enqueueDial(existing);
       return existing;
     }
 
     const conn = new RelayConnection(k, mode, this.stormDetector);
-    // Fetch NIP-11 relay info to learn subscription limits (non-blocking)
-    this.fetchNip11(k, conn);
     conn.setCallbacks({
       onEvent: (subId, event, relayUrl) => {
         // Route to the specific subscription callback
@@ -155,6 +210,7 @@ class RelayManagerImpl {
         this.publishOKCallbacks.get(eventId)?.(relayUrl, success, message);
       },
       onStatusChange: (relayUrl, status, error) => {
+        if (this.tearingDown) return;
         this.globalOnStatusChange?.(relayUrl, status, error);
         for (const waiter of this.statusWaiters) waiter(relayUrl, status, error);
         if (status === "connected") {
@@ -167,7 +223,10 @@ class RelayManagerImpl {
             for (const cb of this.reconnectListeners) cb(relayUrl);
           }
         }
+        this.noteNetworkEvidence();
       },
+      getTier: () => this.tierOf(k),
+      onStrikeOut: () => this.handleStrikeOut(k),
       onAuth: async (challenge: string, relayUrl: string): Promise<NostrEvent | null> => {
         // AUTH-privacy: never reveal the user's pubkey to a relay they haven't
         // opted into (e.g. one we dialed just to preview a group for import).
@@ -199,8 +258,166 @@ class RelayManagerImpl {
       },
     });
     this.connections.set(k, conn);
-    conn.connect();
+    this.enqueueDial(conn);
     return conn;
+  }
+
+  /** Mark a relay as chosen without dialing it or changing its mode: a space
+   *  host (or mirror) the app subscribes to is the user's choice, so it must
+   *  keep being retried and never be dropped as a dead fan-out target. Lifts a
+   *  session drop. */
+  pinRelay(url: string): void {
+    const k = this.key(url);
+    this.pinned.add(k);
+    this.sessionDropped.delete(k);
+  }
+
+  /** True while `url` is a struck-out fan-out relay that will not be dialed
+   *  again this session. Layers above mirror this so they do not wait on EOSE
+   *  from a relay that was never asked. */
+  isSessionDropped(url: string): boolean {
+    return this.sessionDropped.has(this.key(url));
+  }
+
+  /** How hard the client holds on to `k` (a normalized URL). */
+  private tierOf(k: string): RelayTier {
+    if (k === this.key(APP_RELAY)) return "app";
+    if (this.pinned.has(k) || this.userRelayUrls.has(k)) return "pinned";
+    if (BOOTSTRAP_RELAYS.some((b) => this.key(b) === k) || INDEXER_SET.has(k)) return "pinned";
+    return "transient";
+  }
+
+  // ── Dial scheduling ─────────────────────────────────────────────────
+  // A login or account switch asks for every relay at once. The first few
+  // dials go out immediately (the platform relay always does); the rest are
+  // spaced a few tens of ms apart in priority order — write-capable chosen
+  // relays, then read-only ones, then fan-out targets — so the sockets, their
+  // NIP-11 fetches and the status updates they trigger do not all land in the
+  // same main-thread task as the first render of the new session.
+
+  private enqueueDial(conn: RelayConnection): void {
+    // Up, on its way, or waiting out its backoff: nothing to dial.
+    if (!conn.isIdle()) return;
+    const tier = this.tierOf(conn.url);
+    const now = Date.now();
+    if (this.dialQueue.length === 0 && now - this.lastDialAt >= RECONNECT.DIAL_SPACING * RECONNECT.DIAL_BURST) {
+      this.dialBudget = RECONNECT.DIAL_BURST; // idle long enough: a fresh burst
+    }
+    if (tier === "app") {
+      this.dialNow(conn);
+      return;
+    }
+    if (this.dialQueue.length === 0 && this.dialBudget > 0) {
+      this.dialBudget--;
+      this.dialNow(conn);
+      return;
+    }
+    if (!this.dialQueue.includes(conn)) this.dialQueue.push(conn);
+    if (!this.dialTimer) {
+      const wait = Math.max(0, this.lastDialAt + RECONNECT.DIAL_SPACING - now);
+      this.dialTimer = setTimeout(() => this.drainDialQueue(), wait);
+    }
+  }
+
+  private drainDialQueue(): void {
+    this.dialTimer = null;
+    // Rank at dial time: a relay can be promoted (pinned) while it waits.
+    let best = -1;
+    let bestRank = Infinity;
+    for (let i = 0; i < this.dialQueue.length; i++) {
+      const c = this.dialQueue[i];
+      const rank = dialRank(this.tierOf(c.url), c.mode);
+      if (rank < bestRank) {
+        best = i;
+        bestRank = rank;
+      }
+    }
+    if (best === -1) return;
+    const [conn] = this.dialQueue.splice(best, 1);
+    // Skip a connection that was removed (or replaced) while it waited.
+    if (this.connections.get(conn.url) === conn) this.dialNow(conn);
+    if (this.dialQueue.length > 0) {
+      this.dialTimer = setTimeout(() => this.drainDialQueue(), RECONNECT.DIAL_SPACING);
+    }
+  }
+
+  private dialNow(conn: RelayConnection): void {
+    this.lastDialAt = Date.now();
+    if (!this.nip11Requested.has(conn.url)) {
+      this.nip11Requested.add(conn.url);
+      // Fetch NIP-11 relay info to learn subscription limits (non-blocking)
+      void this.fetchNip11(conn.url, conn);
+    }
+    conn.connect();
+  }
+
+  private resetDialQueue(): void {
+    if (this.dialTimer) clearTimeout(this.dialTimer);
+    this.dialTimer = null;
+    this.dialQueue = [];
+    this.dialBudget = RECONNECT.DIAL_BURST;
+    this.lastDialAt = 0;
+  }
+
+  // ── Dead relays ─────────────────────────────────────────────────────
+
+  /** Any non-loopback relay connected, i.e. proof the network itself works. */
+  private hasNetworkEvidence(exceptUrl?: string): boolean {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+    for (const c of this.connections.values()) {
+      if (c.url !== exceptUrl && c.getStatus() === "connected" && !isLoopback(c.url)) return true;
+    }
+    return false;
+  }
+
+  /** A fan-out relay failed STRIKE_LIMIT connects in a row. Drop it for the
+   *  session — unless nothing else is connected either, in which case the
+   *  network is down and the failures say nothing about this relay. Returns
+   *  true if the connection was dropped. */
+  private handleStrikeOut(k: string): boolean {
+    if (this.tierOf(k) !== "transient") return false;
+    if (!this.hasNetworkEvidence(k)) return false;
+    const conn = this.connections.get(k);
+    if (!conn) return false;
+    const subIds = conn.getSubscriptionIds();
+    relayLog.info(`${shortRelay(k)} unreachable, not dialing it again this session`);
+    this.disconnect(k);
+    this.sessionDropped.add(k);
+    // Subscriptions still waiting on this relay get their end-of-stored-events
+    // now: it will never answer, and an EOSE quorum must not sit out its
+    // timeout for it.
+    for (const subId of subIds) this.onEOSECallbacks.get(subId)?.(subId, k);
+    return true;
+  }
+
+  /** Track whether the network has come back without the browser saying so
+   *  (wake from sleep, VPN flap): the first outside relay to connect after
+   *  none were connected clears every other relay's backoff. */
+  private noteNetworkEvidence(): void {
+    const has = this.hasNetworkEvidence();
+    const regained = has && !this.hadNetworkEvidence;
+    this.hadNetworkEvidence = has;
+    if (regained) this.handleNetworkRestored();
+  }
+
+  /** The network is back (browser `online`, or a relay just connected after
+   *  none were): forget strikes, redial what was backing off — in the usual
+   *  priority order — and give dropped fan-out relays another chance where a
+   *  live subscription still wants them. Connected sockets are left alone. */
+  private handleNetworkRestored(): void {
+    const dropped = [...this.sessionDropped];
+    this.sessionDropped.clear();
+    for (const conn of this.connections.values()) {
+      if (conn.resetBackoff()) this.enqueueDial(conn);
+    }
+    if (dropped.length === 0) return;
+    const wanted = new Set<string>();
+    for (const pending of this.pendingSubscriptions.values()) {
+      for (const url of pending.intendedUrls) wanted.add(url);
+    }
+    for (const url of dropped) {
+      if (wanted.has(url) && !this.connections.has(url)) this.connect(url, "read", { transient: true });
+    }
   }
 
   /** Dial a relay only because a DM recipient's kind-10050 list names it
@@ -216,7 +433,7 @@ class RelayManagerImpl {
     const k = this.key(url);
     const existing = this.connections.get(k);
     if (existing) {
-      existing.connect();
+      this.enqueueDial(existing);
       return existing;
     }
     const chosen =
@@ -225,7 +442,10 @@ class RelayManagerImpl {
       this.userRelayUrls.has(k);
     if (chosen) return this.connect(url);
     this.peerOnly.add(k);
-    return this.connect(url, "write");
+    // A DM send is the user's own action: a peer relay that struck out earlier
+    // gets a fresh (bounded) set of attempts for it.
+    this.sessionDropped.delete(k);
+    return this.connect(url, "write", { transient: true });
   }
 
   /** True while `url` is held only for a peer's inbox (see connectPeer). */
@@ -240,17 +460,35 @@ class RelayManagerImpl {
       conn.disconnect();
       this.connections.delete(k);
       this.peerOnly.delete(k);
+      // `pinned` is kept: once chosen, a relay stays chosen for the session.
+      this.nip11Requested.delete(k);
+      this.dialQueue = this.dialQueue.filter((c) => c !== conn);
       // Forget the connect history so a future re-add counts as a first
       // connect, not a "reconnect" (no needless publishOutbox replay).
       this.everConnected.delete(k);
-      this.onRelayRemoved?.(k);
+      if (!this.tearingDown) this.onRelayRemoved?.(k);
     }
   }
 
+  /** Tear every connection down (logout, account switch). Per-relay status and
+   *  removed callbacks are NOT fired: with dozens of relays that was two store
+   *  updates per relay in one task. The caller clears its own record of the
+   *  relays in one step instead. */
   disconnectAll(): void {
-    for (const [url] of this.connections) {
-      this.disconnect(url);
+    this.tearingDown = true;
+    try {
+      for (const [url] of this.connections) {
+        this.disconnect(url);
+      }
+    } finally {
+      this.tearingDown = false;
     }
+    this.resetDialQueue();
+    this.stormDetector.reset();
+    this.pinned.clear();
+    this.sessionDropped.clear();
+    this.nip11Requested.clear();
+    this.hadNetworkEvidence = false;
     this.pendingSubscriptions.clear();
     this.publishOKCallbacks.clear();
     this.everConnected.clear();
@@ -290,6 +528,7 @@ class RelayManagerImpl {
   subscribe(opts: SubscribeOptions): string {
     const subId = nextSubId();
     const { filters, relayUrls, onEvent, onEOSE } = opts;
+    const priority = opts.priority === true;
 
     this.onEventCallbacks.set(subId, onEvent);
     if (onEOSE) {
@@ -307,25 +546,32 @@ class RelayManagerImpl {
       const normalized = [...new Set(relayUrls.map((u) => this.key(u)))];
       const urls = indexerSafe ? normalized : normalized.filter((u) => !INDEXER_SET.has(u));
       // Track intended URLs so deferred relays get the subscription when they connect
-      this.pendingSubscriptions.set(subId, { filters, intendedUrls: urls });
+      this.pendingSubscriptions.set(subId, { filters, intendedUrls: urls, priority });
 
       let sentNow = 0;
       const notConnected: string[] = [];
       for (const url of urls) {
         let conn = this.connections.get(url);
+        if (!conn && this.sessionDropped.has(url)) {
+          // A fan-out relay that already struck out this session: not dialed again.
+          notConnected.push(`${shortRelay(url)}:dropped`);
+          continue;
+        }
         if (!conn) {
           // The relay was targeted but never dialed. This is the bug behind
           // profiles stuck as hashes: PROFILE_RELAYS includes indexer-only relays
           // (purplepag.es / user.kindpag.es) that nothing else connects, so kind:0
           // REQs had nowhere to go. Dial it read-only now; forwardPendingSubscriptions
           // (re)sends the REQ once the socket opens.
-          conn = this.connect(url, "read");
+          // Not a relay anyone chose (unless tierOf says otherwise): if it turns
+          // out to be dead it is dropped for the session, not retried forever.
+          conn = this.connect(url, "read", { transient: true });
         }
         if (conn.getStatus() === "connected") {
-          conn.subscribe(subId, filters);
+          conn.subscribe(subId, filters, { priority });
           sentNow++;
         } else {
-          conn.subscribe(subId, filters); // queues internally until WS opens
+          conn.subscribe(subId, filters, { priority }); // queues internally until WS opens
           notConnected.push(`${shortRelay(url)}:${conn.getStatus()}`);
         }
       }
@@ -339,10 +585,10 @@ class RelayManagerImpl {
       // LATER (cold start, where most read relays open after the first feed/DM
       // subs are created) still receives this REQ — previously it only ever
       // reached relays already connected at subscribe time (#24).
-      this.pendingSubscriptions.set(subId, { filters, intendedUrls: [], broadcast: true, indexerSafe });
+      this.pendingSubscriptions.set(subId, { filters, intendedUrls: [], broadcast: true, indexerSafe, priority });
       const reads = this.getReadRelays().filter((c) => indexerSafe || !INDEXER_SET.has(c.url));
       for (const conn of reads) {
-        conn.subscribe(subId, filters);
+        conn.subscribe(subId, filters, { priority });
       }
       const kinds = [...new Set(filters.flatMap((f) => f.kinds ?? []))].join(",");
       log.debug(`${subId} kinds=[${kinds}] → broadcast to ${reads.length} read relays`);
@@ -360,6 +606,38 @@ class RelayManagerImpl {
     const conn = this.connections.get(this.key(url));
     if (!conn || conn.getStatus() !== "connected") return Promise.resolve(null);
     return conn.negentropySync(filter, items);
+  }
+
+  /** Where a subscription stands: how many relays track it and on how many its
+   *  REQ has actually gone out. `sent === 0` means it never left the client
+   *  (no relay connected, or every relay's cap was full). */
+  getSubscriptionDelivery(subId: string): { relays: number; sent: number } {
+    let relays = 0;
+    let sent = 0;
+    for (const conn of this.connections.values()) {
+      if (!conn.hasSubscription(subId)) continue;
+      relays++;
+      if (conn.wasReqSent(subId)) sent++;
+    }
+    return { relays, sent };
+  }
+
+  /** Resolve true as soon as a read relay is connected (at once if one is),
+   *  false if none connects within `timeout`. */
+  waitForReadRelay(timeout = 4_000): Promise<boolean> {
+    if (this.getReadRelays().length > 0) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const done = (val: boolean) => {
+        clearTimeout(timer);
+        this.statusWaiters.delete(waiter);
+        resolve(val);
+      };
+      const timer = setTimeout(() => done(false), timeout);
+      const waiter: RelayStatusCallback = (_url, status) => {
+        if (status === "connected" && this.getReadRelays().length > 0) done(true);
+      };
+      this.statusWaiters.add(waiter);
+    });
   }
 
   closeSubscription(subId: string): void {
@@ -726,7 +1004,7 @@ class RelayManagerImpl {
       } else if (!pending.intendedUrls.includes(relayUrl)) {
         continue;
       }
-      conn.subscribe(subId, pending.filters);
+      conn.subscribe(subId, pending.filters, { priority: pending.priority });
       forwarded++;
     }
     if (forwarded > 0) {

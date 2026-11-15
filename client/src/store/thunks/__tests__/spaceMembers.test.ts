@@ -278,4 +278,129 @@ describe("syncSpaceMembers thunk", () => {
     const persisted = await loadMembers("space-1");
     expect(persisted?.[0].pubkey).toBe("pk-fresh");
   });
+
+  // After a login or account switch every joined space revalidates the roster
+  // it just hydrated from IndexedDB. An unchanged answer must not touch the
+  // store: each no-op update re-rendered the whole shell, once per space.
+  describe("unchanged roster → no store update", () => {
+    const spacesState = (memberPubkeys: string[]) => ({
+      list: [makeSpace({ memberPubkeys })],
+      activeSpaceId: null,
+      activeChannelId: null,
+      subscriptions: {},
+      channels: {},
+      channelsLoading: {},
+      categories: {},
+      layoutRevision: {},
+      layoutSupported: {},
+      pendingInvites: [],
+    });
+
+    /** Count how often the store's state object changes during `run`. */
+    async function stateChanges(store: ReturnType<typeof createTestStore>, run: () => Promise<unknown>) {
+      let changes = 0;
+      let last = store.getState();
+      const unsubscribe = store.subscribe(() => {
+        if (store.getState() !== last) {
+          changes++;
+          last = store.getState();
+        }
+      });
+      await run();
+      unsubscribe();
+      return changes;
+    }
+
+    it("a second sync with the same answer changes nothing in the store", async () => {
+      const members = [
+        makeMember({ pubkey: "pk-1", roles: [makeRole({ id: "admin", isAdmin: true })] }),
+        makeMember({ pubkey: "pk-2", roles: [makeRole()] }),
+      ];
+      const store = createTestStore({ spaces: spacesState([]) });
+      // Fresh objects each time, as a real fetch returns.
+      mockFetch.mockImplementation(async () => structuredClone(members));
+
+      expect(await stateChanges(store, () => store.dispatch(syncSpaceMembers("space-1")))).toBe(2);
+      const listBefore = store.getState().spaces.list;
+      const membersBefore = store.getState().spaceConfig.members["space-1"];
+
+      expect(await stateChanges(store, () => store.dispatch(syncSpaceMembers("space-1")))).toBe(0);
+      // Same references: nothing subscribed to them re-renders.
+      expect(store.getState().spaces.list).toBe(listBefore);
+      expect(store.getState().spaceConfig.members["space-1"]).toBe(membersBefore);
+    });
+
+    it("thirty spaces revalidating an unchanged roster cause no store updates at all", async () => {
+      const ids = Array.from({ length: 30 }, (_, i) => `space-${i}`);
+      const members = [makeMember({ pubkey: "pk-1" }), makeMember({ pubkey: "pk-2" })];
+      const store = createTestStore({
+        spaces: { ...spacesState([]), list: ids.map((id) => makeSpace({ id, memberPubkeys: ["pk-1", "pk-2"] })) },
+        spaceConfig: {
+          ...createTestStore().getState().spaceConfig,
+          members: Object.fromEntries(ids.map((id) => [id, structuredClone(members)])),
+        },
+      });
+      mockFetch.mockImplementation(async () => structuredClone(members));
+
+      const changes = await stateChanges(store, () =>
+        Promise.all(ids.map((id) => store.dispatch(syncSpaceMembers(id)))),
+      );
+      expect(mockFetch).toHaveBeenCalledTimes(30);
+      expect(changes).toBe(0);
+    });
+
+    it("still persists to IndexedDB when nothing changed", async () => {
+      const members = [makeMember({ pubkey: "pk-1" })];
+      const store = createTestStore({
+        spaces: spacesState(["pk-1"]),
+        spaceConfig: { ...createTestStore().getState().spaceConfig, members: { "space-1": structuredClone(members) } },
+      });
+      mockFetch.mockResolvedValue(structuredClone(members));
+      await store.dispatch(syncSpaceMembers("space-1"));
+      await vi.waitFor(async () => expect((await loadMembers("space-1"))?.[0].pubkey).toBe("pk-1"));
+    });
+
+    it("a changed role updates the roster but leaves the unchanged pubkey list alone", async () => {
+      const store = createTestStore({
+        spaces: spacesState(["pk-1"]),
+        spaceConfig: {
+          ...createTestStore().getState().spaceConfig,
+          members: { "space-1": [makeMember({ pubkey: "pk-1", roles: [makeRole()] })] },
+        },
+      });
+      const listBefore = store.getState().spaces.list;
+      mockFetch.mockResolvedValue([makeMember({ pubkey: "pk-1", roles: [makeRole({ id: "admin", isAdmin: true })] })]);
+
+      expect(await stateChanges(store, () => store.dispatch(syncSpaceMembers("space-1")))).toBe(1);
+      expect(store.getState().spaceConfig.members["space-1"][0].roles[0].id).toBe("admin");
+      expect(store.getState().spaces.list).toBe(listBefore);
+    });
+
+    it("a member joining or leaving updates both slices", async () => {
+      const store = createTestStore({
+        spaces: spacesState(["pk-1"]),
+        spaceConfig: {
+          ...createTestStore().getState().spaceConfig,
+          members: { "space-1": [makeMember({ pubkey: "pk-1" })] },
+        },
+      });
+      mockFetch.mockResolvedValue([makeMember({ pubkey: "pk-1" }), makeMember({ pubkey: "pk-2" })]);
+      expect(await stateChanges(store, () => store.dispatch(syncSpaceMembers("space-1")))).toBe(2);
+      expect(store.getState().spaces.list[0].memberPubkeys).toEqual(["pk-1", "pk-2"]);
+      expect(store.getState().spaceConfig.members["space-1"]).toHaveLength(2);
+    });
+
+    it("a reordered roster counts as a change", async () => {
+      const store = createTestStore({
+        spaces: spacesState(["pk-1", "pk-2"]),
+        spaceConfig: {
+          ...createTestStore().getState().spaceConfig,
+          members: { "space-1": [makeMember({ pubkey: "pk-1" }), makeMember({ pubkey: "pk-2" })] },
+        },
+      });
+      mockFetch.mockResolvedValue([makeMember({ pubkey: "pk-2" }), makeMember({ pubkey: "pk-1" })]);
+      await store.dispatch(syncSpaceMembers("space-1"));
+      expect(store.getState().spaces.list[0].memberPubkeys).toEqual(["pk-2", "pk-1"]);
+    });
+  });
 });

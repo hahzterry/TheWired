@@ -23,6 +23,12 @@ const log = createLogger("spaces");
  * Plus IDB write-through, so a cold reload paints correctly without waiting for refetch.
  */
 
+/** Structural equality for plain JSON data (member lists). A false negative
+ *  (e.g. different key order) only costs the dispatch it would have saved. */
+function sameJson(a: unknown, b: unknown): boolean {
+  return a !== undefined && JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** Per-spaceId in-flight promise dedup. Multiple concurrent callers share one fetch. */
 const inFlight = new Map<string, Promise<void>>();
 
@@ -71,8 +77,20 @@ export function syncSpaceMembers(spaceId: string) {
           `members synced for ${spaceId.slice(0, 8)}…: ${members.length} members, ${named}/${members.length} have a cached name (rest will render a hash until their kind:0 loads)`,
         );
 
-        dispatch(setMembers({ spaceId, members }));
-        dispatch(updateSpaceMembers({ spaceId, members: pubkeys }));
+        // Only touch the store when the fetch actually changed something. After
+        // a login or account switch every joined space revalidates the roster
+        // it just hydrated from IndexedDB, and the answer is nearly always
+        // "same as before": dispatching it anyway replaced `spaces.list` and
+        // the member arrays once per space, re-rendering the whole shell for
+        // each response (the bulk of the post-switch long tasks).
+        const state = getState();
+        if (!sameJson(state.spaceConfig.members[spaceId], members)) {
+          dispatch(setMembers({ spaceId, members }));
+        }
+        const current = state.spaces.list.find((s) => s.id === spaceId)?.memberPubkeys;
+        if (!sameJson(current, pubkeys)) {
+          dispatch(updateSpaceMembers({ spaceId, members: pubkeys }));
+        }
 
         // Write-through to IDB. Best-effort: persistence failure must not fail the dispatch.
         saveMembers(spaceId, members).catch((err) => {

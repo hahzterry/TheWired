@@ -12,6 +12,7 @@ import {
 import type { SignerType, MuteEntry } from "../../store/slices/identitySlice";
 import {
   addRelay,
+  clearRelayConnections,
   removeRelay,
   setRelayStatus,
   updateLatency,
@@ -1752,8 +1753,11 @@ export function performCleanup(): void {
   clearMediaGrant();
   musicTokenCache.clear();
 
-  // 5. Disconnect relays
+  // 5. Disconnect relays. disconnectAll() reports nothing per relay (that was
+  //    two store updates per connection inside the switch); one action clears
+  //    the connection rows instead.
   relayManager.disconnectAll();
+  store.dispatch(clearRelayConnections());
 }
 
 /** Full logout: stop listeners, close subscriptions, clear caches, reset store */
@@ -1815,6 +1819,7 @@ export async function performLogout(): Promise<void> {
   // 5. Disconnect relays (and hard-stop any room the graceful step missed)
   void abandonMediaSessions();
   relayManager.disconnectAll();
+  store.dispatch(clearRelayConnections());
 
   // 6. Clear keystore active pubkey (so next login generates fresh)
   try {

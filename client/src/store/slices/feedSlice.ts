@@ -9,7 +9,14 @@ export interface FeedMeta {
   newestAt: number;
   /** Timestamp of the oldest event in this feed (for until param on loadMore) */
   oldestAt: number;
+  /** Why the last "load more" produced nothing, when it failed rather than
+   *  reached the end: `unreachable` = the request could not be sent to any
+   *  relay, `timeout` = it was sent and no relay answered in time. Cleared when
+   *  the next attempt starts. */
+  loadMoreError?: LoadMoreError | null;
 }
+
+export type LoadMoreError = "unreachable" | "timeout";
 
 interface FeedState {
   /** Keyed by contextId: `${spaceId}:${channelType}` */
@@ -72,7 +79,17 @@ export const feedSlice = createSlice({
       state,
       action: PayloadAction<{ contextId: string; value: boolean }>,
     ) {
-      ensureMeta(state, action.payload.contextId).isLoadingMore =
+      const meta = ensureMeta(state, action.payload.contextId);
+      meta.isLoadingMore = action.payload.value;
+      // A new attempt clears the previous failure.
+      if (action.payload.value) meta.loadMoreError = null;
+    },
+
+    setLoadMoreError(
+      state,
+      action: PayloadAction<{ contextId: string; value: LoadMoreError | null }>,
+    ) {
+      ensureMeta(state, action.payload.contextId).loadMoreError =
         action.payload.value;
     },
 
@@ -104,6 +121,7 @@ export const {
   trackFeedTimestamps,
   setRefreshing,
   setLoadingMore,
+  setLoadMoreError,
   setHasMore,
   setOldestAt,
   clearFeedMeta,

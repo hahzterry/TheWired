@@ -86,7 +86,8 @@ export function useUserSearch() {
       cleanup();
       setIsSearching(true);
 
-      relayManager.connect(SEARCH_RELAY, "read");
+      // Not a relay the user chose: if it is down, stop dialing it for the session.
+      relayManager.connect(SEARCH_RELAY, "read", { transient: true });
 
       relayManager.waitForConnection(SEARCH_RELAY, 5000).then((connected) => {
         if (!connected) {

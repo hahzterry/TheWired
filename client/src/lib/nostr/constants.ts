@@ -53,6 +53,25 @@ export const RECONNECT = {
   STORM_WINDOW: 5_000,
   /** Cooldown when storm detected in ms */
   STORM_COOLDOWN: 10_000,
+  /** Consecutive failed connects after which a relay counts as dead: a fan-out
+   *  target (one the user never chose) stops being dialed for the session, and
+   *  a chosen relay moves to the long backoff below. */
+  STRIKE_LIMIT: 3,
+  /** Backoff cap for a dead relay the user chose (their own list, a space
+   *  host): still retried, never dropped, but only this often. The app relay
+   *  keeps MAX_DELAY. */
+  DEAD_MAX_DELAY: 300_000,
+  /** A socket has to stay open this long before the connect counts as a
+   *  success. One that opens and closes sooner is a failed connect, so a relay
+   *  that accepts and immediately hangs up cannot reset its own backoff. */
+  STABLE_AFTER: 5_000,
+  /** A connect attempt that has not opened by now is abandoned and counted as
+   *  failed (a black-holed host otherwise sits in "connecting" for minutes). */
+  CONNECT_TIMEOUT: 15_000,
+  /** Dials allowed back to back before the rest of a burst is spaced out. */
+  DIAL_BURST: 4,
+  /** Gap between queued dials once a burst is being spaced out, in ms. */
+  DIAL_SPACING: 40,
 } as const;
 
 /** Subscription limits */
