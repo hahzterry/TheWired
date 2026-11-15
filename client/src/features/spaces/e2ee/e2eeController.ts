@@ -12,6 +12,7 @@ import { store, type RootState } from "@/store";
 import { EVENT_KINDS, type NostrEvent, type NostrFilter } from "@/types/nostr";
 import { subscriptionManager } from "@/lib/nostr/subscriptionManager";
 import { registerSpaceE2eeHooks } from "@/lib/nostr/spaceE2eeHooks";
+import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
 import type { Space } from "@/types/space";
 import { resolveRelaySet } from "../relaySet";
 import { reconcileSpaceKeys } from "./keyReconcile";
@@ -205,7 +206,7 @@ function sync(): void {
     EVENT_KINDS.SPACE_KEY_GRANT,
   );
 
-  const encryptedSpaces = state.spaces.list.filter((s) => state.spaceE2ee.spaces[s.id]);
+  const encryptedSpaces = state.spaces.list.filter((s) => encryptedSpaceEntry(state.spaceE2ee.spaces, s.id));
   // Live only (a recent `since`), so an empty answer is the normal one.
   syncHostSubs(
     bgSealedSubs,

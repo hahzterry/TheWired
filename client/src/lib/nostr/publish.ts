@@ -10,6 +10,7 @@ import { addLocalEventId } from "../db/musicStore";
 import { publishOutbox } from "./publishOutbox";
 import { devLocalTargets, resolvePublishTargets } from "./gatedTargets";
 import { store } from "@/store";
+import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
 
 /**
  * Where an event goes when the caller named no relays. Public events use the
@@ -48,7 +49,7 @@ function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): void {
   const encrypted = store.getState().spaceE2ee.spaces;
   if (SPACE_E2EE_PLAINTEXT_KINDS.includes(unsigned.kind)) return;
   for (const tag of unsigned.tags) {
-    if (tag[0] === "h" && tag[1] && encrypted[tag[1]]) {
+    if (tag[0] === "h" && encryptedSpaceEntry(encrypted, tag[1])) {
       throw new Error("This space is end-to-end encrypted, and this can't be posted there yet.");
     }
   }

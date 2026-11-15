@@ -32,8 +32,10 @@ interface SpaceE2eeState {
 
 const initialState: SpaceE2eeState = { hydrated: false, spaces: {}, ready: {} };
 
+const own = (obj: object, key: string): boolean => Object.prototype.hasOwnProperty.call(obj, key);
+
 function ensure(state: SpaceE2eeState, spaceId: string): EncryptedSpaceState {
-  let entry = state.spaces[spaceId];
+  let entry = own(state.spaces, spaceId) ? state.spaces[spaceId] : undefined;
   if (!entry) {
     entry = { root: null, epochs: [], holders: {} };
     state.spaces[spaceId] = entry;
@@ -58,7 +60,7 @@ export const spaceE2eeSlice = createSlice({
     /** An authorized grant named these key holders for an epoch. */
     addEpochHolders(state, action: PayloadAction<{ spaceId: string; epochId: string; holders: string[] }>) {
       const entry = ensure(state, action.payload.spaceId);
-      const current = entry.holders[action.payload.epochId] ?? [];
+      const current = own(entry.holders, action.payload.epochId) ? entry.holders[action.payload.epochId] : [];
       const merged = [...current];
       for (const pk of action.payload.holders) if (!merged.includes(pk)) merged.push(pk);
       if (merged.length !== current.length) entry.holders[action.payload.epochId] = merged;
@@ -68,7 +70,7 @@ export const spaceE2eeSlice = createSlice({
       const entry = ensure(state, action.payload.spaceId);
       if (!entry.root) entry.root = action.payload.root;
       if (!entry.epochs.some((e) => e.id === action.payload.epoch.id)) entry.epochs.push(action.payload.epoch);
-      const ready = state.ready[action.payload.spaceId] ?? [];
+      const ready = own(state.ready, action.payload.spaceId) ? state.ready[action.payload.spaceId] : [];
       if (!ready.includes(action.payload.epoch.id)) state.ready[action.payload.spaceId] = [...ready, action.payload.epoch.id];
     },
     /** Epoch keys were loaded from the keychain into memory. */
@@ -92,14 +94,29 @@ export const {
   forgetEncryptedSpace,
 } = spaceE2eeSlice.actions;
 
+/**
+ * The entry for a space id, or undefined. Always an OWN-property lookup: space
+ * ids come from other people (a NIP-29 group can be named `constructor`), and
+ * a plain `spaces[id]` would find `Object.prototype` members and treat such a
+ * space as encrypted.
+ */
+export function encryptedSpaceEntry(
+  spaces: Record<string, EncryptedSpaceState>,
+  spaceId: string | null | undefined,
+): EncryptedSpaceState | undefined {
+  return spaceId && Object.prototype.hasOwnProperty.call(spaces, spaceId) ? spaces[spaceId] : undefined;
+}
+
 /** Is this space end-to-end encrypted (as far as this device knows)? */
 export const selectIsEncryptedSpace =
   (spaceId: string | null | undefined) =>
   (state: RootState): boolean =>
-    !!spaceId && state.spaceE2ee.spaces[spaceId] !== undefined;
+    encryptedSpaceEntry(state.spaceE2ee.spaces, spaceId) !== undefined;
 
 /** Does this session hold a key to send with in this space? */
 export const selectHasSpaceKey =
   (spaceId: string | null | undefined) =>
   (state: RootState): boolean =>
-    !!spaceId && (state.spaceE2ee.ready[spaceId]?.length ?? 0) > 0;
+    !!spaceId &&
+    Object.prototype.hasOwnProperty.call(state.spaceE2ee.ready, spaceId) &&
+    state.spaceE2ee.ready[spaceId].length > 0;

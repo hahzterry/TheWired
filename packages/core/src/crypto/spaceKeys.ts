@@ -283,6 +283,8 @@ export interface BuildGrantsArgs {
   epochKey: Uint8Array;
   seq: number;
   prev: string | null;
+  /** The space's key root (docs/E2EE_SPACES.md §5.4). */
+  root: string;
   managers: string[];
   history: SpaceHistoryPolicy;
   /** When the epoch was created (unix seconds); carried on late grants. */
@@ -300,7 +302,9 @@ export function grantPayload(args: Omit<BuildGrantsArgs, "granter" | "recipients
     epoch: epochIdOf(args.epochKey),
     seq: args.seq,
     prev: args.prev,
-    managers: [...new Set(args.managers)],
+    root: args.root,
+    // The root is always a manager.
+    managers: [...new Set([args.root, ...args.managers])],
     history: args.history,
     at: args.at,
   };
@@ -313,6 +317,10 @@ export function grantPayload(args: Omit<BuildGrantsArgs, "granter" | "recipients
  */
 export function buildSpaceKeyGrants(args: BuildGrantsArgs): UnsignedEvent[] {
   if (!HEX64_RE.test(args.granter)) throw new SpaceE2eeError("malformed", "granter must be a pubkey");
+  if (!HEX64_RE.test(args.root)) throw new SpaceE2eeError("malformed", "root must be a pubkey");
+  if (!Number.isInteger(args.seq) || args.seq < 0 || (args.seq === 0) !== (args.prev === null)) {
+    throw new SpaceE2eeError("malformed", "the first epoch has seq 0 and no prev; later ones have both");
+  }
   const recipients = [...new Set(args.recipients)];
   for (const pk of recipients) {
     if (!HEX64_RE.test(pk)) throw new SpaceE2eeError("malformed", "recipient must be a pubkey");
@@ -393,8 +401,19 @@ function parseGrantPayload(plaintext: string, header: GrantHeader): SpaceKeyGran
   if (p.prev !== null && (typeof p.prev !== "string" || !EPOCH_ID_RE.test(p.prev))) {
     throw new SpaceE2eeError("malformed", "grant prev is invalid");
   }
+  // The first epoch, and only the first, has no predecessor; an epoch never
+  // names itself.
+  if ((p.seq === 0) !== (p.prev === null) || p.prev === header.epochId) {
+    throw new SpaceE2eeError("malformed", "grant seq and prev disagree");
+  }
+  if (typeof p.root !== "string" || !HEX64_RE.test(p.root)) {
+    throw new SpaceE2eeError("malformed", "grant root is invalid");
+  }
   if (!Array.isArray(p.managers) || !p.managers.every((m) => typeof m === "string" && HEX64_RE.test(m))) {
     throw new SpaceE2eeError("malformed", "grant managers are invalid");
+  }
+  if (!p.managers.includes(p.root)) {
+    throw new SpaceE2eeError("malformed", "grant managers must include the root");
   }
   if (p.history !== "epoch" && p.history !== "full") {
     throw new SpaceE2eeError("malformed", "grant history policy is invalid");
@@ -408,6 +427,7 @@ function parseGrantPayload(plaintext: string, header: GrantHeader): SpaceKeyGran
     epoch: header.epochId,
     seq: p.seq,
     prev: p.prev as string | null,
+    root: p.root,
     managers: [...new Set(p.managers as string[])],
     history: p.history,
     at: p.at,
@@ -475,4 +495,61 @@ export function compareEpochsForSend(a: { id: string; seq: number }, b: { id: st
 export function pickSendEpoch<T extends { id: string; seq: number }>(epochs: readonly T[]): T | null {
   if (epochs.length === 0) return null;
   return [...epochs].sort(compareEpochsForSend)[0];
+}
+
+
+// ── Who may issue an epoch (docs/E2EE_SPACES.md §5.4) ───────────────────────
+
+/** What a device knows about an epoch it accepted. */
+export interface KnownEpoch {
+  id: string;
+  seq: number;
+  prev: string | null;
+  managers: readonly string[];
+}
+
+export type GrantVerdict =
+  /** Accept the epoch. */
+  | "accept"
+  /** Not acceptable now, but may be once the epochs it links to arrive
+   *  (grants reach a device in no particular order). Keep it and retry. */
+  | "defer"
+  /** Never acceptable for this space. */
+  | "reject";
+
+/**
+ * Pure: may a device that has pinned `root` and accepted `known` epochs accept
+ * the epoch described by `payload`, from a grant signed by `signer`?
+ *
+ *  - The payload must name the pinned root.
+ *  - The root may issue anything.
+ *  - Anyone else must EXTEND the chain this device knows: the epoch's `prev`
+ *    is an accepted epoch, its `seq` is exactly one more, and the signer is a
+ *    manager of that predecessor. So nobody but the root can jump ahead of the
+ *    chain or start a second one, and a manager dropped at a rotation cannot
+ *    issue anything after it.
+ *  - Or it fills in history: an accepted epoch names it as `prev` with a `seq`
+ *    one more, and the signer manages some accepted epoch.
+ */
+export function judgeEpochGrant(
+  payload: Pick<SpaceKeyGrantPayload, "epoch" | "seq" | "prev" | "root">,
+  signer: string,
+  root: string,
+  known: readonly KnownEpoch[],
+): GrantVerdict {
+  if (payload.root !== root) return "reject";
+  if (signer === root) return "accept";
+
+  if (payload.prev !== null) {
+    const parent = known.find((e) => e.id === payload.prev);
+    if (parent) {
+      return payload.seq === parent.seq + 1 && parent.managers.includes(signer) ? "accept" : "reject";
+    }
+  }
+  const child = known.find((e) => e.prev === payload.epoch);
+  if (child) {
+    return child.seq === payload.seq + 1 && known.some((e) => e.managers.includes(signer)) ? "accept" : "reject";
+  }
+  // The first epoch can only come from the root; anything else may still link up.
+  return payload.prev === null ? "reject" : "defer";
 }

@@ -21,7 +21,8 @@ recommendation and keeps it behind one module so it is cheap to change (§15 say
 | D4 | **History for new members** | Default `epoch`: a new member reads everything since the last key change and nothing older. The creator can pick `full` (every epoch key is handed over) when creating the space. | `full` as default (parity with unencrypted spaces); or `none` (rotate on every join). | Low: a policy value inside the encrypted grant payload. |
 | D5 | **What the relay may see** | Only: space id, sender, time, size, epoch id, and who holds keys. The inner kind, channel, replies, mentions and reactions are inside the ciphertext. | Leave routing tags (`channel`, `p` mentions) in the clear so the backend can push "you were mentioned". Leaks the in-space social graph, and an outer `p` tag also grants that pubkey relay read access. | Medium: additive tags later are easy, removing them is not. |
 | D6 | **Which space modes** | All three (Platform, Decentralized A-lite, NIP-29-native). The envelope is an ordinary `h`-tagged event, so every relay that hosts the space gates it the same way. Platform spaces lose backend features (§8). | Native-only, so "encrypted" always means "no backend involved". | Low (one predicate in the create dialog). |
-| D7 | **Who may hand out and rotate keys** | The creator plus the admins named in the latest epoch (`managers`). Clients enforce it as a signed chain, not from the server's role list. | Any member may re-share the current key (faster onboarding, weaker against a server that adds a ghost member). | Medium. |
+| D7 | **Who may hand out and rotate keys** | The space's **key root** (whoever made the first epoch) plus the `managers` each epoch names. Clients enforce it as a signed chain (§5.4), never from the server's role list. The slice names only the root; appointing further managers is an explicit action for phase 2. | Any member may re-share the current key (faster onboarding, weaker against a server that adds a ghost member). | Medium. |
+| D11 | **How a device learns a space is encrypted** | Today: only from a key grant it has seen with the feature on (or by creating the space). Until then it treats the space as ordinary and can post plaintext there. D8 (a relay-enforced flag) is the fix and SHOULD land before this is offered beyond testing. | Carry a marker in invites and in 39000 as well; or make every client look for grants before its first post in any space. | Additive. |
 | D8 | **Server-side "encrypted" flag** | Phase 2: the relay stores an `encrypted` flag per group and refuses plaintext chat kinds there; the backend gets a column for the directory badge. Not in the slice (needs a relay and a backend migration). | Client-only marker forever (what the slice does). | Additive. |
 | D9 | **Push for encrypted spaces** | None in v1. Phase 3: opt-in, content-free "new activity in *space*" from the envelope's metadata only. | Mention pushes via cleartext `p` tags (see D5). | Additive. |
 | D10 | **Reports to the platform operator** | Phase 3: the reporter discloses the per-message NIP-44 keys for the one reported event, so the operator can verify and read that message and nothing else (§8.4). Needs a crypto review before it ships. | Reports stay inside the space (admins hold the key); or unverifiable plaintext reports. | Additive. |
@@ -189,18 +190,43 @@ too.
 
 ### 5.4 Who may issue keys
 
-The server's role list is not trusted for this. Each grant payload names the pubkeys allowed
-to issue the *next* grants (`managers`). A client accepts a grant when:
+The server's role list is not trusted for this. Every grant payload carries:
+
+- `root`: the space's **key root**, the pubkey that made the first epoch. It is the same in
+  every epoch of a space and may always issue keys.
+- `managers`: who may issue the *next* epoch, and late grants of this one. Always includes
+  `root`. A manager list MUST be carried forward from the chain or changed by a deliberate
+  user action, never copied from the backend's or relay's role list. (The slice only ever
+  names the root.)
+- `seq`, `prev`: the epoch's place in the chain. The first epoch has `seq` 0 and no `prev`.
+
+A client accepts a grant's epoch when:
 
 1. **First key for this space** (trust on first use): the signer is the space's creator or
-   one of its admins as the client currently knows them. The signer is pinned as the space's
-   `root`.
-2. **Otherwise**: the signer is the pinned `root`, or is in `managers` of the newest epoch
-   the client has accepted.
+   one of its admins as the client currently knows them, **and** the payload vouches for the
+   signer (it is the `root` or one of the `managers`). The client pins the payload's `root`.
+2. **Otherwise** the payload names the pinned root, and
+   - the signer is the root; or
+   - the epoch **extends the chain the client holds**: `prev` is an accepted epoch, `seq` is
+     exactly one more, and the signer is a manager *of that predecessor*; or
+   - the epoch **fills in history**: an accepted epoch names it as `prev` with a `seq` one
+     more, and the signer manages some accepted epoch.
 
-So a relay or backend that edits the role list cannot make members accept a key of its
-choosing; it would need a manager's account key. A demoted manager is dropped from `managers`
-at the next rotation.
+Consequences:
+
+- A relay or backend that edits the role list cannot make members accept a key of its
+  choosing; it would need the root's or a manager's account key.
+- Nobody but the root can jump ahead of the chain, start a second chain or re-root the space.
+- A manager dropped at a rotation can issue nothing after it. They can still fork *from the
+  last epoch they managed*, one step, which every member would hold alongside the real one;
+  the root's next rotation outranks it and they cannot follow.
+- Grants reach a device in no particular order (a relay answers newest first). A grant that
+  does not link to anything yet is **kept and judged again** when another epoch is accepted,
+  not rejected.
+- Before asking the account signer to decrypt a grant entry, a client checks from the public
+  header alone that the signer could issue keys at all, so grant spam costs no signer calls.
+- A grant for an epoch the client already holds is only used for its recipient list, and only
+  if its payload opens under the held key.
 
 ### 5.5 Multi-device and remote signers
 
@@ -324,19 +350,22 @@ clear: 5, 9000–9022, 4290, 4291, 1984, 30078 layout overlays.
 ```jsonc
 // payload
 { "v": 1, "space": "<spaceId>", "epoch": "<epochId>", "seq": 3, "prev": "<epochId>" | null,
-  "managers": ["<pubkey>", …], "history": "epoch" | "full", "at": 1763000000 }
+  "root": "<pubkey>", "managers": ["<pubkey>", …], "history": "epoch" | "full", "at": 1763000000 }
 ```
 
 **Receiver** MUST, failing closed:
 
 1. Verify the signature; require one `h`, one `epoch`, one `eph`.
-2. Check the signer against §5.4. Unauthorized grants are ignored.
+2. From the header alone, check that the signer could issue keys (§5.4). If not, keep the
+   grant for a later retry and stop; do not ask the signer to decrypt.
 3. Find its own `p` entry; `K = hex-decode(nip44_decrypt(eph, entry))`; require 32 bytes.
 4. Require `epochId(K) === epoch tag`.
 5. Decrypt `content` with `grantKey(K, h)`; require `v === 1`, `space === h`,
-   `epoch === epoch tag`, `seq` a non-negative integer, `managers` an array of pubkeys that
-   includes the signer or the root.
-6. Store the key and the non-secret epoch record; release parked events for that epoch.
+   `epoch === epoch tag`, `seq` a non-negative integer, `seq === 0` exactly when `prev` is
+   null, `root` a pubkey, `managers` an array of pubkeys that includes `root`.
+6. Apply the chain rule of §5.4: accept, keep for later, or reject.
+7. Store the key and the non-secret epoch record; release parked events for that epoch;
+   judge the kept grants again.
 
 A grant is not replaceable and has no expiration: a member's next device must still find it.
 Everyone can read the `p` list of a grant, which is how clients show who holds the key.
@@ -416,8 +445,10 @@ NIP-29-native spaces have no voice yet; nothing changes there.
   missing ("Waiting for an admin to share the key") or the feature is off on this device
   ("Turn on Encrypted spaces to read this"). Phase 2: a lock in the space list, per-message
   "sealed" detail, and the key-holder list in the member panel.
-- **Feature off**: an encrypted space still appears, its chat shows the banner, and the
-  composer is disabled. The client never sends plaintext there.
+- **Feature off**: on a device that knows the space is encrypted (it created it, or saw a key
+  grant while the feature was on), the chat shows the banner, the composer is disabled and
+  the client refuses to send plaintext there. A device that has never had the feature on does
+  not know, and behaves as in an ordinary space (D11).
 - **Membership changes**: "*Alice* shared the key with *Bob*" and "the key was changed" rows
   from grant events (phase 2).
 - **Key loss**: automatic re-derivation from grants; "Ask for the key" when none exists
@@ -444,9 +475,11 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 - **No in-place conversion in v1.** Encrypting an existing space would leave its plaintext
   history on the relay and needs every member on a build that understands 4290. Phase 3 can add
   "encrypt from now on" (marker + first epoch + relay flag); the reverse is never offered.
-- **Older builds and other clients** in an encrypted space see no messages (they do not
-  subscribe to 4290) and, before the relay flag exists, could post plaintext kind 9 there.
-  Updated clients ignore plaintext chat in an encrypted space; D8 closes the gap server-side.
+- **Older builds, other clients, and this client with the feature off** see no messages in an
+  encrypted space (they do not subscribe to 4290) and, before the relay flag exists, can post
+  plaintext kind 9 there. So can a device with the feature on until the first grant reaches it
+  (a new device, a reinstall). Clients that know the space is encrypted ignore that plaintext;
+  D8 closes the gap server-side and D11 tracks it.
 - **Small encrypted DM rooms** (NIP-17, ≤ 10 people) are unaffected and remain the right tool
   for ad-hoc private groups without a space.
 - **Marmot**: if adopted later, a space would switch its *key layer* (epoch keys from the MLS
@@ -496,7 +529,17 @@ D3 to two constants; D4 to `epochsToGrant` in `keyReconcile.ts`; D5 to `sealSpac
 
 ## 16. Known gaps in the slice
 
-Found while building and in live QA; none is hidden by the feature being off by default.
+Found while building, in live QA and in an independent review; none is hidden by the feature
+being off by default.
+
+- **A device can post plaintext into an encrypted space until it learns the space is
+  encrypted** (D11): with the feature off, or on a new device before the first grant arrives.
+  The relay-enforced flag (D8) is the fix.
+- **Only the key root issues keys.** If the creator is away, nobody is granted and nothing
+  rotates. Appointing managers and handing the root over are phase 2. With several managers a
+  dropped one can still fork one step from the last epoch they managed (§5.4).
+- **An admin can mark a space encrypted on other members' devices** by publishing a grant
+  there, which blocks plaintext chat on those devices; there is no "unmark" in the UI.
 
 - **History is one REQ of 500 sealed events per space**, newest first, with no paging.
 - **Reactions**: the reaction button still shows in an encrypted space, and reacting is

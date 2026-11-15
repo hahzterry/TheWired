@@ -40,7 +40,7 @@ import { relayManager } from "@/lib/nostr/relayManager";
 import { subscriptionManager } from "@/lib/nostr/subscriptionManager";
 import { startSpaceE2ee, stopSpaceE2ee } from "../e2eeController";
 import { _resetKeyReconcile } from "../keyReconcile";
-import { prepareFirstEpoch, sendEpochOf } from "../spaceKeyring";
+import { prepareFirstEpoch, publishFirstEpoch, sendEpochOf } from "../spaceKeyring";
 
 const HOST = "wss://space.example";
 const SPACE = "managed01";
@@ -92,6 +92,9 @@ beforeEach(async () => {
   store.dispatch(setFeatureEnabled({ feature: FEATURE_E2EE_SPACES, enabled: true }));
   await prepareFirstEpoch(space, "epoch");
   store.dispatch(addSpace(space));
+  await publishFirstEpoch(space);
+  await new Promise((res) => setTimeout(res, 30));
+  published = [];
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   startSpaceE2ee();
   await drain(50);
@@ -139,7 +142,7 @@ describe("roster watch", () => {
     await drain(3_000);
     const after = sendEpochOf(SPACE)!.info;
     expect(after.seq).toBe(before.seq + 1);
-    expect(readGrantHeader(grants()[1])!.recipients).toEqual([me]);
+    expect(readGrantHeader(grants()[grants().length - 1])!.recipients).toEqual([me]);
   });
 
   it("checks a managed space's keys a few seconds after it is opened", async () => {

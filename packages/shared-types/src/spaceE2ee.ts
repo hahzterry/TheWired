@@ -76,7 +76,11 @@ export interface SpaceKeyGrantPayload {
   seq: number;
   /** The epoch this one replaced, or null for the first. */
   prev: string | null;
-  /** Pubkeys allowed to issue the next grants for this space. */
+  /** The space's key root: who made the first epoch and may always issue
+   *  keys. The same in every epoch of a space; receivers pin it. */
+  root: string;
+  /** Pubkeys allowed to issue the NEXT epoch (and late grants of this one).
+   *  Always includes `root`. */
   managers: string[];
   history: SpaceHistoryPolicy;
   /** Unix seconds the epoch was created. */

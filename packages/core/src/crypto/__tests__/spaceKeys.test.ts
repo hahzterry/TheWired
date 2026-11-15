@@ -14,6 +14,7 @@ import {
   buildSpaceRumor,
   epochIdOf,
   generateEpochKey,
+  judgeEpochGrant,
   openSealedSpaceEvent,
   openSpaceKeyGrant,
   openSpaceKeyGrantWithKey,
@@ -77,6 +78,7 @@ function grantFor(
     epochKey: key,
     seq: 0,
     prev: null,
+    root: granter.pubkey,
     managers: [granter.pubkey],
     history: "epoch",
     at: 1_763_000_000,
@@ -253,6 +255,7 @@ describe("key grants", () => {
         epoch: epochIdOf(key),
         seq: 0,
         prev: null,
+        root: alice.pubkey,
         managers: [alice.pubkey],
         history: "epoch",
         at: 1_763_000_000,
@@ -335,10 +338,79 @@ describe("key grants", () => {
     expect(readGrantHeader({ ...grant, tags: [...grant.tags, ["p", bob.pubkey]] })).toBeNull();
   });
 
+  it("always lists the root among the managers", async () => {
+    const [grant] = grantFor(alice, key, [bob.pubkey], { root: alice.pubkey, managers: [carol.pubkey] });
+    const opened = await openSpaceKeyGrant(grant, bob.pubkey, bob.signer.nip44Decrypt);
+    expect(opened.payload.root).toBe(alice.pubkey);
+    expect(opened.payload.managers).toEqual([alice.pubkey, carol.pubkey]);
+  });
+
+  it("refuses to build an epoch whose seq and prev disagree", () => {
+    expect(codeOf(() => grantFor(alice, key, [bob.pubkey], { seq: 1, prev: null }))).toBe("malformed");
+    expect(codeOf(() => grantFor(alice, key, [bob.pubkey], { seq: 0, prev: "ab".repeat(8) }))).toBe("malformed");
+    expect(codeOf(() => grantFor(alice, key, [bob.pubkey], { root: "nothex" }))).toBe("malformed");
+  });
+
   it("lets a key holder read another grant for the same epoch", () => {
     const [grant] = grantFor(alice, key, [carol.pubkey], { seq: 4, prev: "ab".repeat(8), history: "full" });
     expect(openSpaceKeyGrantWithKey(grant, key)).toMatchObject({ seq: 4, prev: "ab".repeat(8), history: "full" });
     expect(codeOf(() => openSpaceKeyGrantWithKey(grant, generateEpochKey()))).toBe("epoch");
+  });
+});
+
+describe("who may issue an epoch", () => {
+  const ROOT = "a".repeat(64);
+  const MGR = "b".repeat(64);
+  const EX = "c".repeat(64);
+  const e = (id: string, seq: number, prev: string | null, managers: string[]) => ({ id, seq, prev, managers });
+  const p = (epoch: string, seq: number, prev: string | null, root = ROOT) => ({ epoch, seq, prev, root });
+  const chain = [e("e0", 0, null, [ROOT, MGR, EX]), e("e1", 1, "e0", [ROOT, MGR])];
+
+  it("rejects a payload naming another root", () => {
+    expect(judgeEpochGrant(p("e2", 2, "e1", EX), ROOT, ROOT, chain)).toBe("reject");
+    expect(judgeEpochGrant(p("e2", 2, "e1", EX), EX, ROOT, chain)).toBe("reject");
+  });
+
+  it("accepts anything from the root", () => {
+    expect(judgeEpochGrant(p("e2", 2, "e1"), ROOT, ROOT, chain)).toBe("accept");
+    expect(judgeEpochGrant(p("zz", 9, "unknown"), ROOT, ROOT, chain)).toBe("accept");
+  });
+
+  it("accepts a manager of the predecessor extending the chain by exactly one", () => {
+    expect(judgeEpochGrant(p("e2", 2, "e1"), MGR, ROOT, chain)).toBe("accept");
+  });
+
+  it("rejects a manager dropped at the last rotation", () => {
+    // EX managed e0 but not e1: nothing EX issues after e1 is acceptable.
+    expect(judgeEpochGrant(p("e2", 2, "e1"), EX, ROOT, chain)).toBe("reject");
+  });
+
+  it("rejects a jump ahead of the chain", () => {
+    expect(judgeEpochGrant(p("far", 1_000_000_000, "e1"), MGR, ROOT, chain)).toBe("reject");
+    expect(judgeEpochGrant(p("fork", 5, "e0"), MGR, ROOT, chain)).toBe("reject");
+  });
+
+  it("lets a dropped manager fork only from an epoch they managed, one step", () => {
+    // A sibling of e1. Every member holds both; the root's next rotation
+    // (seq 2 on e1) outranks it and EX cannot follow.
+    expect(judgeEpochGrant(p("e1x", 1, "e0"), EX, ROOT, chain)).toBe("accept");
+    const withFork = [...chain, e("e1x", 1, "e0", [ROOT, EX]), e("e2", 2, "e1", [ROOT, MGR])];
+    expect(judgeEpochGrant(p("e3", 3, "e2"), EX, ROOT, withFork)).toBe("reject");
+  });
+
+  it("defers an epoch whose predecessor has not arrived yet", () => {
+    expect(judgeEpochGrant(p("e3", 3, "e2"), MGR, ROOT, chain)).toBe("defer");
+  });
+
+  it("fills in history that an accepted epoch points back to", () => {
+    const tail = [e("e1", 1, "e0", [ROOT, MGR])];
+    expect(judgeEpochGrant(p("e0", 0, null), MGR, ROOT, tail)).toBe("accept");
+    expect(judgeEpochGrant(p("e0", 0, null), EX, ROOT, tail)).toBe("reject");
+    expect(judgeEpochGrant(p("e0", 7, null), MGR, ROOT, tail)).toBe("reject");
+  });
+
+  it("rejects a first epoch from anyone but the root", () => {
+    expect(judgeEpochGrant(p("other", 0, null), MGR, ROOT, chain)).toBe("reject");
   });
 });
 

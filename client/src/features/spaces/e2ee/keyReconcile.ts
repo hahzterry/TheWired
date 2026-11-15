@@ -7,9 +7,11 @@
 import { compareEpochsForSend } from "@ishtarservices/core";
 import type { SpaceEpochInfo, SpaceHistoryPolicy } from "@ishtarservices/shared-types";
 import { store } from "@/store";
+import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
 import { fetchFreshRoster, type RosterSource } from "./freshRoster";
 import {
   grantEpochs,
+  isEncryptedSpace,
   isSpaceE2eeEnabled,
   isSpaceKeyManager,
   rotateSpaceKey,
@@ -80,14 +82,11 @@ async function reconcileOnce(spaceId: string, opts?: ReconcileOptions): Promise<
   const me = state.identity.pubkey;
   const space = state.spaces.list.find((s) => s.id === spaceId);
   if (!me || !space || !isSpaceE2eeEnabled()) return;
-  if (!state.spaceE2ee.spaces[spaceId] || !isSpaceKeyManager(spaceId, me)) return;
-  const current = sendEpochOf(spaceId);
-  if (!current) return;
+  if (!isEncryptedSpace(spaceId) || !isSpaceKeyManager(spaceId, me)) return;
+  if (!sendEpochOf(spaceId)) return;
 
-  // Always the authority's roster as of now, never the store's cached copy.
-  const fresh = await rosterSource(space);
-  if (!fresh) return;
-
+  // Remember a removal before anything can fail: if the roster fetch below
+  // doesn't answer, the next pass must still know this member is out.
   const now = Date.now();
   if (opts?.exclude?.length) {
     let entries = recentlyRemoved.get(spaceId);
@@ -97,11 +96,18 @@ async function reconcileOnce(spaceId: string, opts?: ReconcileOptions): Promise<
     }
     for (const pk of opts.exclude) if (pk !== me) entries.set(pk, now + REMOVED_TTL_MS);
   }
+
+  // Always the authority's roster as of now, never the store's cached copy.
+  const fresh = await rosterSource(space);
+  if (!fresh) return;
+  // The key may have moved on while the roster was being fetched.
+  const current = sendEpochOf(spaceId);
+  if (!current) return;
   const explicit = new Set(opts?.exclude ?? []);
   const lagging = activeExclusions(spaceId, fresh, now);
   const roster = fresh.filter((pk) => !explicit.has(pk) && !lagging.has(pk));
   // Read after the fetch: grants may have arrived meanwhile.
-  const holders = store.getState().spaceE2ee.spaces[spaceId]?.holders[current.info.id] ?? [];
+  const holders = encryptedSpaceEntry(store.getState().spaceE2ee.spaces, spaceId)?.holders[current.info.id] ?? [];
   const plan = planKeyReconcile(roster, holders, me);
 
   if (plan.rotate) {

@@ -43,12 +43,13 @@ import { addSpace, setActiveSpace } from "@/store/slices/spacesSlice";
 import { setFeatureEnabled, FEATURE_E2EE_SPACES } from "@/store/slices/featuresSlice";
 import { clearAllUserState, setActivePubkey } from "@/lib/db/userStateStore";
 import { processIncomingEvent, resetEventPipelineCaches, flushEventPipeline } from "@/lib/nostr/eventPipeline";
-import { signAndPublish } from "@/lib/nostr/publish";
+import { signAndPublish, signWithAccount } from "@/lib/nostr/publish";
+import { encryptedSpaceEntry, selectHasSpaceKey, selectIsEncryptedSpace } from "@/store/slices/spaceE2eeSlice";
 import { relayManager } from "@/lib/nostr/relayManager";
 import { subscriptionManager } from "@/lib/nostr/subscriptionManager";
 import { buildChatMessage } from "@/lib/nostr/eventBuilder";
 import { startSpaceE2ee, stopSpaceE2ee } from "../e2eeController";
-import { sendEpochOf } from "../spaceKeyring";
+import { isEncryptedSpace, sendEpochOf } from "../spaceKeyring";
 
 const HOST = "wss://space.example";
 const SPACE = "plainspace01";
@@ -93,6 +94,7 @@ function grant(): NostrEvent {
     epochKey: key,
     seq: 0,
     prev: null,
+    root: alice,
     managers: [alice],
     history: "epoch",
     at: 1_763_000_000,
@@ -232,6 +234,25 @@ describe.each([
 
   it("never marks the space encrypted", () => {
     expect(store.getState().spaceE2ee.spaces).toEqual({});
+  });
+
+  // Space ids are other people's strings. One that names an Object.prototype
+  // member must not look like an encrypted space to the guards.
+  it.each(["constructor", "toString", "__proto__", "hasOwnProperty"])(
+    "does not take a space whose id is %j for an encrypted one",
+    (id) => {
+      const state = store.getState();
+      expect(encryptedSpaceEntry(state.spaceE2ee.spaces, id)).toBeUndefined();
+      expect(selectIsEncryptedSpace(id)(state)).toBe(false);
+      expect(selectHasSpaceKey(id)(state)).toBe(false);
+      expect(isEncryptedSpace(id)).toBe(false);
+    },
+  );
+
+  it("still signs plaintext chat for a space with such an id", async () => {
+    const unsigned = buildChatMessage(me, "constructor", "hi", undefined, CHANNEL);
+    // Signing is where the guard sits; the local pipeline pass is not under test.
+    await expect(signWithAccount(unsigned)).resolves.toMatchObject({ kind: 9, content: "hi" });
   });
 });
 

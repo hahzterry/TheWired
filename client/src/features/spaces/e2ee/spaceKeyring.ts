@@ -11,15 +11,20 @@ import {
   buildSpaceKeyGrants,
   epochIdOf,
   generateEpochKey,
+  judgeEpochGrant,
   openSpaceKeyGrant,
+  openSpaceKeyGrantWithKey,
   pickSendEpoch,
   readGrantHeader,
+  type GrantVerdict,
+  type OpenedGrant,
 } from "@ishtarservices/core";
 import type { SpaceEpochInfo, SpaceHistoryPolicy } from "@ishtarservices/shared-types";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { store } from "@/store";
 import {
   addEpochHolders,
+  encryptedSpaceEntry,
   epochAccepted,
   forgetEncryptedSpace,
   hydrateSpaceE2ee,
@@ -51,6 +56,9 @@ let hydration: { pubkey: string; promise: Promise<void> } | null = null;
 /** Grants addressed to this account whose unwrap failed because the signer was
  *  away. Retried by `retryPendingGrants`. */
 const undecrypted = new Map<string, NostrEvent>();
+/** spaceId -> grants that could not be accepted yet (they link to epochs that
+ *  have not arrived, or their signer is not known as a manager yet). */
+const deferred = new Map<string, Map<string, DeferredGrant>>();
 
 type EpochListener = (spaceId: string, epochId: string) => void;
 const epochListeners = new Set<EpochListener>();
@@ -65,8 +73,12 @@ export function isSpaceE2eeEnabled(): boolean {
   return store.getState().features.enabled.includes(FEATURE_E2EE_SPACES);
 }
 
+function stateOf(spaceId: string): EncryptedSpaceState | undefined {
+  return encryptedSpaceEntry(store.getState().spaceE2ee.spaces, spaceId);
+}
+
 export function isEncryptedSpace(spaceId: string): boolean {
-  return store.getState().spaceE2ee.spaces[spaceId] !== undefined;
+  return stateOf(spaceId) !== undefined;
 }
 
 function myPubkey(): string | null {
@@ -77,7 +89,14 @@ function isActive(account: string, gen: number): boolean {
   return gen === generation && myPubkey() === account;
 }
 
-function persist(): void {
+/**
+ * Write the non-secret record for `account`. Call sites pass the account and
+ * generation they started with: after an await the active account may have
+ * changed, and writing then would store one account's record (or an empty
+ * one) under another's name.
+ */
+function persist(account: string, gen: number): void {
+  if (!isActive(account, gen)) return;
   saveUserState(SPACE_E2EE_STATE_KEY, store.getState().spaceE2ee.spaces).catch(() => {});
 }
 
@@ -87,6 +106,7 @@ export function clearSpaceE2eeSession(): void {
   for (const epochs of keys.values()) for (const key of epochs.values()) key.fill(0);
   keys.clear();
   undecrypted.clear();
+  deferred.clear();
   hydration = null;
 }
 
@@ -108,7 +128,7 @@ function sanitizeRecord(raw: unknown): Record<string, EncryptedSpaceState> {
         if (Array.isArray(list)) holders[epochId] = list.filter((pk) => typeof pk === "string" && HEX64_RE.test(pk));
       }
     }
-    out[spaceId] = { root: typeof v.root === "string" ? v.root : null, epochs, holders };
+    out[spaceId] = { root: typeof v.root === "string" && HEX64_RE.test(v.root) ? v.root : null, epochs, holders };
   }
   return out;
 }
@@ -127,21 +147,32 @@ export function ensureSpaceE2eeHydrated(): Promise<void> {
   const gen = generation;
   const promise = (async () => {
     const record = sanitizeRecord(await getUserState(SPACE_E2EE_STATE_KEY).catch(() => null));
-    if (!isActive(account, gen)) return;
-    store.dispatch(hydrateSpaceE2ee(record));
+    // Keys first, state second: once Redux says "hydrated" the controller
+    // opens subscriptions, and events must find their keys already here.
+    const loaded = new Map<string, Map<string, Uint8Array>>();
     for (const spaceId of Object.keys(record)) {
       const stored = await loadSpaceKeys(account, spaceId).catch(() => ({}) as Record<string, string>);
-      if (!isActive(account, gen)) return;
+      const recorded = new Set(record[spaceId].epochs.map((e) => e.id));
       const epochs = new Map<string, Uint8Array>();
       for (const [epochId, hex] of Object.entries(stored)) {
-        const key = hexToBytes(hex);
+        // Only epochs with a record are usable (the record carries seq and
+        // managers); a key without one is left for its grant to re-establish.
         // A slot that doesn't match its own name is ignored, never trusted.
+        if (!recorded.has(epochId)) continue;
+        const key = hexToBytes(hex);
         if (epochIdOf(key) === epochId) epochs.set(epochId, key);
       }
-      // Only epochs with a record are usable: the record carries seq/managers.
-      const known = record[spaceId].epochs.map((e) => e.id).filter((id) => epochs.has(id));
-      if (epochs.size > 0) keys.set(spaceId, epochs);
-      store.dispatch(setReadyEpochs({ spaceId, epochIds: known }));
+      if (epochs.size > 0) loaded.set(spaceId, epochs);
+    }
+    if (!isActive(account, gen)) return;
+    for (const [spaceId, epochs] of loaded) keys.set(spaceId, epochs);
+    store.dispatch(hydrateSpaceE2ee(record));
+    for (const [spaceId, epochs] of loaded) {
+      store.dispatch(setReadyEpochs({ spaceId, epochIds: [...epochs.keys()] }));
+    }
+    // Anything parked while the keychain was loading can be opened now.
+    for (const [spaceId, epochs] of loaded) {
+      for (const epochId of epochs.keys()) for (const listener of epochListeners) listener(spaceId, epochId);
     }
   })();
   hydration = { pubkey: account, promise };
@@ -156,7 +187,7 @@ export function getEpochKey(spaceId: string, epochId: string): Uint8Array | unde
 export function usableEpochs(spaceId: string): SpaceEpochInfo[] {
   const held = keys.get(spaceId);
   if (!held) return [];
-  return (store.getState().spaceE2ee.spaces[spaceId]?.epochs ?? []).filter((e) => held.has(e.id));
+  return (stateOf(spaceId)?.epochs ?? []).filter((e) => held.has(e.id));
 }
 
 /** The epoch to seal with, and its key; null when none is held. */
@@ -169,7 +200,7 @@ export function sendEpochOf(spaceId: string): { info: SpaceEpochInfo; key: Uint8
 /** May `pubkey` issue keys for this space, by the chain this device holds? */
 export function isSpaceKeyManager(spaceId: string, pubkey: string | null = myPubkey()): boolean {
   if (!pubkey) return false;
-  const state = store.getState().spaceE2ee.spaces[spaceId];
+  const state = stateOf(spaceId);
   if (!state?.root) return false;
   if (state.root === pubkey) return true;
   const newest = pickSendEpoch(state.epochs);
@@ -181,23 +212,21 @@ function findSpace(spaceId: string): Space | undefined {
 }
 
 /**
- * Is `signer` allowed to issue a key for this space (docs/E2EE_SPACES.md §5.4)?
- *  - With a pinned root: the root, or a manager named by the newest accepted
- *    epoch. The server's role list plays no part.
- *  - First key (trust on first use): the space's creator, or one of its admins
+ * Could `signer` be allowed to issue a key for this space at all? Decided from
+ * the grant's public header alone, BEFORE the account signer is asked to
+ * decrypt anything, so a member spamming grants costs no signer round trips.
+ * The real decision is `judgeEpochGrant` on the decrypted payload.
+ *  - With a pinned root: the root, or a manager of any accepted epoch.
+ *  - First key (trust on first use): the space's creator or one of its admins
  *    as this device currently knows them.
  */
-export function grantSignerAuthorized(
+export function signerMayIssue(
   state: Pick<EncryptedSpaceState, "root" | "epochs"> | undefined,
   space: Pick<Space, "creatorPubkey" | "adminPubkeys">,
   signer: string,
 ): boolean {
-  if (state?.root) {
-    if (signer === state.root) return true;
-    const newest = pickSendEpoch(state.epochs);
-    return !!newest && newest.managers.includes(signer);
-  }
-  return signer === space.creatorPubkey || space.adminPubkeys.includes(signer);
+  if (state?.root) return signer === state.root || state.epochs.some((e) => e.managers.includes(signer));
+  return (space.creatorPubkey !== "" && signer === space.creatorPubkey) || space.adminPubkeys.includes(signer);
 }
 
 async function adoptEpoch(
@@ -218,13 +247,13 @@ async function adoptEpoch(
   }
   epochs.set(info.id, key);
   store.dispatch(epochAccepted({ spaceId, root, epoch: info }));
-  persist();
+  persist(account, gen);
   for (const listener of epochListeners) listener(spaceId, info.id);
   return true;
 }
 
-// One unwrap at a time per space: several grants for the same epoch (chunks,
-// late grants) must not each cost a signer round trip.
+// Grants of a space are judged one at a time, in arrival order: whether one is
+// acceptable depends on the epochs accepted before it.
 const acceptChains = new Map<string, Promise<unknown>>();
 function serializedFor<T>(spaceId: string, fn: () => Promise<T>): Promise<T> {
   const run = (acceptChains.get(spaceId) ?? Promise.resolve()).then(fn, fn);
@@ -235,48 +264,153 @@ function serializedFor<T>(spaceId: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export type GrantOutcome = "accepted" | "known" | "not-recipient" | "unauthorized" | "invalid" | "retry";
+export type GrantOutcome =
+  /** A new epoch key was stored. */
+  | "accepted"
+  /** An epoch already held (its holder list may have been updated). */
+  | "known"
+  /** Not addressed to this account. */
+  | "not-recipient"
+  /** The signer may not issue this (kept in case later epochs change that). */
+  | "unauthorized"
+  /** Linked to epochs that have not arrived yet; retried when they do. */
+  | "deferred"
+  /** Malformed, or the key / payload did not check out. Final. */
+  | "invalid"
+  /** The account signer could not be asked; retried later. */
+  | "retry";
 
-async function acceptGrant(event: NostrEvent, account: string, gen: number): Promise<GrantOutcome> {
+interface DeferredGrant {
+  event: NostrEvent;
+  /** Kept so a retry doesn't ask the signer to decrypt the same entry again. */
+  opened?: OpenedGrant;
+}
+
+const MAX_DEFERRED_PER_SPACE = 32;
+
+function defer(spaceId: string, event: NostrEvent, opened?: OpenedGrant): void {
+  let list = deferred.get(spaceId);
+  if (!list) {
+    list = new Map();
+    deferred.set(spaceId, list);
+  }
+  if (!list.has(event.id) && list.size >= MAX_DEFERRED_PER_SPACE) {
+    const oldest = list.keys().next().value;
+    if (oldest !== undefined) list.delete(oldest);
+  }
+  list.set(event.id, { event, opened: opened ?? list.get(event.id)?.opened });
+}
+
+async function processGrant(
+  event: NostrEvent,
+  account: string,
+  gen: number,
+  preOpened?: OpenedGrant,
+): Promise<GrantOutcome> {
   const header = readGrantHeader(event);
   if (!header) return "invalid";
-  if (!header.recipients.includes(account)) return "not-recipient";
-  if (getEpochKey(header.spaceId, header.epochId)) return "known";
-
-  const space = findSpace(header.spaceId);
+  const { spaceId, epochId } = header;
+  const space = findSpace(spaceId);
   if (!space) return "unauthorized";
-  const state = store.getState().spaceE2ee.spaces[header.spaceId];
-  if (!grantSignerAuthorized(state, space, event.pubkey)) return "unauthorized";
+  const signer = event.pubkey;
 
-  let opened;
-  try {
-    opened = await openSpaceKeyGrant(event, account, nip44Decrypt);
-  } catch (err) {
-    if (err instanceof SpaceE2eeError) return "invalid";
-    // The signer was away (locked extension, remote signer timeout): that says
-    // nothing about the grant. Keep it for a retry.
-    undecrypted.set(event.id, event);
-    return "retry";
+  let state = stateOf(spaceId);
+  if (!signerMayIssue(state, space, signer)) {
+    // Not now. It may become acceptable once an epoch naming this signer a
+    // manager arrives, or once the space's admin list has loaded.
+    defer(spaceId, event, preOpened);
+    return "unauthorized";
   }
-  if (!isActive(account, gen)) return "retry";
 
-  // The payload must itself vouch for whoever signed it, so an admin the
-  // server listed can't hand out an epoch that doesn't name them.
-  const root = state?.root ?? space.creatorPubkey;
-  if (event.pubkey !== root && !opened.payload.managers.includes(event.pubkey)) return "unauthorized";
+  const held = getEpochKey(spaceId, epochId);
+  if (held) {
+    // Nothing new to learn but who else holds this epoch, and only from a
+    // grant that really is for it: the payload must open under the held key.
+    try {
+      openSpaceKeyGrantWithKey(event, held);
+    } catch {
+      return "invalid";
+    }
+    const info = state?.epochs.find((e) => e.id === epochId);
+    if (state?.root && info && (signer === state.root || info.managers.includes(signer))) {
+      store.dispatch(addEpochHolders({ spaceId, epochId, holders: header.recipients }));
+      persist(account, gen);
+    }
+    return "known";
+  }
+
+  if (!header.recipients.includes(account)) {
+    // The payload can't be read. A grant from someone who can issue keys is
+    // still how a device learns the space is encrypted.
+    if (!state) {
+      store.dispatch(markSpaceEncrypted(spaceId));
+      persist(account, gen);
+    }
+    return "not-recipient";
+  }
+
+  let opened = preOpened;
+  if (!opened) {
+    try {
+      opened = await openSpaceKeyGrant(event, account, nip44Decrypt);
+    } catch (err) {
+      if (err instanceof SpaceE2eeError) return "invalid";
+      // The signer was away (locked extension, remote signer timeout): that
+      // says nothing about the grant. Keep it for a retry.
+      undecrypted.set(event.id, event);
+      return "retry";
+    }
+    if (!isActive(account, gen)) return "retry";
+    undecrypted.delete(event.id);
+  }
+  const { payload } = opened;
+
+  state = stateOf(spaceId);
+  let root: string;
+  let verdict: GrantVerdict;
+  if (state?.root) {
+    root = state.root;
+    verdict = judgeEpochGrant(payload, signer, root, state.epochs);
+  } else {
+    // First key: pin the root the payload names. The signer was vouched for by
+    // the space's creator/admin list; the payload must vouch for the signer too.
+    root = payload.root;
+    verdict = signer === payload.root || payload.managers.includes(signer) ? "accept" : "reject";
+  }
+  if (verdict === "defer") {
+    defer(spaceId, event, opened);
+    return "deferred";
+  }
+  if (verdict === "reject") return "unauthorized";
 
   const info: SpaceEpochInfo = {
-    id: opened.payload.epoch,
-    seq: opened.payload.seq,
-    prev: opened.payload.prev,
-    managers: opened.payload.managers,
-    history: opened.payload.history,
-    at: opened.payload.at,
-    grantedBy: event.pubkey,
+    id: payload.epoch,
+    seq: payload.seq,
+    prev: payload.prev,
+    managers: payload.managers,
+    history: payload.history,
+    at: payload.at,
+    grantedBy: signer,
   };
-  await adoptEpoch(account, header.spaceId, root, info, opened.key, gen);
-  undecrypted.delete(event.id);
+  if (!(await adoptEpoch(account, spaceId, root, info, opened.key, gen))) return "retry";
+  store.dispatch(addEpochHolders({ spaceId, epochId, holders: header.recipients }));
+  persist(account, gen);
   return "accepted";
+}
+
+/** Re-judge the grants kept for a space; repeats while that accepts anything. */
+async function retryDeferred(spaceId: string, account: string, gen: number): Promise<void> {
+  for (;;) {
+    const list = deferred.get(spaceId);
+    if (!list || list.size === 0) return;
+    let progressed = false;
+    for (const [id, entry] of [...list]) {
+      list.delete(id);
+      const outcome = await processGrant(entry.event, account, gen, entry.opened);
+      if (outcome === "accepted") progressed = true;
+    }
+    if (!progressed) return;
+  }
 }
 
 /**
@@ -292,48 +426,41 @@ export function handleKeyGrant(event: NostrEvent, onOutcome?: (outcome: GrantOut
   if (!findSpace(header.spaceId)) return false;
 
   const gen = generation;
-  void ensureSpaceE2eeHydrated().then(async () => {
-    if (!isActive(account, gen)) return;
-    const space = findSpace(header.spaceId);
-    if (!space) return;
-    const state = store.getState().spaceE2ee.spaces[header.spaceId];
-    if (!grantSignerAuthorized(state, space, event.pubkey)) {
-      onOutcome?.("unauthorized");
-      return;
-    }
-    // An authorized grant is how a device learns a space is encrypted, and who
-    // holds each epoch's key, whether or not this account is a recipient.
-    const wasEncrypted = state !== undefined;
-    store.dispatch(markSpaceEncrypted(header.spaceId));
-    store.dispatch(
-      addEpochHolders({ spaceId: header.spaceId, epochId: header.epochId, holders: header.recipients }),
-    );
-    if (!wasEncrypted) persist();
-
-    const outcome = await serializedFor(header.spaceId, () => acceptGrant(event, account, gen));
-    if (outcome !== "accepted") persist();
-    onOutcome?.(outcome);
-  });
+  void ensureSpaceE2eeHydrated()
+    .then(() =>
+      serializedFor(header.spaceId, async () => {
+        if (!isActive(account, gen)) return "retry" as const;
+        const outcome = await processGrant(event, account, gen);
+        // A newly accepted epoch can make waiting grants acceptable.
+        if (outcome === "accepted") await retryDeferred(header.spaceId, account, gen);
+        return outcome;
+      }),
+    )
+    .then(onOutcome, () => onOutcome?.("retry"));
   return true;
 }
 
-/** Try again the grants a missing signer left unopened. */
+/** Try again the grants that could not be judged: the signer was away, or the
+ *  space's admin list had not loaded yet. */
 export async function retryPendingGrants(): Promise<void> {
   const account = myPubkey();
-  if (!account || undecrypted.size === 0) return;
+  if (!account) return;
   const gen = generation;
   for (const event of [...undecrypted.values()]) {
     const header = readGrantHeader(event);
-    if (!header) {
-      undecrypted.delete(event.id);
-      continue;
-    }
-    const outcome = await serializedFor(header.spaceId, () => acceptGrant(event, account, gen));
-    if (outcome !== "retry") undecrypted.delete(event.id);
+    undecrypted.delete(event.id);
+    if (!header) continue;
+    await serializedFor(header.spaceId, async () => {
+      const outcome = await processGrant(event, account, gen);
+      if (outcome === "accepted") await retryDeferred(header.spaceId, account, gen);
+    });
+  }
+  for (const spaceId of [...deferred.keys()]) {
+    await serializedFor(spaceId, () => retryDeferred(spaceId, account, gen));
   }
 }
 
-// ── Issuing keys (managers) ──────────────────────────────────────────────────
+// ── Issuing keys ─────────────────────────────────────────────────────────────
 
 function uniq(list: string[]): string[] {
   return [...new Set(list)];
@@ -342,10 +469,13 @@ function uniq(list: string[]): string[] {
 async function publishGrants(
   space: Space,
   granter: string,
+  root: string,
   key: Uint8Array,
   info: SpaceEpochInfo,
   recipients: string[],
 ): Promise<void> {
+  const account = granter;
+  const gen = generation;
   const targets = resolveRelaySet(space);
   for (const url of targets) relayManager.connect(url, "read+write");
   const grants = buildSpaceKeyGrants({
@@ -354,6 +484,7 @@ async function publishGrants(
     epochKey: key,
     seq: info.seq,
     prev: info.prev,
+    root,
     managers: info.managers,
     history: info.history,
     at: info.at,
@@ -361,6 +492,7 @@ async function publishGrants(
   });
   for (const unsigned of grants) {
     const signed = await signAndPublish(unsigned, targets.length ? targets : undefined);
+    if (!isActive(account, gen)) return;
     // Only once the grant is signed and handed to the relay layer: recording a
     // holder before that would leave them without a key and never retried.
     const header = readGrantHeader(signed);
@@ -368,13 +500,7 @@ async function publishGrants(
       store.dispatch(addEpochHolders({ spaceId: space.id, epochId: header.epochId, holders: header.recipients }));
     }
   }
-  persist();
-}
-
-/** The managers an epoch issued now names: the root, the issuer, and the
- *  space's admins that are among the recipients. */
-function managersFor(space: Space, root: string, issuer: string, recipients: string[]): string[] {
-  return uniq([root, issuer, ...space.adminPubkeys.filter((pk) => recipients.includes(pk))]);
+  persist(account, gen);
 }
 
 /**
@@ -383,6 +509,10 @@ function managersFor(space: Space, root: string, issuer: string, recipients: str
  * failure aborts the creation instead of leaving a space that was meant to be
  * encrypted open to plaintext. From here on this device treats the space id as
  * encrypted. Idempotent, so a retried creation reuses the epoch.
+ *
+ * The creator becomes the space's key root and, in this version, its only
+ * key manager: the manager list is never filled from the server's role list
+ * (docs/E2EE_SPACES.md §5.4).
  */
 export async function prepareFirstEpoch(space: Space, history: SpaceHistoryPolicy): Promise<void> {
   const account = myPubkey();
@@ -395,7 +525,7 @@ export async function prepareFirstEpoch(space: Space, history: SpaceHistoryPolic
     id: epochIdOf(key),
     seq: 0,
     prev: null,
-    managers: managersFor(space, account, account, uniq([account, ...space.memberPubkeys])),
+    managers: [account],
     history,
     at: Math.floor(Date.now() / 1000),
     grantedBy: account,
@@ -403,22 +533,20 @@ export async function prepareFirstEpoch(space: Space, history: SpaceHistoryPolic
   if (!(await adoptEpoch(account, space.id, account, info, key, gen))) {
     throw new Error("The account changed while the space was being set up.");
   }
-  // The creator holds the key from this moment, whatever happens to the grant.
-  store.dispatch(addEpochHolders({ spaceId: space.id, epochId: info.id, holders: [account] }));
-  persist();
 }
 
 /**
  * Make a space encrypted, step 2: publish the first grant (to the creator, so
  * their other devices get the key, and to anyone already a member) once the
- * space exists on its relay.
+ * space exists on its relay. If this never goes out, the creator is not
+ * recorded as a holder and the next reconcile publishes it.
  */
 export async function publishFirstEpoch(space: Space): Promise<void> {
   const account = myPubkey();
   const current = sendEpochOf(space.id);
-  if (!account || !current) throw new Error("This space's key isn't on this device.");
-  const recipients = uniq([account, ...space.memberPubkeys]);
-  await publishGrants(space, account, current.key, current.info, recipients);
+  const root = stateOf(space.id)?.root;
+  if (!account || !current || !root) throw new Error("This space's key isn't on this device.");
+  await publishGrants(space, account, root, current.key, current.info, uniq([account, ...space.memberPubkeys]));
 }
 
 /**
@@ -429,9 +557,9 @@ export async function rotateSpaceKey(spaceId: string, recipients: string[]): Pro
   const account = myPubkey();
   const space = findSpace(spaceId);
   const current = sendEpochOf(spaceId);
-  const root = store.getState().spaceE2ee.spaces[spaceId]?.root;
+  const root = stateOf(spaceId)?.root;
   if (!account || !space || !current || !root) throw new Error("This space's key isn't on this device.");
-  if (!isSpaceKeyManager(spaceId, account)) throw new Error("Only a space admin can change the key.");
+  if (!isSpaceKeyManager(spaceId, account)) throw new Error("Only the space's key manager can change the key.");
   const gen = generation;
   const to = uniq([account, ...recipients]);
   const key = generateEpochKey();
@@ -439,25 +567,27 @@ export async function rotateSpaceKey(spaceId: string, recipients: string[]): Pro
     id: epochIdOf(key),
     seq: current.info.seq + 1,
     prev: current.info.id,
-    managers: managersFor(space, root, account, to),
+    // Carried forward from the chain, never taken from the server's roles.
+    managers: uniq([root, ...current.info.managers.filter((pk) => to.includes(pk))]),
     history: current.info.history,
     at: Math.floor(Date.now() / 1000),
     grantedBy: account,
   };
   if (!(await adoptEpoch(account, spaceId, root, info, key, gen))) return;
-  await publishGrants(space, account, key, info, to);
+  await publishGrants(space, account, root, key, info, to);
 }
 
 /** Hand `epochs` (held by this device) to `recipients` as late grants. */
 export async function grantEpochs(spaceId: string, epochs: SpaceEpochInfo[], recipients: string[]): Promise<void> {
   const account = myPubkey();
   const space = findSpace(spaceId);
-  if (!account || !space) throw new Error("This space's key isn't on this device.");
-  if (!isSpaceKeyManager(spaceId, account)) throw new Error("Only a space admin can share the key.");
+  const root = stateOf(spaceId)?.root;
+  if (!account || !space || !root) throw new Error("This space's key isn't on this device.");
+  if (!isSpaceKeyManager(spaceId, account)) throw new Error("Only the space's key manager can share the key.");
   for (const info of epochs) {
     const key = getEpochKey(spaceId, info.id);
     if (!key) continue;
-    await publishGrants(space, account, key, info, recipients);
+    await publishGrants(space, account, root, key, info, recipients);
   }
 }
 
@@ -468,6 +598,8 @@ export async function forgetSpaceE2ee(spaceId: string): Promise<void> {
   if (held) for (const key of held.values()) key.fill(0);
   keys.delete(spaceId);
   store.dispatch(forgetEncryptedSpace(spaceId));
-  persist();
-  if (account) await forgetSpaceKeys(account, spaceId).catch(() => {});
+  if (account) {
+    persist(account, generation);
+    await forgetSpaceKeys(account, spaceId).catch(() => {});
+  }
 }

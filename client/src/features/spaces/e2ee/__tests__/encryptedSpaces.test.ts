@@ -158,6 +158,7 @@ function grantFrom(
     epochKey: key,
     seq: 0,
     prev: null,
+    root: who.pubkey,
     managers: [who.pubkey],
     history: "epoch",
     at: 1_763_000_000,
@@ -259,6 +260,19 @@ describe("creating an encrypted space", () => {
     // Any device of the creator re-derives the key from that event alone.
     const opened = await openSpaceKeyGrant(grants[0], me.pubkey, me.decrypt);
     expect(bytesToHex(opened.key)).toBe(bytesToHex(sendEpochOf(SPACE)!.key));
+  });
+
+  it("publishes the creator's own grant on the next reconcile if the first one never went out", async () => {
+    const s = space();
+    await prepareFirstEpoch(s, "epoch");
+    store.dispatch(addSpace(s));
+    // publishFirstEpoch was never reached (the signer was away, the tab closed).
+    expect(store.getState().spaceE2ee.spaces[SPACE].holders[sendEpochOf(SPACE)!.info.id]).toBeUndefined();
+    await reconcileSpaceKeys(SPACE);
+    await settle();
+    const grants = publishedOfKind(4291);
+    expect(grants).toHaveLength(1);
+    expect(readGrantHeader(grants[0])!.recipients).toEqual([me.pubkey]);
   });
 
   it("fails the creation when the keychain write fails, leaving no key", async () => {
@@ -504,6 +518,35 @@ describe("handing out keys and rotating (manager)", () => {
     expect(h.published).toHaveLength(0);
   });
 
+  it("never fills the manager list from the space's admin list", async () => {
+    // The server says Bob is an admin. That does not make him a key manager.
+    store.dispatch(addSpace(space({ adminPubkeys: [me.pubkey, bob.pubkey], memberPubkeys: [me.pubkey, bob.pubkey, carol.pubkey] })));
+    await reconcileSpaceKeys(SPACE);
+    await reconcileSpaceKeys(SPACE, { exclude: [carol.pubkey] });
+    await settle();
+    expect(sendEpochOf(SPACE)!.info.seq).toBe(1);
+    expect(sendEpochOf(SPACE)!.info.managers).toEqual([me.pubkey]);
+  });
+
+  it("remembers a removal even when the roster could not be fetched right then", async () => {
+    setRoster([me.pubkey, bob.pubkey, carol.pubkey]);
+    await reconcileSpaceKeys(SPACE);
+    await settle();
+    const seq = sendEpochOf(SPACE)!.info.seq;
+    h.published.length = 0;
+
+    let calls = 0;
+    // First the authority doesn't answer; then it answers with a roster that
+    // still lists Carol (it has not processed the removal yet).
+    _resetKeyReconcile(async () => (++calls === 1 ? null : [me.pubkey, bob.pubkey, carol.pubkey]));
+    await reconcileSpaceKeys(SPACE, { exclude: [carol.pubkey] });
+    expect(h.published).toHaveLength(0);
+    await reconcileSpaceKeys(SPACE);
+    await settle();
+    expect(sendEpochOf(SPACE)!.info.seq).toBe(seq + 1);
+    expect(readGrantHeader(publishedOfKind(4291)[0])!.recipients.sort()).toEqual([me.pubkey, bob.pubkey].sort());
+  });
+
   it("acts on the authority's roster, not the store's cached copy", async () => {
     setRoster([me.pubkey, bob.pubkey, carol.pubkey]);
     await reconcileSpaceKeys(SPACE);
@@ -610,7 +653,12 @@ describe("receiving keys (member)", () => {
     const forged = generateEpochKey();
     expect(
       await deliverGrant(
-        grantFrom(carol, forged, [me.pubkey], { seq: 1, prev: epochIdOf(key0), managers: [carol.pubkey] }),
+        grantFrom(carol, forged, [me.pubkey], {
+          seq: 1,
+          prev: epochIdOf(key0),
+          root: alice.pubkey,
+          managers: [alice.pubkey, carol.pubkey],
+        }),
       ),
     ).toBe("unauthorized");
     expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key0));
@@ -619,7 +667,12 @@ describe("receiving keys (member)", () => {
     const key1 = generateEpochKey();
     expect(
       await deliverGrant(
-        grantFrom(bob, key1, [me.pubkey], { seq: 1, prev: epochIdOf(key0), managers: [alice.pubkey, bob.pubkey] }),
+        grantFrom(bob, key1, [me.pubkey], {
+          seq: 1,
+          prev: epochIdOf(key0),
+          root: alice.pubkey,
+          managers: [alice.pubkey, bob.pubkey],
+        }),
       ),
     ).toBe("accepted");
     expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key1));
@@ -631,8 +684,137 @@ describe("receiving keys (member)", () => {
     store.dispatch(
       addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey, carol.pubkey], memberPubkeys: [me.pubkey] })),
     );
-    expect(await deliverGrant(grantFrom(carol, key0, [me.pubkey], { managers: [alice.pubkey] }))).toBe("unauthorized");
+    expect(
+      await deliverGrant(grantFrom(carol, key0, [me.pubkey], { root: alice.pubkey, managers: [alice.pubkey] })),
+    ).toBe("unauthorized");
     expect(sendEpochOf(SPACE)).toBeNull();
+  });
+
+  it("accepts epochs that arrive newest-first: the later one waits for its predecessor", async () => {
+    await deliverGrant(grantFrom(alice, key0, [me.pubkey], { managers: [alice.pubkey, bob.pubkey] }));
+    const key1 = generateEpochKey();
+    const key2 = generateEpochKey();
+    const e1 = grantFrom(alice, key1, [me.pubkey], { seq: 1, prev: epochIdOf(key0), managers: [alice.pubkey, bob.pubkey] });
+    const e2 = grantFrom(bob, key2, [me.pubkey], {
+      seq: 2,
+      prev: epochIdOf(key1),
+      root: alice.pubkey,
+      managers: [alice.pubkey, bob.pubkey],
+    });
+    // A relay answers newest first: epoch 2 is judged before epoch 1 exists here.
+    expect(await deliverGrant(e2)).toBe("deferred");
+    expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key0));
+    expect(await deliverGrant(e1)).toBe("accepted");
+    await settle();
+    expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key2));
+    expect(getEpochKey(SPACE, epochIdOf(key1))).toBeDefined();
+  });
+
+  it("asks the signer once for a grant that had to wait", async () => {
+    await deliverGrant(grantFrom(alice, key0, [me.pubkey], { managers: [alice.pubkey, bob.pubkey] }));
+    const key1 = generateEpochKey();
+    const key2 = generateEpochKey();
+    const nip44 = await import("@/lib/nostr/nip44");
+    const spy = vi.spyOn(nip44, "nip44Decrypt");
+    await deliverGrant(
+      grantFrom(bob, key2, [me.pubkey], { seq: 2, prev: epochIdOf(key1), root: alice.pubkey, managers: [alice.pubkey, bob.pubkey] }),
+    );
+    await deliverGrant(grantFrom(alice, key1, [me.pubkey], { seq: 1, prev: epochIdOf(key0), managers: [alice.pubkey, bob.pubkey] }));
+    await settle();
+    expect(sendEpochOf(SPACE)!.info.seq).toBe(2);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+  });
+
+  it("refuses a manager's epoch that jumps ahead of the chain", async () => {
+    await deliverGrant(grantFrom(alice, key0, [me.pubkey], { managers: [alice.pubkey, bob.pubkey] }));
+    const planted = generateEpochKey();
+    expect(
+      await deliverGrant(
+        grantFrom(bob, planted, [me.pubkey], {
+          seq: 1_000_000_000,
+          prev: epochIdOf(key0),
+          root: alice.pubkey,
+          managers: [alice.pubkey, bob.pubkey],
+        }),
+      ),
+    ).toBe("unauthorized");
+    expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key0));
+    expect(getEpochKey(SPACE, epochIdOf(planted))).toBeUndefined();
+  });
+
+  it("refuses everything from a manager dropped at the last rotation", async () => {
+    await deliverGrant(grantFrom(alice, key0, [me.pubkey], { managers: [alice.pubkey, bob.pubkey] }));
+    const key1 = generateEpochKey();
+    await deliverGrant(grantFrom(alice, key1, [me.pubkey], { seq: 1, prev: epochIdOf(key0), managers: [alice.pubkey] }));
+    const key2 = generateEpochKey();
+    expect(
+      await deliverGrant(
+        grantFrom(bob, key2, [me.pubkey], { seq: 2, prev: epochIdOf(key1), root: alice.pubkey, managers: [alice.pubkey, bob.pubkey] }),
+      ),
+    ).toBe("unauthorized");
+    expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key1));
+  });
+
+  it("refuses an epoch that names another root", async () => {
+    await deliverGrant(grantFrom(alice, key0, [me.pubkey], { managers: [alice.pubkey, bob.pubkey] }));
+    const key1 = generateEpochKey();
+    // Bob is a manager, but he cannot re-root the space on himself.
+    expect(
+      await deliverGrant(grantFrom(bob, key1, [me.pubkey], { seq: 1, prev: epochIdOf(key0), managers: [bob.pubkey] })),
+    ).toBe("unauthorized");
+    expect(store.getState().spaceE2ee.spaces[SPACE].root).toBe(alice.pubkey);
+  });
+
+  it("pins the root from the first grant when the space's creator is unknown (an imported group)", async () => {
+    store.dispatch(resetAll());
+    store.dispatch(login({ pubkey: me.pubkey, signerType: "nip07" }));
+    store.dispatch(setFeatureEnabled({ feature: FEATURE_E2EE_SPACES, enabled: true }));
+    clearSpaceE2eeSession();
+    store.dispatch(addSpace(space({ creatorPubkey: "", adminPubkeys: [alice.pubkey], memberPubkeys: [alice.pubkey, me.pubkey] })));
+    expect(await deliverGrant(grantFrom(alice, key0, [me.pubkey]))).toBe("accepted");
+    expect(store.getState().spaceE2ee.spaces[SPACE].root).toBe(alice.pubkey);
+
+    // The relay now lists Carol as an admin too. The root is pinned: her key is refused.
+    store.dispatch(
+      addSpace(space({ creatorPubkey: "", adminPubkeys: [alice.pubkey, carol.pubkey], memberPubkeys: [me.pubkey] })),
+    );
+    const forged = generateEpochKey();
+    expect(await deliverGrant(grantFrom(carol, forged, [me.pubkey], { seq: 1, prev: epochIdOf(key0) }))).toBe(
+      "unauthorized",
+    );
+    expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key0));
+  });
+
+  it("does not record holders from a grant whose payload is not for the epoch it claims", async () => {
+    await deliverGrant(grantFrom(alice, key0, [me.pubkey]));
+    const before = store.getState().spaceE2ee.spaces[SPACE].holders[epochIdOf(key0)];
+    // Signed by the root, labelled as the held epoch, naming an outsider,
+    // but its payload is encrypted under some other key.
+    const other = grantFrom(alice, generateEpochKey(), [dave.pubkey]);
+    const relabeled = finalizeEvent(
+      {
+        kind: other.kind,
+        created_at: other.created_at,
+        content: other.content,
+        tags: other.tags.map((t) => (t[0] === "epoch" ? ["epoch", epochIdOf(key0)] : t)),
+      } as never,
+      alice.sk,
+    ) as unknown as NostrEvent;
+    expect(await deliverGrant(relabeled)).toBe("invalid");
+    expect(store.getState().spaceE2ee.spaces[SPACE].holders[epochIdOf(key0)]).toEqual(before);
+  });
+
+  it("ignores every plaintext content kind in an encrypted space, not only chat", async () => {
+    await deliverGrant(grantFrom(alice, key0, [me.pubkey]));
+    const poll = finalizeEvent(
+      { kind: 1068, created_at: Math.floor(Date.now() / 1000), tags: [["h", SPACE], ["channel", CHANNEL], ["option", "a", "A"]], content: "plaintext poll" } as never,
+      bob.sk,
+    ) as unknown as NostrEvent;
+    await processIncomingEvent(poll, HOST);
+    flushEventPipeline();
+    expect(store.getState().events.entities[poll.id]).toBeUndefined();
+    expect(chatIn()).toHaveLength(0);
   });
 
   it("sends with the newest epoch and breaks a same-seq tie by the smaller id", async () => {
@@ -713,6 +895,34 @@ describe("restart", () => {
     await processIncomingEvent(grantFrom(alice, key0, [me.pubkey]), HOST);
     await settle();
     expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(key0));
+  });
+
+  it("opens sealed events that arrived while the keychain was still loading", async () => {
+    await settle();
+    clearSpaceE2eeSession();
+    clearSealedChatSession();
+    resetEventPipelineCaches();
+    // Hydration has started but not finished when the event comes in.
+    const hydrating = ensureSpaceE2eeHydrated();
+    await processIncomingEvent(sealedFrom(alice, key0, "arrived early"), HOST);
+    expect(chatIn()).toHaveLength(0);
+    await hydrating;
+    await settle();
+    expect(chatIn().map((e) => e.content)).toEqual(["arrived early"]);
+  });
+
+  it("does not use a stored key that has no record, and lets its grant re-establish it", async () => {
+    const orphan = generateEpochKey();
+    const slot = spaceKeySlot(me.pubkey, SPACE);
+    const stored = JSON.parse(h.keychain.get(slot)!);
+    stored.keys[epochIdOf(orphan)] = bytesToHex(orphan);
+    h.keychain.set(slot, JSON.stringify(stored));
+    await restart();
+    expect(getEpochKey(SPACE, epochIdOf(orphan))).toBeUndefined();
+    expect(
+      await deliverGrant(grantFrom(alice, orphan, [me.pubkey], { seq: 1, prev: epochIdOf(key0) })),
+    ).toBe("accepted");
+    expect(sendEpochOf(SPACE)!.info.id).toBe(epochIdOf(orphan));
   });
 
   it("ignores a stored key that does not match its epoch id", async () => {

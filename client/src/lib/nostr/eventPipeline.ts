@@ -1,5 +1,7 @@
 import type { NostrEvent } from "../../types/nostr";
 import { getSpaceE2eeHooks } from "./spaceE2eeHooks";
+import { SPACE_E2EE_PLAINTEXT_KINDS } from "@ishtarservices/shared-types";
+import { encryptedSpaceEntry } from "../../store/slices/spaceE2eeSlice";
 import { EVENT_KINDS } from "../../types/nostr";
 import { EventDeduplicator } from "./dedup";
 import { registerForgetSeen } from "./forgetSeen";
@@ -475,12 +477,15 @@ async function ingestVerifiedEvent(
   receivedAt: number,
   sealed: boolean,
 ): Promise<void> {
-  // In an encrypted space, plaintext chat is never rendered: it can only come
-  // from a client that doesn't know the space is encrypted, or from someone
-  // injecting unencrypted messages among the sealed ones.
-  if (!sealed && event.kind === EVENT_KINDS.CHAT_MESSAGE) {
-    const h = event.tags.find((t) => t[0] === "h")?.[1];
-    if (h && getState().spaceE2ee.spaces[h]) return;
+  // In an encrypted space, plaintext content is never rendered: it can only
+  // come from a client that doesn't know the space is encrypted, or from
+  // someone injecting unencrypted messages among the sealed ones. What stays
+  // in the clear there (deletions, group management, layout) passes.
+  if (!sealed && !SPACE_E2EE_PLAINTEXT_KINDS.includes(event.kind)) {
+    const encrypted = getState().spaceE2ee.spaces;
+    for (const tag of event.tags) {
+      if (tag[0] === "h" && encryptedSpaceEntry(encrypted, tag[1])) return;
+    }
   }
 
   // Step 3b: Reject re-delivered deleted notes/reposts/polls
