@@ -5,12 +5,7 @@ import {
   markProfileChecked,
 } from "../../store/slices/identitySlice";
 import type { SignerType } from "../../store/slices/identitySlice";
-import {
-  clearRelayConnections,
-} from "../../store/slices/relaysSlice";
 import { relayManager } from "./relayManager";
-import { subscriptionManager } from "./subscriptionManager";
-import { clearDMRelayCache } from "./dmRelayList";
 import { EVENT_KINDS } from "../../types/nostr";
 import { saveUserState, getUserState } from "../db/userStateStore";
 import { getProfile } from "../db/profileStore";
@@ -18,27 +13,19 @@ import { loadEnabledFeatures } from "../../features/settings/featuresPersistence
 import { setEnabledFeatures } from "../../store/slices/featuresSlice";
 import { loadFeedPrefs } from "../../features/friends/feedPrefsPersistence";
 import { setFeedPrefs } from "../../store/slices/feedPrefsSlice";
-import { resetLibraryFill } from "../../features/music/libraryFill";
 import {
   startMusicLibrarySync,
   drainMusicLibrarySync,
-  flushMusicLibrarySync,
-  cancelMusicLibrarySync,
 } from "../../features/music/librarySync";
 import { addNotification } from "../../store/slices/notificationSlice";
 import { BOOTSTRAP_RELAYS, PROFILE_RELAYS } from "./constants";
-import { profileCache } from "./profileCache";
-import { loadDMState, startDMPersistence, cancelPendingSave as cancelDMSave, flushPendingSave as flushDMSave } from "../../features/dm/dmPersistence";
-import { loadDMReadState, startDMReadStateSync, cancelPendingSave as cancelDMReadStateSave, flushPendingSave as flushDMReadStateSave } from "../../features/dm/dmReadState";
-import { cancelPendingSave as cancelFollowerSave, flushPendingSave as flushFollowerSave } from "./followerPersistence";
-import { loadFriendRequestState, startFriendRequestPersistence, cancelPendingSave as cancelFriendRequestSave, flushPendingSave as flushFriendRequestSave } from "./friendRequestPersistence";
-import { loadNotificationState, startNotificationPersistence, cancelPendingSave as cancelNotificationSave, flushPendingSave as flushNotificationSave } from "../../features/notifications/notificationPersistence";
-import { resetEventPipelineCaches } from "./eventPipeline";
-import { verifyBridge } from "./verifyWorkerBridge";
-import { startBackgroundChatSubs, stopAllBgChatSubs } from "./groupSubscriptions";
+import { loadDMState, startDMPersistence } from "../../features/dm/dmPersistence";
+import { loadDMReadState, startDMReadStateSync } from "../../features/dm/dmReadState";
+import { loadFriendRequestState, startFriendRequestPersistence } from "./friendRequestPersistence";
+import { loadNotificationState, startNotificationPersistence } from "../../features/notifications/notificationPersistence";
+import { startBackgroundChatSubs } from "./groupSubscriptions";
 import { publishOutbox } from "./publishOutbox";
-import { initLastChannelCache, clearLastChannelCache } from "../db/lastChannelCache";
-import { clearAllUserState } from "../db/userStateStore";
+import { initLastChannelCache } from "../db/lastChannelCache";
 import { resetAll } from "../../store";
 import {
   setAccounts,
@@ -47,20 +34,19 @@ import {
 } from "../../store/slices/identitySlice";
 import { setActivePubkey, clearAccountState, migrateUnprefixedState } from "../db/userStateStore";
 import { TauriSigner } from "./tauriSigner";
-import { deleteSecret, nip46SecretKey, purgeWebSecrets } from "./secretStore";
+import { deleteSecret, nip46SecretKey } from "./secretStore";
 import {
   restoreOnboardingState,
   setShowProfileWizard,
 } from "../../features/onboarding/onboardingSlice";
 import { loadOnboardingState } from "../../features/onboarding/onboardingPersistence";
 import { createLogger, shortKey } from "../debug/logger";
-import { clearProjectKeySession } from "../../features/music/sharedKey/projectKeys";
 import { hydrateMediaPrefs, fetchMediaPrefs } from "../media/mediaPrefs";
-import { ensureMediaGrant, clearMediaGrant } from "../media/mediaGrant";
-import { musicTokenCache } from "../cache/tokenCache";
-import { abandonMediaSessions } from "../webrtc/mediaSession";
+import { ensureMediaGrant } from "../media/mediaGrant";
 import { endMediaSessionsForAccountChange } from "../../features/calling/accountChangeMedia";
 import { loginState } from "./login/state";
+import { performCleanup, performLogout } from "./login/cleanup";
+export { performCleanup, performLogout };
 import { isMultiAccountSession, persistSessionAccount, type MultiAccountSession, type LegacySession } from "./login/sessionStore";
 import { subscribeFollowers } from "./login/followers";
 import { subscribeGiftWraps } from "./login/giftWrapSub";
@@ -69,7 +55,7 @@ import { loadAndReconcileSpaces } from "./login/spaces";
 import { subscribeRelayList, subscribeDMRelayList } from "./login/relayBootstrap";
 import { ingestOwnProfileEvent, subscribeUserData, hydrateCachedUserLists } from "./login/userData";
 import { wireRelayStatusBridge } from "./login/relayBridge";
-import { getSigner, getSignerTimeoutMs, saveNip46Connection, loadNip46Connection, closeSignerIfRemote, createSessionSigner, type Nip46Connection } from "./login/signerSession";
+import { getSigner, getSignerTimeoutMs, saveNip46Connection, loadNip46Connection, createSessionSigner, type Nip46Connection } from "./login/signerSession";
 export { getSigner, getSignerTimeoutMs };
 
 const startupLog = createLogger("startup");
@@ -538,150 +524,4 @@ export async function removeAccount(pubkeyToRemove: string): Promise<void> {
     // Just update the accounts list
     store.dispatch(setAccounts(remaining));
   }
-}
-
-/** Internal cleanup: everything performLogout does except clearing session.
- *  Does NOT reset Redux or set activePubkey — caller controls ordering. */
-export function performCleanup(): void {
-  // 0. Backstop: no call or voice room outlives its account. Callers end
-  //    them gracefully first (endMediaSessionsForAccountChange); this hard
-  //    stop covers any path that didn't. Signs nothing.
-  void abandonMediaSessions();
-
-  // 1. FLUSH pending saves while activePubkey still points to the old account.
-  //    This persists read state, DM state, etc. so they survive the switch.
-  flushDMSave();
-  flushDMReadStateSave();
-  flushFollowerSave();
-  flushFriendRequestSave();
-  flushNotificationSave();
-  flushMusicLibrarySync();
-
-  // 2. Unsubscribe persistence listeners
-  loginState.cleanupDMPersistence?.();
-  loginState.cleanupDMPersistence = null;
-  loginState.cleanupDMReadState?.();
-  loginState.cleanupDMReadState = null;
-  loginState.cleanupFollowerPersistence?.();
-  loginState.cleanupFollowerPersistence = null;
-  loginState.cleanupFriendRequestPersistence?.();
-  loginState.cleanupFriendRequestPersistence = null;
-  loginState.cleanupNotificationPersistence?.();
-  loginState.cleanupNotificationPersistence = null;
-  loginState.cleanupMusicLibrarySync?.();
-  loginState.cleanupMusicLibrarySync = null;
-  resetLibraryFill();
-
-  loginState.cleanupActiveSpacePersistence?.();
-  loginState.cleanupActiveSpacePersistence = null;
-  loginState.cleanupGiftWrapReconciliation?.();
-  loginState.cleanupGiftWrapReconciliation = null;
-  loginState.cleanupProjectKeyListener?.();
-  loginState.cleanupProjectKeyListener = null;
-  clearProjectKeySession();
-
-  // 3. Close subscriptions and background chat subs
-  subscriptionManager.closeAll();
-  stopAllBgChatSubs();
-
-  // 4. Clear module-level caches (signer, profile, DM relay, channel, dedup, authorSet)
-  closeSignerIfRemote(loginState.currentSigner);
-  loginState.currentSigner = null;
-  profileCache.clear();
-  clearDMRelayCache();
-  clearLastChannelCache();
-  resetEventPipelineCaches();
-  verifyBridge.drainPending();
-  // Media access is per account: the viewer grant and music track grants.
-  clearMediaGrant();
-  musicTokenCache.clear();
-
-  // 5. Disconnect relays. disconnectAll() reports nothing per relay (that was
-  //    two store updates per connection inside the switch); one action clears
-  //    the connection rows instead.
-  relayManager.disconnectAll();
-  store.dispatch(clearRelayConnections());
-}
-
-/** Full logout: stop listeners, close subscriptions, clear caches, reset store */
-export async function performLogout(): Promise<void> {
-  // 0. End any call / voice channel while the signer is still active.
-  await endMediaSessionsForAccountChange();
-
-  // 0b. Publish pending music library/folder edits while the signer is still
-  //    active (bounded): the local rows are wiped below, so anything still
-  //    unsent would otherwise be lost for good.
-  await drainMusicLibrarySync();
-
-  // 1. Cancel pending debounce timers FIRST to prevent stale writes
-  cancelDMSave();
-  cancelDMReadStateSave();
-  cancelFollowerSave();
-  cancelFriendRequestSave();
-  cancelNotificationSave();
-  cancelMusicLibrarySync();
-
-  // 2. Stop persistence listeners
-  loginState.cleanupDMPersistence?.();
-  loginState.cleanupDMPersistence = null;
-  loginState.cleanupDMReadState?.();
-  loginState.cleanupDMReadState = null;
-  loginState.cleanupFollowerPersistence?.();
-  loginState.cleanupFollowerPersistence = null;
-  loginState.cleanupFriendRequestPersistence?.();
-  loginState.cleanupFriendRequestPersistence = null;
-  loginState.cleanupNotificationPersistence?.();
-  loginState.cleanupNotificationPersistence = null;
-  loginState.cleanupMusicLibrarySync?.();
-  loginState.cleanupMusicLibrarySync = null;
-  resetLibraryFill();
-  loginState.cleanupActiveSpacePersistence?.();
-  loginState.cleanupActiveSpacePersistence = null;
-  loginState.cleanupGiftWrapReconciliation?.();
-  loginState.cleanupGiftWrapReconciliation = null;
-  loginState.cleanupProjectKeyListener?.();
-  loginState.cleanupProjectKeyListener = null;
-  clearProjectKeySession();
-
-  // 3. Close all relay subscriptions and background chat subs
-  subscriptionManager.closeAll();
-  stopAllBgChatSubs();
-
-  // 4. Clear signer and module-level caches
-  closeSignerIfRemote(loginState.currentSigner);
-  loginState.currentSigner = null;
-  profileCache.clear();
-  clearDMRelayCache();
-  clearLastChannelCache();
-  resetEventPipelineCaches();
-  verifyBridge.drainPending();
-  clearMediaGrant();
-  musicTokenCache.clear();
-  setActivePubkey(null);
-
-  // 5. Disconnect relays (and hard-stop any room the graceful step missed)
-  void abandonMediaSessions();
-  relayManager.disconnectAll();
-  store.dispatch(clearRelayConnections());
-
-  // 6. Clear keystore active pubkey (so next login generates fresh)
-  try {
-    await TauriSigner.clearActive();
-  } catch {
-    // Not in Tauri environment, or keystore unavailable
-  }
-
-  // 6.5 Web builds: purge transport secrets (LLM/web-search keys, bunker/NWC
-  // URIs) from session memory AND any opted-in localStorage entries — they must
-  // not survive logout (audit #95). No-op on Tauri (keychain is by-design
-  // persistent across logins).
-  purgeWebSecrets();
-
-  // 7. Clear IndexedDB — AWAIT so data is gone before next login
-  await Promise.all([
-    clearAllUserState().catch(() => {}),
-  ]);
-
-  // 8. Reset entire Redux store (all 17+ slices → initialState)
-  store.dispatch(resetAll());
 }
