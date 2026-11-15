@@ -192,15 +192,16 @@ describe("proposeBudget", () => {
 
 describe("rendering", () => {
   it("formats bytes", () => {
-    expect(formatBytes(512)).toBe("0.5 kB");
-    expect(formatBytes(2 * 1024 * 1024)).toBe("2.00 MB");
+    expect(formatBytes(500)).toBe("0.5 kB");
+    expect(formatBytes(999_999)).toBe("1000.0 kB");
+    expect(formatBytes(2_858_858)).toBe("2.86 MB");
   });
 
   it("marks over-budget and stale lines in the markdown summary", () => {
-    const assets = [{ file: "index-aaaaaaaa.js", raw: 2048, gzip: 1024, initial: true }];
+    const assets = [{ file: "index-aaaaaaaa.js", raw: 2000, gzip: 1000, initial: true }];
     const result = checkBudget(
-      { "chunk:index.js": { raw: 2048, gzip: 1024, files: 1 } },
-      { limits: { "chunk:index.js": { raw: 1024, gzip: 2048 }, "chunk:gone.js": { raw: 1, gzip: 1 } } },
+      { "chunk:index.js": { raw: 2000, gzip: 1000, files: 1 } },
+      { limits: { "chunk:index.js": { raw: 1000, gzip: 2000 }, "chunk:gone.js": { raw: 1, gzip: 1 } } },
     );
     const md = renderMarkdown({ assets, result });
     expect(md).toContain("**Over budget.**");

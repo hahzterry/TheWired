@@ -153,9 +153,10 @@ export function proposeBudget(measurements, { headroom = 0.03, defaultChunkLimit
   return { defaultChunkLimit, limits };
 }
 
+/** Decimal units (1 kB = 1000 B), the same as Vite's build output. */
 export function formatBytes(bytes) {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-  return `${(bytes / 1024).toFixed(1)} kB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(2)} MB`;
+  return `${(bytes / 1000).toFixed(1)} kB`;
 }
 
 function percent(actual, limit) {
