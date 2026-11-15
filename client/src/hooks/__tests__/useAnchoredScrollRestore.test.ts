@@ -5,6 +5,7 @@ import {
   captureScrollPosition,
   resolveAnchorTop,
   resolveScrollTop,
+  scaledAnchorOffset,
   useAnchoredScrollRestore,
   type SavedScrollPosition,
 } from "../useAnchoredScrollRestore";
@@ -63,6 +64,7 @@ describe("captureScrollPosition", () => {
       scrollTop: 250,
       anchorId: "c",
       anchorOffset: 50,
+      anchorHeight: 100,
     });
   });
 
@@ -314,5 +316,38 @@ describe("useAnchoredScrollRestore with a virtualized list", () => {
     act(() => hook.result.current.containerRef(container));
     expect(container.scrollTop).toBe(0);
     expect(ask).not.toHaveBeenCalled();
+  });
+});
+
+describe("scaledAnchorOffset", () => {
+  it("keeps the exact offset while the card has the height it was saved at", () => {
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 183, anchorHeight: 280 }, 280)).toBe(183);
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 183, anchorHeight: 280 }, 280.6)).toBe(183);
+  });
+
+  it("scales the offset when the card came back shorter or taller", () => {
+    // A grid row was 280px tall and the reader was 210px into it (three
+    // quarters). At a narrower width the row is 180px: three quarters is 135.
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 210, anchorHeight: 280 }, 180)).toBe(135);
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 100, anchorHeight: 200 }, 400)).toBe(200);
+  });
+
+  it("uses the raw offset when no height was saved (older saved positions)", () => {
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 183 }, 90)).toBe(183);
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a" }, 90)).toBe(0);
+  });
+});
+
+describe("resolveAnchorTop with a resized card", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("lands on the same part of a card that came back at another height", () => {
+    const c = makeContainer();
+    addCard(c, "a", 0, 300);
+    addCard(c, "b", 300, 180); // was 280px tall when saved
+    const target = resolveAnchorTop(c, { scrollTop: 510, anchorId: "b", anchorOffset: 210, anchorHeight: 280 }, ATTR);
+    expect(target).toBe(300 + 135);
   });
 });

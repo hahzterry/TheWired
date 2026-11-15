@@ -28,13 +28,24 @@ import { markProgrammaticScroll } from "@/lib/virtual/viewportAnchor";
  * never applied while waiting, because the unmeasured list has no meaningful
  * pixel positions yet.
  */
-/** Stop re-pinning once the anchor target holds steady for this many frames. */
-const REPIN_STABLE_FRAMES = 8;
+/**
+ * Stop re-pinning once the anchor target holds steady for this many frames
+ * (about half a second). Long enough for cards above the anchor to finish
+ * settling their media after a virtualized list has rendered them.
+ */
+const REPIN_STABLE_FRAMES = 30;
 
 export interface SavedScrollPosition {
   scrollTop: number;
   anchorId?: string;
   anchorOffset?: number;
+  /**
+   * How tall the anchor card was when the position was saved. When the card
+   * comes back at another height (the window or the column count changed),
+   * the offset is scaled with it, so the reader lands on the same part of the
+   * card instead of a pixel count that may now be past its end.
+   */
+  anchorHeight?: number;
 }
 
 export interface AnchoredScrollRestoreOptions {
@@ -72,23 +83,26 @@ export function captureScrollPosition(
 
   const cards = container.querySelectorAll<HTMLElement>(`[${cardAttr}]`);
   const containerTop = container.getBoundingClientRect().top;
-  let anchor: { id: string; top: number } | null = null;
+  let anchor: { id: string; top: number; height: number } | null = null;
 
   // Cards are in document order: walk down until one starts below the fold top.
   // The last card starting at/above the fold top is the one the user is reading.
   for (const card of cards) {
     const id = card.getAttribute(cardAttr);
     if (!id) continue;
-    const top = card.getBoundingClientRect().top - containerTop + scrollTop;
+    const rect = card.getBoundingClientRect();
+    const top = rect.top - containerTop + scrollTop;
     if (top <= scrollTop + 1) {
-      anchor = { id, top };
+      anchor = { id, top, height: rect.height };
     } else {
       break;
     }
   }
 
   if (anchor) {
-    return { scrollTop, anchorId: anchor.id, anchorOffset: scrollTop - anchor.top };
+    const saved: SavedScrollPosition = { scrollTop, anchorId: anchor.id, anchorOffset: scrollTop - anchor.top };
+    if (anchor.height > 0) saved.anchorHeight = anchor.height;
+    return saved;
   }
   return { scrollTop };
 }
@@ -107,11 +121,20 @@ export function resolveAnchorTop(
     `[${cardAttr}="${CSS.escape(saved.anchorId)}"]`,
   );
   if (!el) return null;
-  const top =
-    el.getBoundingClientRect().top -
-    container.getBoundingClientRect().top +
-    container.scrollTop;
-  return Math.max(0, top + (saved.anchorOffset ?? 0));
+  const rect = el.getBoundingClientRect();
+  const top = rect.top - container.getBoundingClientRect().top + container.scrollTop;
+  return Math.max(0, top + scaledAnchorOffset(saved, rect.height));
+}
+
+/**
+ * The saved offset into the anchor card, scaled to the card's height now. A
+ * card that kept its height (within a pixel) keeps the exact offset.
+ */
+export function scaledAnchorOffset(saved: SavedScrollPosition, heightNow: number): number {
+  const offset = saved.anchorOffset ?? 0;
+  const before = saved.anchorHeight;
+  if (!before || before <= 0 || heightNow <= 0 || Math.abs(heightNow - before) <= 1) return offset;
+  return offset * (heightNow / before);
 }
 
 /** Resolve the scrollTop that puts the saved anchor card back where it was. */
@@ -124,7 +147,7 @@ export function resolveScrollTop(
 }
 
 /** How long each frame of the re-pin loop claims the scroller for. */
-const REPIN_MARK_MS = 400;
+const REPIN_MARK_MS = 150;
 
 /** Frames to wait for a requested card to render before asking again. */
 const ANCHOR_REQUEST_FRAMES = 20;
