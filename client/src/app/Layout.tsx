@@ -16,6 +16,8 @@ import { useAppSelector } from "../store/hooks";
 import { useExternalLinkHandler } from "../hooks/useExternalLinkHandler";
 import { useCallShortcuts } from "../hooks/useCallShortcuts";
 import { ScreenSharePill } from "../features/voice/ScreenSharePill";
+import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { ActiveCallFallback, IncomingCallFallback } from "../features/calling/CallOverlayFallback";
 
 export function Layout() {
   useExternalLinkHandler();
@@ -41,12 +43,45 @@ export function Layout() {
           <CenterPanel />
           <RightPanel />
         </div>
-        {hasTrack && <FloatingPlaybackBar />}
-        {hasActiveCall && <CallController />}
-        {hasIncomingCall && <IncomingCallBanner />}
-        {hasCallNotice && !hasIncomingCall && <CallNotice />}
-        <ScreenSharePill />
-        <NotificationToastStack />
+        {/* Overlays sit outside the panels, so each gets its own boundary:
+            a broken toast or player bar must not take the shell down. */}
+        {hasTrack && (
+          <ErrorBoundary variant="inline" scope="overlay" label="playback-bar" noun="player">
+            <FloatingPlaybackBar />
+          </ErrorBoundary>
+        )}
+        {/* A call outlives its UI: the fallbacks keep End call / Decline. */}
+        {hasActiveCall && (
+          <ErrorBoundary
+            variant="inline"
+            scope="overlay"
+            label="call"
+            fallback={({ retry }) => <ActiveCallFallback onRetry={retry} />}
+          >
+            <CallController />
+          </ErrorBoundary>
+        )}
+        {hasIncomingCall && (
+          <ErrorBoundary
+            variant="inline"
+            scope="overlay"
+            label="incoming-call"
+            fallback={({ retry }) => <IncomingCallFallback onRetry={retry} />}
+          >
+            <IncomingCallBanner />
+          </ErrorBoundary>
+        )}
+        {hasCallNotice && !hasIncomingCall && (
+          <ErrorBoundary variant="inline" scope="overlay" label="call-notice" fallback={null}>
+            <CallNotice />
+          </ErrorBoundary>
+        )}
+        <ErrorBoundary variant="inline" scope="overlay" label="screen-share" fallback={null}>
+          <ScreenSharePill />
+        </ErrorBoundary>
+        <ErrorBoundary variant="inline" scope="overlay" label="toasts" fallback={null}>
+          <NotificationToastStack />
+        </ErrorBoundary>
       </div>
       </UserPopoverProvider>
     </WalletProvider>

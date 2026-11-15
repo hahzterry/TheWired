@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { nip19 } from "nostr-tools";
 import { X, ArrowLeft, Users, AlertCircle, Server } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
 import { Avatar } from "../../components/ui/Avatar";
@@ -163,7 +164,7 @@ function pubkeysOf(event: NostrEvent): string[] {
   return out;
 }
 
-export function ImportSpaceModal({ open, onClose, initialInput }: ImportSpaceModalProps) {
+function ImportSpaceModalInner({ open, onClose, initialInput }: ImportSpaceModalProps) {
   const { joinSpace } = useSpace();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
@@ -418,3 +419,5 @@ export function ImportSpaceModal({ open, onClose, initialInput }: ImportSpaceMod
     </Modal>
   );
 }
+
+export const ImportSpaceModal = withModalBoundary(ImportSpaceModalInner, "import-space");

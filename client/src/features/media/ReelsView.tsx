@@ -7,6 +7,12 @@ import { parseVideoEvent, selectVideoSource } from "./imetaParser";
 import { useMediaGrant } from "@/lib/media/mediaGrant";
 import type { NostrEvent } from "../../types/nostr";
 import { X } from "lucide-react";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
+
+/** Parses the event inside the item boundary, so a malformed one costs only its own tile. */
+function ReelTile({ event, onOpen }: { event: NostrEvent; onOpen: (event: NostrEvent) => void }) {
+  return <VideoCard video={parseVideoEvent(event)} onClick={() => onOpen(event)} />;
+}
 
 export function ReelsView() {
   // Re-render (re-tokenize video URLs) when the media grant arrives.
@@ -64,11 +70,9 @@ export function ReelsView() {
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {reelEvents.map((event) => (
-            <VideoCard
-              key={event.id}
-              video={parseVideoEvent(event)}
-              onClick={() => setActiveVideo(event)}
-            />
+            <ItemBoundary key={event.id} id={event.id} label="reel-tile" noun="video">
+              <ReelTile event={event} onOpen={setActiveVideo} />
+            </ItemBoundary>
           ))}
         </div>
       )}

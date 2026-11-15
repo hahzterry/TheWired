@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, lazy, Suspense } from "react";
 import { X, Paperclip, Smile, Loader2, Send, Repeat2, Disc3 } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { MentionAutocomplete } from "@/components/content/MentionAutocomplete";
 import { EmojiAutocomplete } from "@/components/content/EmojiAutocomplete";
 import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
@@ -62,7 +63,7 @@ function detectEmojiQuery(value: string, cursorPos: number): string | null {
   return match ? match[2] : null;
 }
 
-export function MusicPostModal({ open, onClose, target }: MusicPostModalProps) {
+function MusicPostModalInner({ open, onClose, target }: MusicPostModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const originalEvent = useAppSelector((s) => s.events.entities[target.eventId]);
   const gated =
@@ -555,3 +556,5 @@ export function MusicPostModal({ open, onClose, target }: MusicPostModalProps) {
     </Modal>
   );
 }
+
+export const MusicPostModal = withModalBoundary(MusicPostModalInner, "music-post");

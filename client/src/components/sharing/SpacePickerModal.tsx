@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X, Search, Users, Share, ChevronLeft, Music, MessageSquare, FileText, Image, Hash } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import type { Space, SpaceChannel, SpaceChannelType } from "@/types/space";
 
@@ -81,7 +82,7 @@ function ChannelRow({
   );
 }
 
-export function SpacePickerModal({
+function SpacePickerModalInner({
   open,
   onClose,
   onBack,
@@ -242,3 +243,5 @@ export function SpacePickerModal({
     </Modal>
   );
 }
+
+export const SpacePickerModal = withModalBoundary(SpacePickerModalInner, "space-picker");

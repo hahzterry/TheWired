@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { buildTrackEvent } from "./musicEventBuilder";
 import { signAndSaveLocally } from "@/lib/nostr/publish";
@@ -12,7 +13,7 @@ interface DuplicateTrackModalProps {
   onClose: () => void;
 }
 
-export function DuplicateTrackModal({ track, onClose }: DuplicateTrackModalProps) {
+function DuplicateTrackModalInner({ track, onClose }: DuplicateTrackModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const [newTitle, setNewTitle] = useState(`Copy of ${track.title}`);
   const [submitting, setSubmitting] = useState(false);
@@ -100,3 +101,5 @@ export function DuplicateTrackModal({ track, onClose }: DuplicateTrackModalProps
     </Modal>
   );
 }
+
+export const DuplicateTrackModal = withModalBoundary(DuplicateTrackModalInner, "duplicate-track");
