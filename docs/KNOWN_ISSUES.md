@@ -96,8 +96,9 @@ throttle. Chat and DM on production bundles of both:
 | Space chat | 120.5 / 94.0 → 25.9 / 21.2 ms | 2,000 → 50 ms | 1,207 (126.6 s) → 0 |
 | DM conversation | 41.8 / 40.2 → 33.3 / 33.3 ms | 1,217 → 34 ms | 142 (13.5 s) → 0 |
 
-The feeds on dev builds (the production bundles could not load relay-backed
-feeds in the test setup), which overstates the cost of mounting a row:
+The feeds on dev builds, which overstates the cost of mounting a row (the
+local test stack went away before the feeds could be measured on production
+bundles):
 
 | List | Mean frame | p95 frame | Long tasks |
 |---|---|---|---|
