@@ -1,9 +1,9 @@
 import {
   Component,
+  useContext,
   useEffect,
   useRef,
   useState,
-  type ContextType,
   type ErrorInfo,
   type ReactNode,
 } from "react";
@@ -11,6 +11,7 @@ import { AlertTriangle, Check, Copy, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { copyDiagnostics, recordCrash } from "@/lib/crash/crashLog";
 import { DevCrashProbe } from "@/lib/crash/devCrashProbe";
+import { isChunkLoadError, retryFailedLazyImports } from "@/lib/lazyWithRetry";
 import { BoundaryResetContext } from "./boundaryReset";
 import { Button } from "./Button";
 
@@ -28,6 +29,11 @@ export interface BoundaryFallbackProps {
   variant: BoundaryVariant;
   /** Redacted one-line summary of the error (`TypeError: …`). */
   summary: string | null;
+  /**
+   * The failure was a piece of the app that could not be loaded (a lazy chunk).
+   * Retry may not be enough, so the fallback should offer a reload too.
+   */
+  reloadSuggested: boolean;
 }
 
 export interface ErrorBoundaryProps {
@@ -62,6 +68,24 @@ export interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   failed: boolean;
   summary: string | null;
+  reloadSuggested: boolean;
+}
+
+/**
+ * Resets a failed boundary when the navigation epoch changes. It is rendered
+ * only inside a fallback, so only failed boundaries subscribe to the context:
+ * a healthy boundary (there is one around every list item) does no work at all
+ * when the user navigates.
+ */
+function ResetOnNavigation({ onNavigate }: { onNavigate: () => void }) {
+  const epoch = useContext(BoundaryResetContext);
+  // Mounted in the same render that caught the failure, so this is the epoch
+  // the children failed under.
+  const failedUnder = useRef(epoch);
+  useEffect(() => {
+    if (epoch !== failedUnder.current) onNavigate();
+  }, [epoch, onNavigate]);
+  return null;
 }
 
 function sameKeys(a: readonly unknown[] | undefined, b: readonly unknown[] | undefined): boolean {
@@ -71,21 +95,18 @@ function sameKeys(a: readonly unknown[] | undefined, b: readonly unknown[] | und
 }
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  static contextType = BoundaryResetContext;
-  declare context: ContextType<typeof BoundaryResetContext>;
-
-  state: ErrorBoundaryState = { failed: false, summary: null };
+  state: ErrorBoundaryState = { failed: false, summary: null, reloadSuggested: false };
 
   /**
-   * The epoch and keys in effect when the children failed. Reset compares
-   * against this snapshot rather than the previous props: a key change and the
-   * throw it causes land in the same render, and comparing to the previous
-   * props would treat that as "changed since the failure" and retry at once.
+   * The keys in effect when the children failed. Reset compares against this
+   * snapshot rather than the previous props: a key change and the throw it
+   * causes land in the same render, and comparing to the previous props would
+   * treat that as "changed since the failure" and retry at once.
    */
-  private failedWith: { epoch: string | null; keys: readonly unknown[] | undefined } | null = null;
+  private failedWith: { keys: readonly unknown[] | undefined } | null = null;
 
-  static getDerivedStateFromError(): Partial<ErrorBoundaryState> {
-    return { failed: true };
+  static getDerivedStateFromError(error: unknown): Partial<ErrorBoundaryState> {
+    return { failed: true, reloadSuggested: isChunkLoadError(error) };
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo): void {
@@ -101,18 +122,16 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   componentDidUpdate(): void {
     if (!this.state.failed || !this.failedWith) return;
-    if (
-      this.context !== this.failedWith.epoch ||
-      !sameKeys(this.failedWith.keys, this.props.resetKeys)
-    ) {
-      this.reset();
-    }
+    if (!sameKeys(this.failedWith.keys, this.props.resetKeys)) this.reset();
   }
 
   reset = (): void => {
     this.failedWith = null;
+    // React.lazy caches a rejected import, so remounting alone would re-throw
+    // it forever. Re-arm any failed lazy import before the children remount.
+    retryFailedLazyImports();
     this.props.onReset?.();
-    this.setState({ failed: false, summary: null });
+    this.setState({ failed: false, summary: null, reloadSuggested: false });
   };
 
   render(): ReactNode {
@@ -135,13 +154,25 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     }
 
     if (!this.failedWith) {
-      this.failedWith = { epoch: this.context, keys: this.props.resetKeys };
+      this.failedWith = { keys: this.props.resetKeys };
     }
 
+    // Every fallback, including a custom or an empty one, carries the
+    // navigation watcher so that moving elsewhere always clears the failure.
+    return (
+      <>
+        <ResetOnNavigation onNavigate={this.reset} />
+        {this.renderFallback()}
+      </>
+    );
+  }
+
+  private renderFallback(): ReactNode {
     const variant = this.props.variant ?? "panel";
+    const { summary, reloadSuggested } = this.state;
     const { fallback } = this.props;
     if (typeof fallback === "function") {
-      return fallback({ retry: this.reset, variant, summary: this.state.summary });
+      return fallback({ retry: this.reset, variant, summary, reloadSuggested });
     }
     if (fallback !== undefined) return fallback;
 
@@ -149,7 +180,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       <BoundaryFallback
         variant={variant}
         retry={this.reset}
-        summary={this.state.summary}
+        summary={summary}
+        reloadSuggested={reloadSuggested}
         noun={this.props.noun}
         className={this.props.className}
       />
@@ -197,7 +229,8 @@ interface CopyDiagnosticsButtonProps {
 
 /**
  * Copies the local crash log to the clipboard. The text is built from redacted
- * records only (see `lib/crash`), so it is safe to paste into a bug report.
+ * records only (see `lib/crash/redact.ts` for what redaction does and does not
+ * cover).
  */
 export function CopyDiagnosticsButton({
   appearance = "button",
@@ -254,12 +287,25 @@ interface BoundaryFallbackUiProps {
   variant: BoundaryVariant;
   retry: () => void;
   summary: string | null;
+  /** Show a Reload action: the failure was a part of the app that did not load. */
+  reloadSuggested?: boolean;
   noun?: string;
   className?: string;
 }
 
+function reloadApp(): void {
+  window.location.reload();
+}
+
 /** The built-in fallback for each variant. Exported for custom compositions. */
-export function BoundaryFallback({ variant, retry, summary, noun, className }: BoundaryFallbackUiProps) {
+export function BoundaryFallback({
+  variant,
+  retry,
+  summary,
+  reloadSuggested = false,
+  noun,
+  className,
+}: BoundaryFallbackUiProps) {
   if (variant === "inline") {
     return (
       <div
@@ -274,15 +320,20 @@ export function BoundaryFallback({ variant, retry, summary, noun, className }: B
       >
         <AlertTriangle size={14} className="shrink-0 text-warning" />
         <span className="min-w-0 flex-1 basis-20">
-          {noun ? `This ${noun} couldn't be displayed.` : "This couldn't be displayed."}
+          {reloadSuggested
+            ? "Part of the app didn't load."
+            : noun
+              ? `This ${noun} couldn't be displayed.`
+              : "This couldn't be displayed."}
         </span>
-        <button
-          type="button"
-          onClick={retry}
-          className="shrink-0 rounded-md px-1.5 py-0.5 font-medium text-soft transition-colors hover:bg-surface-hover hover:text-heading focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
+        <button type="button" onClick={retry} className={INLINE_ACTION}>
           Retry
         </button>
+        {reloadSuggested && (
+          <button type="button" onClick={reloadApp} className={INLINE_ACTION}>
+            Reload
+          </button>
+        )}
         <CopyDiagnosticsButton appearance="icon" />
       </div>
     );
@@ -313,7 +364,7 @@ export function BoundaryFallback({ variant, retry, summary, noun, className }: B
             <RotateCcw size={14} />
             Try again
           </Button>
-          <Button type="button" variant="secondary" size="sm" onClick={() => window.location.reload()}>
+          <Button type="button" variant="secondary" size="sm" onClick={reloadApp}>
             Reload app
           </Button>
           <CopyDiagnosticsButton />
@@ -334,20 +385,34 @@ export function BoundaryFallback({ variant, retry, summary, noun, className }: B
     >
       <AlertTriangle size={20} className="shrink-0 text-warning" />
       <div className="max-w-xs space-y-1">
-        <p className="text-sm font-medium text-heading">This part of the app hit a problem</p>
-        <p className="text-xs text-muted">The rest of the app is still working.</p>
+        <p className="text-sm font-medium text-heading">
+          {reloadSuggested ? "This part of the app didn't load" : "This part of the app hit a problem"}
+        </p>
+        <p className="text-xs text-muted">
+          {reloadSuggested
+            ? "Try again, or reload the app to fetch it fresh."
+            : "The rest of the app is still working."}
+        </p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button type="button" variant="accent" size="sm" onClick={retry} className="gap-1.5">
           <RotateCcw size={14} />
           Try again
         </Button>
+        {reloadSuggested && (
+          <Button type="button" variant="secondary" size="sm" onClick={reloadApp}>
+            Reload app
+          </Button>
+        )}
         <CopyDiagnosticsButton />
       </div>
       <ErrorSummary summary={summary} />
     </div>
   );
 }
+
+const INLINE_ACTION =
+  "shrink-0 rounded-md px-1.5 py-0.5 font-medium text-soft transition-colors hover:bg-surface-hover hover:text-heading focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /** The redacted error line. Development builds only: users get the copy button instead. */
 function ErrorSummary({ summary }: { summary: string | null }) {

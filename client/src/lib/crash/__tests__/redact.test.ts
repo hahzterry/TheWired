@@ -53,15 +53,28 @@ describe("redactTokens", () => {
 });
 
 describe("redactMessage", () => {
-  it("keeps the shape of an engine error", () => {
-    expect(redactMessage("Cannot read properties of undefined (reading 'displayName')")).toBe(
-      "Cannot read properties of undefined (reading 'displayName')",
-    );
-    expect(redactMessage("Cannot read properties of undefined (reading '0')")).toContain("'0'");
+  it("keeps the shape of an engine error, including a quoted identifier", () => {
+    expect(
+      redactMessage("Cannot read properties of undefined (reading 'displayName')", "TypeError"),
+    ).toBe("Cannot read properties of undefined (reading 'displayName')");
+    expect(redactMessage("Cannot read properties of undefined (reading '0')", "TypeError")).toContain("'0'");
+    // Property paths in an engine message are code, not hostnames.
+    expect(redactMessage("item.info is undefined", "TypeError")).toBe("item.info is undefined");
+    expect(redactMessage("e.tags.map is not a function", "TypeError")).toBe("e.tags.map is not a function");
+  });
+
+  it("drops every quoted word from an error the engine did not write", () => {
+    // Application and library errors interpolate whatever they like.
+    expect(redactMessage("No profile for 'alice'", "Error")).toBe("No profile for '[redacted]'");
+    expect(redactMessage("Unknown relay 'damus'")).toBe("Unknown relay '[redacted]'");
+    expect(redactMessage("Unexpected identifier 'hello'", "SyntaxError")).not.toContain("hello");
   });
 
   it("drops quoted input from parse errors (event content, decrypted text)", () => {
-    const out = redactMessage(`Unexpected token 'h', "hello this is my private DM" is not valid JSON`);
+    const out = redactMessage(
+      `Unexpected token 'h', "hello this is my private DM" is not valid JSON`,
+      "SyntaxError",
+    );
     expect(out).not.toContain("hello");
     expect(out).not.toContain("private DM");
     // The single offending character is input too.
@@ -70,7 +83,7 @@ describe("redactMessage", () => {
   });
 
   it("drops single-quoted and backtick-quoted free text", () => {
-    const out = redactMessage("Bad tag 'my secret words here' in `some content`");
+    const out = redactMessage("Bad tag 'my secret words here' in `some content`", "TypeError");
     expect(out).not.toContain("secret words");
     expect(out).not.toContain("some content");
   });
@@ -81,9 +94,42 @@ describe("redactMessage", () => {
     expect(out).not.toContain(HEX64);
   });
 
+  it("drops NIP-05, email and lightning addresses", () => {
+    const out = redactMessage("NIP-05 lookup failed for alice@example.com and _@relay.example.org", "Error");
+    expect(out).toBe("NIP-05 lookup failed for [redacted-address] and [redacted-address]");
+    expect(redactMessage("zap to bob+tips@getalby.com failed", "TypeError")).not.toContain("getalby");
+  });
+
+  it("drops whole URLs, whatever the scheme", () => {
+    const out = redactMessage(
+      "relay wss://relay.private-group.example/abc refused; see https://api.example.com/v1/users/alice?token=abc",
+    );
+    expect(out).toBe("relay [redacted-url] refused; see [redacted-url]");
+    expect(redactMessage("Failed to fetch dynamically imported module: http://localhost:1420/src/x.tsx", "TypeError")).toBe(
+      "Failed to fetch dynamically imported module: [redacted-url]",
+    );
+    // Secret-bearing schemes keep their own marker.
+    expect(redactMessage(`connect bunker://${HEX64}?secret=abc failed`)).toBe("connect [redacted-uri] failed");
+  });
+
+  it("drops bare hostnames from an error the engine did not write", () => {
+    expect(redactMessage("relay nos.lol closed the connection", "Error")).toBe(
+      "relay [redacted-host] closed the connection",
+    );
+    expect(redactMessage("auth rejected by relay.damus.io: restricted")).toBe(
+      "auth rejected by [redacted-host]: restricted",
+    );
+  });
+
   it("drops long opaque runs such as ciphertext", () => {
     const blob = "QWxhZGRpbjpvcGVuIHNlc2FtZQ".repeat(4);
     expect(redactMessage(`decrypt failed for ${blob}`)).not.toContain(blob);
+  });
+
+  it("is best effort: the unquoted wording of an application error is kept", () => {
+    // Documented limit, pinned so a change to it is deliberate. An error built
+    // from a server reply or with a bare name in it keeps those words.
+    expect(redactMessage("Space Jazz Lounge is full", "Error")).toBe("Space Jazz Lounge is full");
   });
 
   it("keeps only the first line and caps the length", () => {

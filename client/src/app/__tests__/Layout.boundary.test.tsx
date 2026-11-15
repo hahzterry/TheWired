@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import { fireEvent, screen, within } from "@testing-library/react";
 import { Link, Route, Routes } from "react-router-dom";
 import { renderWithProviders } from "@/__tests__/helpers/renderWithProviders";
+import { createTestStore } from "@/__tests__/helpers/createTestStore";
 import { getCrashRecords, resetCrashLogForTests } from "@/lib/crash/crashLog";
 
 const boom = vi.hoisted(() => ({
@@ -19,6 +20,16 @@ const boom = vi.hoisted(() => ({
   rightTab: false,
   page: false,
   toasts: false,
+  call: false,
+  incoming: false,
+  aiSidebar: false,
+}));
+const callService = vi.hoisted(() => ({
+  hangupCall: vi.fn().mockResolvedValue(undefined),
+  setCallMuted: vi.fn().mockResolvedValue(undefined),
+  rejectCall: vi.fn().mockResolvedValue(undefined),
+  answerCall: vi.fn().mockResolvedValue(undefined),
+  initiateCall: vi.fn().mockResolvedValue(undefined),
 }));
 
 function stub(testId: string, flag?: keyof typeof boom) {
@@ -40,7 +51,7 @@ vi.mock("@/features/dm/DMSidebar", () => ({ DMSidebar: stub("dm-sidebar") }));
 vi.mock("@/features/identity/ProfileCard", () => ({ ProfileCard: stub("profile-card") }));
 vi.mock("@/features/voice/VoiceStatusBar", () => ({ VoiceStatusBar: stub("voice-status") }));
 vi.mock("@/features/dm/useDMContacts", () => ({ useDMUnreadCount: () => 0 }));
-vi.mock("@/features/ai/AISidebar", () => ({ AISidebar: stub("ai-sidebar") }));
+vi.mock("@/features/ai/AISidebar", () => ({ AISidebar: stub("ai-sidebar", "aiSidebar") }));
 // TopBar children
 vi.mock("@/features/music/SearchInput", () => ({ SearchInput: stub("music-search") }));
 vi.mock("@/features/search/UserSearchInput", () => ({ UserSearchInput: stub("user-search") }));
@@ -91,8 +102,12 @@ vi.mock("@/features/notifications/NotificationToast", () => ({
 }));
 vi.mock("@/features/wallet/WalletProvider", () => ({ WalletProvider: passthrough }));
 vi.mock("@/features/ai/AIProvider", () => ({ AIProvider: () => null }));
-vi.mock("@/features/calling/CallController", () => ({ CallController: stub("call") }));
-vi.mock("@/features/calling/IncomingCallBanner", () => ({ IncomingCallBanner: stub("incoming") }));
+vi.mock("@/features/calling/CallController", () => ({ CallController: stub("call", "call") }));
+vi.mock("@/features/calling/IncomingCallBanner", () => ({
+  IncomingCallBanner: stub("incoming", "incoming"),
+}));
+vi.mock("@/features/calling/callService", () => callService);
+vi.mock("@/features/calling/callRingtone", () => ({ startRinging: vi.fn(), stopRinging: vi.fn() }));
 vi.mock("@/features/calling/CallNotice", () => ({ CallNotice: stub("call-notice") }));
 vi.mock("@/features/voice/ScreenSharePill", () => ({ ScreenSharePill: stub("screen-share") }));
 vi.mock("@/hooks/useExternalLinkHandler", () => ({ useExternalLinkHandler: () => {} }));
@@ -110,7 +125,27 @@ function FeedPage() {
   );
 }
 
-function renderShell() {
+/** A store with the call slice patched (an active or an incoming call). */
+function storeWithCall(call: Record<string, unknown>) {
+  const base = createTestStore().getState();
+  return createTestStore({ call: { ...base.call, ...call } });
+}
+
+const ACTIVE_CALL = {
+  partnerPubkey: "b".repeat(64),
+  callType: "audio",
+  direction: "outgoing",
+  roomId: "room-1",
+  roomSecretKey: "",
+  e2ee: true,
+  state: "active",
+  startedAt: 1,
+  isMuted: false,
+  isVideoEnabled: false,
+  isScreenSharing: false,
+};
+
+function renderShell(store = createTestStore()) {
   return renderWithProviders(
     <BoundaryResetProvider>
       <Routes>
@@ -121,6 +156,7 @@ function renderShell() {
       </Routes>
       <Link to="/settings">outside link</Link>
     </BoundaryResetProvider>,
+    { store },
   );
 }
 
@@ -131,6 +167,7 @@ function fallbackFor(label: string) {
 describe("Layout error containment", () => {
   beforeEach(() => {
     for (const key of Object.keys(boom) as Array<keyof typeof boom>) boom[key] = false;
+    vi.clearAllMocks();
     localStorage.clear();
     resetCrashLogForTests();
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -230,5 +267,68 @@ describe("Layout error containment", () => {
       expect(screen.getByTestId(id)).toBeInTheDocument();
     }
     expect(fallbackFor("overlay:toasts")).toHaveLength(1);
+  });
+
+  it("a failing AI sidebar keeps the mode switcher, so there is a way back out", async () => {
+    boom.aiSidebar = true;
+    const base = createTestStore().getState();
+    renderShell(
+      createTestStore({
+        ui: { ...base.ui, sidebarMode: "ai" },
+        features: { ...base.features, enabled: ["ai"] },
+      }),
+    );
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(fallbackFor("panel:sidebar.ai")).toHaveLength(1);
+    expect(fallbackFor("panel:sidebar")).toHaveLength(0);
+    // The rest of the sidebar is still there: the mode buttons and the footer.
+    expect(screen.getByTitle("Spaces")).toBeInTheDocument();
+    expect(screen.getByTitle("Music")).toBeInTheDocument();
+    expect(screen.getByTestId("voice-status")).toBeInTheDocument();
+  });
+
+  it("a throwing call view leaves the user able to end the call", () => {
+    boom.call = true;
+    const store = storeWithCall({ activeCall: ACTIVE_CALL });
+    renderShell(store);
+
+    // The call is still connected; its controls must not vanish with its UI.
+    const fallback = screen.getByRole("alert");
+    expect(fallback).toHaveAttribute("data-boundary-fallback", "call");
+    expect(fallback).toHaveTextContent("You are still connected.");
+    for (const id of ["space-list", "notification-bell", "feed-page"]) {
+      expect(screen.getByTestId(id)).toBeInTheDocument();
+    }
+
+    fireEvent.click(within(fallback).getByRole("button", { name: "Mute" }));
+    expect(callService.setCallMuted).toHaveBeenCalledWith(true);
+    expect(store.getState().call.activeCall?.isMuted).toBe(true);
+
+    fireEvent.click(within(fallback).getByRole("button", { name: "End call" }));
+    expect(callService.hangupCall).toHaveBeenCalledTimes(1);
+    expect(fallbackFor("overlay:call")).toHaveLength(1);
+  });
+
+  it("the call view comes back on Show call once it can render", () => {
+    boom.call = true;
+    renderShell(storeWithCall({ activeCall: ACTIVE_CALL }));
+    boom.call = false;
+    fireEvent.click(screen.getByRole("button", { name: /show call/i }));
+    expect(screen.getByTestId("call")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a throwing incoming-call banner can still be declined", () => {
+    boom.incoming = true;
+    renderShell(
+      storeWithCall({ incomingCall: { callerPubkey: "b".repeat(64), callType: "audio", roomId: "room-1" } }),
+    );
+
+    const fallback = screen.getByRole("alert");
+    expect(fallback).toHaveAttribute("data-boundary-fallback", "incoming-call");
+    fireEvent.click(within(fallback).getByRole("button", { name: "Decline" }));
+    expect(callService.rejectCall).toHaveBeenCalledTimes(1);
+    expect(fallbackFor("overlay:incoming-call")).toHaveLength(1);
   });
 });

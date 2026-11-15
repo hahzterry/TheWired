@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { getCrashRecords, resetCrashLogForTests } from "../crashLog";
+import { CRASH_LOG_STORAGE_KEY, getCrashRecords, resetCrashLogForTests } from "../crashLog";
 import { installGlobalErrorHandlers } from "../globalHandlers";
 
 function dispatchError(error: unknown, message = "") {
@@ -76,6 +76,22 @@ describe("global error handlers", () => {
 
   it("leaves default handling alone so the console still reports the error", () => {
     expect(dispatchRejection(new Error("x")).defaultPrevented).toBe(false);
+  });
+
+  it("writes a queued record when the page is hidden or unloaded", () => {
+    const stored = () => JSON.parse(localStorage.getItem(CRASH_LOG_STORAGE_KEY) ?? "[]") as unknown[];
+    dispatchError(new Error("first, written at once"));
+    dispatchError(new Error("second, queued"));
+    expect(stored()).toHaveLength(1);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(stored()).toHaveLength(2);
+
+    dispatchError(new Error("third, queued"));
+    expect(stored()).toHaveLength(2);
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(stored()).toHaveLength(3);
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
   });
 
   it("installs once and uninstalls cleanly", () => {

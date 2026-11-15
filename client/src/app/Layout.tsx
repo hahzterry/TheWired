@@ -17,6 +17,7 @@ import { useExternalLinkHandler } from "../hooks/useExternalLinkHandler";
 import { useCallShortcuts } from "../hooks/useCallShortcuts";
 import { ScreenSharePill } from "../features/voice/ScreenSharePill";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { ActiveCallFallback, IncomingCallFallback } from "../features/calling/CallOverlayFallback";
 
 export function Layout() {
   useExternalLinkHandler();
@@ -49,13 +50,24 @@ export function Layout() {
             <FloatingPlaybackBar />
           </ErrorBoundary>
         )}
+        {/* A call outlives its UI: the fallbacks keep End call / Decline. */}
         {hasActiveCall && (
-          <ErrorBoundary variant="inline" scope="overlay" label="call" noun="call view">
+          <ErrorBoundary
+            variant="inline"
+            scope="overlay"
+            label="call"
+            fallback={({ retry }) => <ActiveCallFallback onRetry={retry} />}
+          >
             <CallController />
           </ErrorBoundary>
         )}
         {hasIncomingCall && (
-          <ErrorBoundary variant="inline" scope="overlay" label="incoming-call" noun="incoming call">
+          <ErrorBoundary
+            variant="inline"
+            scope="overlay"
+            label="incoming-call"
+            fallback={({ retry }) => <IncomingCallFallback onRetry={retry} />}
+          >
             <IncomingCallBanner />
           </ErrorBoundary>
         )}

@@ -52,7 +52,7 @@ interface ModalFallbackProps extends BoundaryFallbackProps {
   contained?: boolean;
 }
 
-function ModalFallback({ retry, summary, onClose, contained }: ModalFallbackProps) {
+function ModalFallback({ retry, summary, reloadSuggested, onClose, contained }: ModalFallbackProps) {
   // Closing must work even when the owner keeps the broken modal mounted and
   // has no `open` flag to flip: the fallback hides itself as well as asking
   // the owner to close.
@@ -83,6 +83,11 @@ function ModalFallback({ retry, summary, onClose, contained }: ModalFallbackProp
           <RotateCcw size={14} />
           Try again
         </Button>
+        {reloadSuggested && (
+          <Button type="button" variant="secondary" size="sm" onClick={() => window.location.reload()}>
+            Reload app
+          </Button>
+        )}
         <CopyDiagnosticsButton />
       </div>
       {import.meta.env.DEV && summary && (

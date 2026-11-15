@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useRef, useState, useCallback, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { UserPopoverCard } from "./UserPopoverCard";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
@@ -6,6 +6,8 @@ import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 interface UserPopoverState {
   pubkey: string;
   anchorEl: HTMLElement;
+  /** Increments on every open, so each open is a fresh attempt for the boundary. */
+  openId: number;
 }
 
 interface UserPopoverContextValue {
@@ -24,11 +26,13 @@ export function useUserPopover() {
 
 export function UserPopoverProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<UserPopoverState | null>(null);
+  const opens = useRef(0);
   const navigate = useNavigate();
 
   const openUserPopover = useCallback(
     (pubkey: string, anchorEl: HTMLElement) => {
-      setState({ pubkey, anchorEl });
+      opens.current += 1;
+      setState({ pubkey, anchorEl, openId: opens.current });
     },
     [],
   );
@@ -50,11 +54,13 @@ export function UserPopoverProvider({ children }: { children: ReactNode }) {
       {state && (
         // The popover renders an arbitrary profile, and this provider wraps the
         // whole shell: without a boundary a bad profile would take it all down.
+        // The fallback is empty, so there is no Retry to press: keying on the
+        // open count makes clicking the avatar again the retry.
         <ErrorBoundary
           variant="inline"
           scope="overlay"
           label="user-popover"
-          resetKeys={[state.pubkey, state.anchorEl]}
+          resetKeys={[state.openId]}
           fallback={null}
         >
           <UserPopoverCard

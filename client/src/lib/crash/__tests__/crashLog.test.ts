@@ -4,6 +4,7 @@ import {
   CRASH_LOG_STORAGE_KEY,
   clearCrashRecords,
   copyDiagnostics,
+  flushCrashLog,
   formatDiagnostics,
   getCrashCount,
   getCrashRecords,
@@ -58,7 +59,7 @@ describe("crashLog", () => {
 
   it("is bounded: the oldest records fall off", () => {
     for (let i = 0; i < CRASH_LOG_CAPACITY + 25; i++) {
-      // Spread out in time so neither dedupe nor the burst limiter applies.
+      // Spread out in time so the burst limiter does not apply.
       vi.advanceTimersByTime(61_000);
       recordCrash(new Error(`failure number ${i}`), { source: "boundary", boundary: "panel:center" });
     }
@@ -79,6 +80,107 @@ describe("crashLog", () => {
     expect(records).toHaveLength(1);
     expect(records[0].count).toBe(3);
     expect(records[0].lastTs - records[0].ts).toBe(5_000);
+  });
+
+  it("folds a repeat into its record wherever it sits, however long ago", () => {
+    // Two items that fail the same way on every retry. Boundaries are retried
+    // on each navigation, so the crashes arrive A, B, A, B, minutes apart.
+    const failA = () => {
+      try {
+        (undefined as unknown as { a: number }).a.toString();
+      } catch (e) {
+        return e;
+      }
+    };
+    const failB = () => {
+      try {
+        JSON.parse("{not json");
+      } catch (e) {
+        return e;
+      }
+    };
+    recordCrash(new Error("unrelated earlier crash"), { source: "window.error" });
+    for (let nav = 0; nav < 40; nav++) {
+      vi.advanceTimersByTime(3 * 60_000);
+      recordCrash(failA(), { source: "boundary", boundary: "item:note" });
+      recordCrash(failB(), { source: "boundary", boundary: "item:note" });
+    }
+
+    const records = getCrashRecords();
+    expect(records).toHaveLength(3);
+    // The unrelated record was not pushed out of the ring.
+    expect(records[0].message).toBe("unrelated earlier crash");
+    expect(records[1].count).toBe(40);
+    expect(records[2].count).toBe(40);
+    expect(records[2].lastTs - records[2].ts).toBe(39 * 3 * 60_000);
+  });
+
+  it("moves a repeated record to the newest slot so it is not the next evicted", () => {
+    const old = new Error("recurring");
+    recordCrash(old, { source: "window.error" });
+    for (let i = 0; i < CRASH_LOG_CAPACITY - 1; i++) {
+      vi.advanceTimersByTime(11_000);
+      recordCrash(new Error(`filler ${i}`), { source: "window.error" });
+    }
+    recordCrash(old, { source: "window.error" });
+    vi.advanceTimersByTime(11_000);
+    recordCrash(new Error("one more"), { source: "window.error" });
+
+    const messages = getCrashRecords().map((r) => r.message);
+    expect(messages).toHaveLength(CRASH_LOG_CAPACITY);
+    expect(messages).toContain("recurring");
+    expect(messages).not.toContain("filler 0");
+  });
+
+  it("does not write to storage once per crash", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const error = new Error("200 cards, one bug");
+
+    // 200 cards throwing the same error in one commit.
+    for (let i = 0; i < 200; i++) recordCrash(error, { source: "boundary", boundary: "item:note" });
+    // The first write is immediate so a crash that kills the page is kept.
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(stored()).toHaveLength(1);
+
+    // Everything after it shares one trailing write.
+    vi.advanceTimersByTime(1_000);
+    expect(setItem).toHaveBeenCalledTimes(2);
+    expect((stored()[0] as { count: number }).count).toBe(200);
+
+    // A rejection loop: a fresh Error object each time, same failure.
+    setItem.mockClear();
+    for (let i = 0; i < 500; i++) {
+      vi.advanceTimersByTime(10);
+      recordCrash(new Error("poll failed"), { source: "unhandledrejection" });
+    }
+    vi.advanceTimersByTime(1_000);
+    // 5 seconds of looping: about one write per second, not 500.
+    expect(setItem.mock.calls.length).toBeLessThanOrEqual(7);
+    expect(getCrashRecords()).toHaveLength(2);
+    expect(getCrashRecords()[1].count).toBe(500);
+  });
+
+  it("logs and notifies once per record, not once per repeat", () => {
+    const listener = vi.fn();
+    subscribeCrashLog(listener);
+    const error = new Error("repeating");
+    for (let i = 0; i < 50; i++) recordCrash(error, { source: "boundary", boundary: "item:note" });
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(console.error)).toHaveBeenCalledTimes(1);
+  });
+
+  it("flushes a queued write on demand (pagehide)", () => {
+    recordCrash(new Error("first"), { source: "window.error" });
+    recordCrash(new Error("second, queued"), { source: "window.error" });
+    expect(stored()).toHaveLength(1);
+    flushCrashLog();
+    expect(stored()).toHaveLength(2);
+
+    // Nothing pending: flushing again does not write.
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    flushCrashLog();
+    vi.advanceTimersByTime(5_000);
+    expect(setItem).not.toHaveBeenCalled();
   });
 
   it("does not fold crashes from different boundaries", () => {
@@ -149,6 +251,8 @@ describe("crashLog", () => {
     recordCrash([DM_TEXT], { source: "unhandledrejection" });
     recordCrash(null, { source: "unhandledrejection" });
 
+    flushCrashLog();
+    expect(stored()).toHaveLength(7);
     const everything = [
       JSON.stringify(getCrashRecords()),
       localStorage.getItem(CRASH_LOG_STORAGE_KEY) ?? "",
@@ -195,7 +299,9 @@ describe("crashLog", () => {
     expect(text).toContain("version: 0.0.0-test (web)");
     expect(text).toContain("crash records: 2");
     expect(text.indexOf("Error: newer")).toBeLessThan(text.indexOf("Error: older"));
-    expect(text).toMatch(/#1 2026-11-14T12:01:01\.000Z \[boundary panel:sidebar\] route=\/ v0\.0\.0-test x2/);
+    expect(text).toMatch(
+      /#1 2026-11-14T12:01:01\.000Z \[boundary panel:sidebar\] route=\/ v0\.0\.0-test x2 \(last 2026-11-14T12:01:01\.000Z\)/,
+    );
   });
 
   it("copies diagnostics to the clipboard and reports failure", async () => {

@@ -6,7 +6,7 @@
  * console reporting is unchanged, and they never surface UI: an unhandled
  * rejection in a background task is not a reason to interrupt the user.
  */
-import { recordCrash } from "./crashLog";
+import { flushCrashLog, recordCrash } from "./crashLog";
 
 /**
  * Noise that is not a crash:
@@ -45,6 +45,10 @@ function onUnhandledRejection(event: PromiseRejectionEvent): void {
   recordCrash(reason, { source: "unhandledrejection" });
 }
 
+function onVisibilityChange(): void {
+  if (document.visibilityState === "hidden") flushCrashLog();
+}
+
 let installed = false;
 
 /** Install the window-level handlers. Idempotent; returns an uninstall function. */
@@ -53,11 +57,17 @@ export function installGlobalErrorHandlers(): () => void {
   if (!installed) {
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
+    // Storage writes are coalesced; make sure a queued one lands before the
+    // page is hidden or discarded.
+    window.addEventListener("pagehide", flushCrashLog);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     installed = true;
   }
   return () => {
     window.removeEventListener("error", onError);
     window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    window.removeEventListener("pagehide", flushCrashLog);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     installed = false;
   };
 }

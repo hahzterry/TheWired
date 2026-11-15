@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { CopyDiagnosticsButton, ErrorBoundary, ItemBoundary } from "../ErrorBoundary";
 import { BoundaryResetContext } from "../boundaryReset";
@@ -172,6 +172,96 @@ describe("ErrorBoundary", () => {
     state.explode = false;
     fireEvent.click(screen.getByText("navigate"));
     expect(screen.getByTestId("content")).toBeInTheDocument();
+  });
+
+  it("a healthy boundary does no work when the user navigates", () => {
+    // The provider owns the epoch and takes the tree as `children`, as in the
+    // app: only context consumers re-render when it changes.
+    function Provider({ children }: { children: ReactNode }) {
+      const [epoch, setEpoch] = useState("a");
+      return (
+        <BoundaryResetContext.Provider value={epoch}>
+          <button onClick={() => setEpoch((e) => e + "x")}>navigate</button>
+          {children}
+        </BoundaryResetContext.Provider>
+      );
+    }
+    const { Bomb, state } = makeBomb();
+    const boundaryRender = vi.spyOn(ErrorBoundary.prototype, "render");
+    render(
+      <Provider>
+        {Array.from({ length: 50 }, (_, i) => (
+          <ItemBoundary key={i} id={`ok-${i}`} label="note">
+            <div>item {i}</div>
+          </ItemBoundary>
+        ))}
+        <ItemBoundary id="bad" label="note" noun="note">
+          <Bomb />
+        </ItemBoundary>
+      </Provider>,
+    );
+    expect(screen.getByRole("status")).toBeInTheDocument();
+
+    boundaryRender.mockClear();
+    state.explode = false;
+    fireEvent.click(screen.getByText("navigate"));
+
+    // The failed boundary reset and recovered...
+    expect(screen.getByTestId("content")).toBeInTheDocument();
+    // ...and only it rendered. The 50 healthy ones were not touched.
+    expect(boundaryRender.mock.calls.length).toBeLessThanOrEqual(2);
+
+    boundaryRender.mockClear();
+    fireEvent.click(screen.getByText("navigate"));
+    expect(boundaryRender).not.toHaveBeenCalled();
+  });
+
+  it("a boundary with an empty or custom fallback still resets on navigation", () => {
+    const { Bomb, state } = makeBomb();
+    function Harness() {
+      const [epoch, setEpoch] = useState("a");
+      return (
+        <BoundaryResetContext.Provider value={epoch}>
+          <button onClick={() => setEpoch("b")}>navigate</button>
+          <ErrorBoundary label="toasts" fallback={null}>
+            <Bomb text="silent" />
+          </ErrorBoundary>
+          <ErrorBoundary label="custom" fallback={() => <div data-testid="custom">custom</div>}>
+            <Bomb text="custom" />
+          </ErrorBoundary>
+        </BoundaryResetContext.Provider>
+      );
+    }
+    render(<Harness />);
+    expect(screen.queryByTestId("content")).toBeNull();
+    expect(screen.getByTestId("custom")).toBeInTheDocument();
+
+    state.explode = false;
+    fireEvent.click(screen.getByText("navigate"));
+    expect(screen.getAllByTestId("content").map((n) => n.textContent)).toEqual(["silent", "custom"]);
+  });
+
+  it("does not loop when the destination of a navigation fails too", () => {
+    const { Bomb, state } = makeBomb();
+    function Harness() {
+      const [epoch, setEpoch] = useState("a");
+      return (
+        <BoundaryResetContext.Provider value={epoch}>
+          <button onClick={() => setEpoch((e) => e + "x")}>navigate</button>
+          <ErrorBoundary label="center">
+            <Bomb />
+          </ErrorBoundary>
+        </BoundaryResetContext.Provider>
+      );
+    }
+    render(<Harness />);
+    const before = state.renders;
+    fireEvent.click(screen.getByText("navigate"));
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    // One fresh attempt for the new location (React may run it twice), no more.
+    expect(state.renders - before).toBeLessThanOrEqual(2);
+    expect(getCrashRecords()).toHaveLength(1);
+    expect(getCrashRecords()[0].count).toBe(2);
   });
 
   it("catches at the nearest boundary only", () => {

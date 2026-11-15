@@ -67,7 +67,7 @@ export function TopBar(props: TopBarProps) {
       variant="inline"
       scope="panel"
       label="topbar"
-      fallback={({ retry, summary }) => (
+      fallback={({ retry, summary, reloadSuggested }) => (
         // Keep the bar's footprint and drag region so the window stays movable.
         <div
           data-tauri-drag-region
@@ -80,6 +80,7 @@ export function TopBar(props: TopBarProps) {
             variant="inline"
             retry={retry}
             summary={summary}
+            reloadSuggested={reloadSuggested}
             noun="toolbar"
             className="max-w-md border-0 bg-transparent"
           />

@@ -18,8 +18,10 @@ export function DiagnosticsSection() {
       </div>
       <p className="mb-3 text-xs text-muted">
         When part of the app fails, a short technical record is kept on this device so you can
-        include it in a bug report. Records hold the error, where in the app it happened and the
-        app version. They never include your keys, messages or post content, and nothing is sent
+        include it in a bug report. A record holds the error text, where in the app it happened
+        and the app version. Keys, IDs, addresses, links and quoted text are stripped before it
+        is saved, and the app does not copy your messages or posts into it. The error's own
+        wording is kept as written, so look the text over before you share it. Nothing is sent
         anywhere unless you copy and share it yourself.
       </p>
       <div className="flex flex-wrap items-center gap-2">

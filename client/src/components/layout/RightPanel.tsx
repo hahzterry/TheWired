@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { cn } from "@/lib/utils";
 import { Users, Info, ListMusic, Music2, User, Link2, BrainCircuit, Shapes } from "lucide-react";
 import { MemberList } from "../../features/spaces/MemberList";
@@ -10,12 +10,13 @@ import { ProfileSidePanel } from "../../features/profile/ProfileSidePanel";
 import { SpacePreviewPanel } from "../../features/discover/SpacePreviewPanel";
 // Lazy: the artifacts panel pulls recharts (already split) + the markdown
 // renderer; load it only once the AI panel is actually shown.
-const ArtifactsPanel = lazy(() =>
+const ArtifactsPanel = lazyWithRetry(() =>
   import("../../features/ai/artifacts/ArtifactsPanel").then((m) => ({
     default: m.ArtifactsPanel,
   })),
 );
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { useResizeHandle } from "./useResizeHandle";
 import { useRightPanelContext } from "./useRightPanelContext";
 import { RightPanelTabBar } from "./RightPanelTabBar";

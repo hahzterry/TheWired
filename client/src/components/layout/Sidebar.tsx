@@ -1,4 +1,4 @@
-import { useCallback, useState, useMemo, lazy, Suspense } from "react";
+import { useCallback, useState, useMemo, Suspense } from "react";
 import { cn } from "@/lib/utils";
 import { LayoutGrid, Music2, MessageCircle, ChevronRight, BrainCircuit } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -7,7 +7,7 @@ import { setSidebarMode } from "../../store/slices/uiSlice";
 import { selectFeatureEnabled, FEATURE_AI } from "../../store/slices/featuresSlice";
 // Lazy: keeps the AI tree (incl. the markdown/highlight libs) out of the main
 // bundle for users who never open the AI tab.
-const AISidebar = lazy(() =>
+const AISidebar = lazyWithRetry(() =>
   import("../../features/ai/AISidebar").then((m) => ({ default: m.AISidebar })),
 );
 import { setActiveConversation } from "../../store/slices/dmSlice";
@@ -19,6 +19,7 @@ import { ProfileCard } from "../../features/identity/ProfileCard";
 import { useDMUnreadCount } from "../../features/dm/useDMContacts";
 import { VoiceStatusBar } from "../../features/voice/VoiceStatusBar";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { useResizeHandle } from "./useResizeHandle";
 import { FRIENDS_FEED_ID } from "../../features/friends/friendsFeedConstants";
 
@@ -249,9 +250,13 @@ function SidebarInner({ expanded }: SidebarProps) {
           />
         )}
         {sidebarMode === "ai" && (
-          <Suspense fallback={null}>
-            <AISidebar />
-          </Suspense>
+          // Its own boundary: if this lazy chunk fails to load, the mode
+          // switcher above must stay, or there is no way back out of AI mode.
+          <ErrorBoundary variant="panel" label="sidebar.ai">
+            <Suspense fallback={null}>
+              <AISidebar />
+            </Suspense>
+          </ErrorBoundary>
         )}
       </div>
 

@@ -9,8 +9,13 @@
  * record passes through here first.
  *
  * The rule is "keep the shape, drop the payload": error names, property names
- * and stack frames survive; quoted text, identifiers that can be keys, and
- * anything after a `?` in a URL do not.
+ * and stack frames survive; quoted text, identifiers that can be keys, URLs,
+ * addresses and anything after a `?` in a stack-frame URL do not.
+ *
+ * What this cannot do is understand prose. The unquoted wording of an error
+ * message is kept (see `redactMessage`), so the guarantee is about what never
+ * gets in by construction (props, state, event objects, rejection payloads),
+ * not about every word an error's author chose to put in its message.
  */
 
 const MAX_MESSAGE_CHARS = 300;
@@ -70,23 +75,59 @@ export function redactTokens(input: string): string {
 }
 
 /**
- * Redact an error message. On top of {@link redactTokens}, quoted text is
- * dropped: engines quote the offending input in parse errors
- * (`Unexpected token 'h', "hello wor"... is not valid JSON`), and that input
- * is typically event content or a decrypted message. A single-quoted
- * identifier or index (`reading 'foo'`, `reading '0'`) is kept because it
- * names code, and without source maps it is the most useful part of the line.
+ * Error types whose message the engine writes. Their unquoted words are code
+ * (`x.map is not a function`), so they are left alone, and a quoted identifier
+ * is kept. Every other type is thrown by application or library code and can
+ * carry anything the author chose to interpolate.
  */
-export function redactMessage(input: unknown): string {
+const ENGINE_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "RangeError"]);
+
+/** Whole URLs. In a message a URL is data (a relay, a media host, an API reply). */
+const MESSAGE_URL = /\b[a-z][a-z0-9+.-]{1,20}:\/\/[^\s"'`<>)]+/gi;
+/** Email / NIP-05 / lightning-address shaped tokens. */
+const ADDRESS = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+/**
+ * Bare hostnames (`relay.example.com`). Only applied to non-engine errors:
+ * in an engine message the same shape is a property path (`item.info`).
+ */
+const BARE_HOST =
+  /\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|app|dev|social|xyz|me|co|lol|land|wine|earth|pub|space|site|online|info|tech|cloud|chat|live|network|world|zone|club|blog|art|page|link|sh|to|tv|cc|gg|ai|us|uk|de|fr|jp|ca|eu|ch|nl|se|no|fi|es|it|br|au|in)\b/gi;
+
+/**
+ * Redact an error message.
+ *
+ * On top of {@link redactTokens}: URLs, address-shaped tokens and quoted text
+ * are dropped. Engines quote the offending input in parse errors
+ * (`Unexpected token 'h', "hello wor"... is not valid JSON`), and that input
+ * is typically event content or a decrypted message.
+ *
+ * What survives depends on who wrote the message. For an engine error
+ * (`TypeError`, `ReferenceError`, `RangeError`) a single-quoted identifier or
+ * index is kept (`reading 'name'`): it names code, and without source maps it
+ * is the most useful part of the line. For anything else, all quoted text and
+ * bare hostnames go as well.
+ *
+ * This is best effort, not a guarantee. The unquoted wording of an
+ * application-thrown error is kept, because that wording is the diagnostic,
+ * and an error built as `new Error(serverReply)` or with a name interpolated
+ * into it will carry those words into the record.
+ */
+export function redactMessage(input: unknown, errorName?: unknown): string {
   const raw = typeof input === "string" ? input : "";
+  const engine = typeof errorName === "string" && ENGINE_ERROR_NAMES.has(errorName);
   // Only the first line: later lines of a multi-line message are free text.
   const firstLine = raw.split("\n", 1)[0] ?? "";
-  let out = redactTokens(firstLine).replace(OPAQUE_RUN, "[redacted-blob]");
+  let out = firstLine.replace(MESSAGE_URL, (url) =>
+    // Secret-bearing schemes keep their specific marker from redactTokens.
+    /^(?:bunker|nostrconnect|nostr\+walletconnect):/i.test(url) ? url : "[redacted-url]",
+  );
+  out = redactTokens(out).replace(ADDRESS, "[redacted-address]").replace(OPAQUE_RUN, "[redacted-blob]");
   out = out.replace(/"[^"]*"/g, '"[redacted]"');
   out = out.replace(/`[^`]*`/g, "`[redacted]`");
   out = out.replace(/'([^']*)'/g, (match, inner: string) =>
-    /^(?:[A-Za-z_$][\w$]{1,39}|\d{1,4})$/.test(inner) ? match : "'[redacted]'",
+    engine && /^(?:[A-Za-z_$][\w$]{1,39}|\d{1,4})$/.test(inner) ? match : "'[redacted]'",
   );
+  if (!engine) out = out.replace(BARE_HOST, "[redacted-host]");
   out = out.trim();
   if (out.length > MAX_MESSAGE_CHARS) out = `${out.slice(0, MAX_MESSAGE_CHARS)}…`;
   return out || "(no message)";

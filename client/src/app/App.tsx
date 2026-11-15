@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Outlet, useParams, useNavigate } from "react-router-dom";
 import { BrainCircuit } from "lucide-react";
 import { Layout } from "./Layout";
@@ -32,10 +32,11 @@ import { useZoomShortcuts } from "../hooks/useZoomShortcuts";
 import { useEmbeddedRelayAutostart } from "../features/settings/useEmbeddedRelayAutostart";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { BoundaryResetProvider } from "./BoundaryResetProvider";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
 
 // Lazy: the AI chat tree (react-markdown / rehype-highlight / marked) only loads
 // the first time the user opens the AI tab, then stays mounted (keep-alive).
-const AIChatView = lazy(() =>
+const AIChatView = lazyWithRetry(() =>
   import("../features/ai/AIChatView").then((m) => ({ default: m.AIChatView })),
 );
 
