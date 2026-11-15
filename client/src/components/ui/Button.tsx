@@ -1,4 +1,4 @@
-import { type ButtonHTMLAttributes } from "react";
+import { type ButtonHTMLAttributes, type Ref } from "react";
 import { cn } from "@/lib/utils";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "accent";
@@ -7,6 +7,8 @@ type ButtonSize = "sm" | "md" | "lg";
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
+  /** For callers that anchor a popover or menu to the button. */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 const variantStyles: Record<ButtonVariant, string> = {

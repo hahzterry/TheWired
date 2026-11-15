@@ -46,6 +46,7 @@ export const ShimmerButton = React.forwardRef<HTMLButtonElement, ShimmerButtonPr
         {...props}
       >
         <div
+          aria-hidden="true"
           className={cn(
             "-z-30 blur-[2px]",
             "[container-type:size] absolute inset-0 overflow-visible",
@@ -57,6 +58,7 @@ export const ShimmerButton = React.forwardRef<HTMLButtonElement, ShimmerButtonPr
         </div>
         {children}
         <div
+          aria-hidden="true"
           className={cn(
             "absolute inset-0 size-full",
             "[border-radius:var(--radius)] px-4 py-1.5 text-sm font-medium shadow-[inset_0_1px_0_#ffffff2e,inset_0_-6px_10px_#ffffff14]",
@@ -66,6 +68,7 @@ export const ShimmerButton = React.forwardRef<HTMLButtonElement, ShimmerButtonPr
           )}
         />
         <div
+          aria-hidden="true"
           className={cn(
             "absolute [inset:var(--cut)] -z-20 [border-radius:var(--radius)] [background:var(--bg)]",
           )}

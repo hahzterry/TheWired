@@ -39,15 +39,20 @@ export function Avatar({ src, alt, size = "md", className }: AvatarProps) {
     );
   }
 
+  // Same text alternative as the image branch; alt="" marks it decorative.
+  const name = alt ?? "avatar";
   return (
     <div
+      role={name ? "img" : undefined}
+      aria-label={name || undefined}
+      aria-hidden={name ? undefined : true}
       className={cn(
         "flex shrink-0 items-center justify-center rounded-full bg-card ring-1 ring-border",
         sizeStyles[size],
         className,
       )}
     >
-      <User size={iconSizes[size]} className="text-muted" />
+      <User size={iconSizes[size]} className="text-muted" aria-hidden="true" />
     </div>
   );
 }

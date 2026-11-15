@@ -24,5 +24,5 @@ export function RevealSentinel({ onReach }: RevealSentinelProps) {
     obs.observe(el);
     return () => obs.disconnect();
   }, [onReach]);
-  return <div ref={ref} className="h-1" />;
+  return <div ref={ref} aria-hidden="true" className="h-1" />;
 }

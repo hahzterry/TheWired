@@ -73,6 +73,7 @@ export function MagicCard({
       onPointerEnter={reset}
     >
       <motion.div
+        aria-hidden="true"
         className="pointer-events-none absolute inset-0 rounded-[inherit] duration-300 group-hover:opacity-100"
         style={{
           background: useMotionTemplate`
@@ -84,8 +85,9 @@ export function MagicCard({
           `,
         }}
       />
-      <div className="absolute inset-px rounded-[inherit] bg-background" />
+      <div aria-hidden="true" className="absolute inset-px rounded-[inherit] bg-background" />
       <motion.div
+        aria-hidden="true"
         className="pointer-events-none absolute inset-px rounded-[inherit] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
         style={{
           background: useMotionTemplate`

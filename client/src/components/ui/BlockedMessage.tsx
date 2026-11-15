@@ -21,18 +21,20 @@ export function BlockedMessage({ variant, onUnblock, children }: BlockedMessageP
       <div className="relative">
         <div className="flex items-center gap-2 mb-1">
           <button
+            type="button"
             onClick={() => setRevealed(false)}
             className="flex items-center gap-1 text-[10px] text-muted hover:text-soft transition-colors"
           >
-            <Eye size={10} />
+            <Eye size={10} aria-hidden="true" />
             Hide
           </button>
           {onUnblock && (
             <button
+              type="button"
               onClick={onUnblock}
               className="flex items-center gap-1 text-[10px] text-muted hover:text-red-400 transition-colors"
             >
-              <ShieldOff size={10} />
+              <ShieldOff size={10} aria-hidden="true" />
               Unblock user
             </button>
           )}
@@ -46,12 +48,13 @@ export function BlockedMessage({ variant, onUnblock, children }: BlockedMessageP
     return (
       <div className="group flex items-center gap-2 px-5 py-1.5">
         <div className="flex items-center gap-1.5 rounded-md bg-surface-hover/50 px-3 py-1 text-xs text-muted">
-          <EyeOff size={12} />
+          <EyeOff size={12} aria-hidden="true" />
           <span>Blocked message</span>
         </div>
         <button
+          type="button"
           onClick={() => setRevealed(true)}
-          className="text-[10px] text-muted opacity-0 group-hover:opacity-100 hover:text-soft transition-all"
+          className="text-[10px] text-muted opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-soft transition-all"
         >
           Show
         </button>
@@ -63,12 +66,13 @@ export function BlockedMessage({ variant, onUnblock, children }: BlockedMessageP
     return (
       <div className="group flex items-center gap-2 border-l-2 border-border pl-4 py-2">
         <div className="flex items-center gap-1.5 text-xs text-muted">
-          <EyeOff size={12} />
+          <EyeOff size={12} aria-hidden="true" />
           <span>Blocked message</span>
         </div>
         <button
+          type="button"
           onClick={() => setRevealed(true)}
-          className="text-[10px] text-muted opacity-0 group-hover:opacity-100 hover:text-soft transition-all"
+          className="text-[10px] text-muted opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-soft transition-all"
         >
           Show
         </button>
@@ -80,12 +84,13 @@ export function BlockedMessage({ variant, onUnblock, children }: BlockedMessageP
   return (
     <div className="group rounded-lg border border-border bg-card/50 px-4 py-3 flex items-center gap-2">
       <div className="flex items-center gap-1.5 text-xs text-muted">
-        <EyeOff size={12} />
+        <EyeOff size={12} aria-hidden="true" />
         <span>Blocked message</span>
       </div>
       <button
+        type="button"
         onClick={() => setRevealed(true)}
-        className="text-[10px] text-muted opacity-0 group-hover:opacity-100 hover:text-soft transition-all"
+        className="text-[10px] text-muted opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-soft transition-all"
       >
         Show
       </button>

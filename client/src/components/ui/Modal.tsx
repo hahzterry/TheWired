@@ -1,85 +1,93 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { useEscapeLayer, useModalFocus } from "./layer";
 
 interface ModalProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  /** Accessible name. Without `label` / `labelledBy` the first heading inside
+   *  the dialog (h1–h3 or `[data-dialog-title]`) names it. */
+  label?: string;
+  /** id of the element that names the dialog. */
+  labelledBy?: string;
+  /** id of the element that describes the dialog. */
+  describedBy?: string;
+  /** `alertdialog` for confirmations that interrupt the user. */
+  role?: "dialog" | "alertdialog";
 }
 
-const FOCUSABLE =
-  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+const TITLE = "h1,h2,h3,[data-dialog-title]";
 
-export function Modal({ open, onClose, children }: ModalProps) {
+/**
+ * Name the dialog after its first heading when the caller gave no name.
+ * Re-checked on DOM changes: multi-step dialogs swap their heading.
+ */
+function useHeadingLabel(
+  containerRef: RefObject<HTMLElement | null>,
+  enabled: boolean,
+): string | undefined {
+  const fallbackId = `${useId()}-title`;
+  const [id, setId] = useState<string>();
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!enabled || !container) {
+      setId(undefined);
+      return;
+    }
+    const sync = () => {
+      const heading = container.querySelector<HTMLElement>(TITLE);
+      if (heading && !heading.id) heading.id = fallbackId;
+      setId(heading?.id);
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(container, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [enabled, containerRef, fallbackId]);
+
+  return id;
+}
+
+export function Modal({
+  open,
+  onClose,
+  children,
+  label,
+  labelledBy,
+  describedBy,
+  role = "dialog",
+}: ModalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
-
-  // Focus management: move focus into the dialog on open (respecting any child
-  // autoFocus), trap Tab inside it, and restore focus to the opener on close.
-  useEffect(() => {
-    if (!open) return;
-    const container = containerRef.current;
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    const focusables = () =>
-      container ? Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE)) : [];
-
-    if (container && !container.contains(document.activeElement)) {
-      (focusables()[0] ?? container).focus();
-    }
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Tab" || !container) return;
-      const items = focusables();
-      if (items.length === 0) {
-        e.preventDefault();
-        container.focus();
-        return;
-      }
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey && (active === first || active === container)) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    container?.addEventListener("keydown", onKeyDown);
-    return () => {
-      container?.removeEventListener("keydown", onKeyDown);
-      // Restore focus to the element that opened the modal (if still in the DOM).
-      if (previouslyFocused && document.contains(previouslyFocused)) {
-        previouslyFocused.focus();
-      }
-    };
-  }, [open]);
+  // Escape closes the top overlay only; focus moves in on open (respecting any
+  // child autoFocus), Tab stays inside, and focus returns to the opener on close.
+  const isTop = useEscapeLayer(open, onClose);
+  useModalFocus(containerRef, open, isTop);
+  const headingId = useHeadingLabel(containerRef, open && !label && !labelledBy);
 
   if (!open) return null;
 
   return createPortal(
-    <div
-      ref={containerRef}
-      role="dialog"
-      aria-modal="true"
-      tabIndex={-1}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in-up outline-none"
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      {children}
+    // Keeps clicks inside the portal from reaching React ancestors of the
+    // component that rendered the modal (e.g. a clickable card).
+    <div role="presentation" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={containerRef}
+        role={role}
+        aria-modal="true"
+        aria-label={label}
+        aria-labelledby={label ? undefined : (labelledBy ?? headingId)}
+        aria-describedby={describedBy}
+        tabIndex={-1}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in-up outline-none"
+      >
+        {/* Backdrop: sits behind the content, so a press on it is a press
+            outside the dialog. Keyboard users have Escape. */}
+        <div role="presentation" className="absolute inset-0 -z-10" onMouseDown={onClose} />
+        {children}
+      </div>
     </div>,
     document.body,
   );
