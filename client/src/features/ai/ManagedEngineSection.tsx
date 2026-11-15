@@ -50,7 +50,15 @@ export function ManagedEngineSection() {
   if (!isManagedEngineAvailable()) return null;
 
   const { hardware, status, models, downloads, errors } = managed;
-  const engineError = errors[ENGINE_TARGET];
+  // Two sources: a command the user ran that failed (kept in `errors`), and the
+  // engine giving up on its own (crash loop), which only the status carries.
+  const commandError = errors[ENGINE_TARGET];
+  const statusError = status?.phase === "failed" ? status.error : null;
+  const engineError = commandError ?? statusError ?? undefined;
+  // Dismissing a command error just hides it; dismissing the engine's own
+  // failure resets it to Stopped (there is nothing left to stop).
+  const dismissEngineError = () =>
+    commandError ? dismissManagedError(ENGINE_TARGET) : void stopManagedEngine();
 
   return (
     <section className="space-y-3" aria-labelledby="managed-engine-heading">
@@ -69,7 +77,7 @@ export function ManagedEngineSection() {
 
       {!hardware ? (
         engineError ? (
-          <ErrorBox error={engineError} onDismiss={() => dismissManagedError(ENGINE_TARGET)} />
+          <ErrorBox error={engineError} onDismiss={dismissEngineError} />
         ) : (
           <div className="flex items-center gap-2 rounded-xl bg-field/50 p-4 text-xs text-muted ring-1 ring-border">
             <Loader2 size={14} className="animate-spin" />
@@ -96,7 +104,7 @@ export function ManagedEngineSection() {
             download={downloads[ENGINE_TARGET]}
           />
           {engineError && (
-            <ErrorBox error={engineError} onDismiss={() => dismissManagedError(ENGINE_TARGET)} />
+            <ErrorBox error={engineError} onDismiss={dismissEngineError} />
           )}
           <ul className="space-y-2" aria-label="Models">
             {models.map((model) => (

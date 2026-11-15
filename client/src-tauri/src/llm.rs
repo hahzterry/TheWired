@@ -673,8 +673,7 @@ async fn supervise(inner: Arc<Inner>, app: AppHandle, generation: u64, plan: Lau
             }
         };
         tokio::time::sleep(Duration::from_millis(150)).await;
-        let mut detail = supervisor::failure_detail(&inner.log_snapshot())
-            .or_else(|| Some(format!("exit status: {exit}")));
+        let mut detail = Some(supervisor::crash_detail(&inner.log_snapshot(), &exit));
         log::warn!("AI engine exited unexpectedly ({exit})");
 
         // Relaunch until it is healthy again or the policy says stop.

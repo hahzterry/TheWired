@@ -11,10 +11,12 @@ Full engine stack incl. in-process · image **and** audio generation · full **g
 ## Engine strategy (decided)
 Three tiers behind ONE OpenAI-compatible HTTP adapter:
 1. **Reuse installed** — detect Ollama (`:11434`) / LM Studio (`:1234`).
-2. **Managed** — `llama-server` download-on-enable (Phase 2). **mistral.rs is the deferred in-process tier (Phase 4)**, the Tauri-native fit; recommended upgrade = mac-Metal default-on / llama-server elsewhere.
+2. **Managed** — `llama-server` download-on-enable (**shipped, Phase 2** — macOS + Linux). **mistral.rs is the deferred in-process tier (Phase 4)**, the Tauri-native fit; recommended upgrade = mac-Metal default-on / llama-server elsewhere.
 3. **Cloud** — Claude / OpenAI / OpenRouter / DeepSeek / Kimi (BYO key).
 
 Hardware "will it run?" is a TS heuristic we compute (sysinfo/wgpu/nvidia-smi give raw specs only); only relevant on the managed-engine path.
+
+A new chat with no saved default picks the best tier available: a connected tier-1 engine, else the running built-in engine, else a connected cloud provider (`engine/tiers.ts`). The user's saved default always wins.
 
 ---
 
@@ -130,10 +132,122 @@ inline where they changed the design.
 
 ---
 
-## ⏭ REMAINING PHASES
+## ✅ DONE — Phase 2 (managed local engine: `llama-server`)
+Local AI with nothing else installed. Settings → AI → **Built-in engine**: download the runtime and a
+model, Start, chat. Verified: `cargo test` in `client/src-tauri` (121 pass, 68 of them `llm::`),
+`cargo check --features tauri/custom-protocol` (compiles the production-only path),
+`pnpm --filter @thewired/client typecheck`, full client suite, and a live pass in `tauri dev` on Apple
+Silicon (see "Live QA" below).
 
-### Phase 2 — Managed local engine = `llama-server` (native `src-tauri/src/llm.rs`)
-Clone `cloudflared.rs` (download/verify/chmod, add progress `tauri::ipc::Channel`) + `tunnel.rs` (spawn/stdout-parse) + `relay.rs` `base_dir`. Commands: `llm_engine_ensure`, `llm_server_start/stop/status`, `llm_model_download` (HF GGUF, `.part`+atomic-rename), `llm_models_list/_delete`, `llm_scan_local_models` (reuse `~/.lmstudio`/Ollama/HF-cache GGUFs), `llm_hardware_info` (sysinfo + wgpu + nvidia-smi/rocm-smi). Register in `lib.rs`. Deps: `sysinfo`, `futures-util`, opt `wgpu`. Notarization: downloads land in `app_local_data_dir` (bundle untouched); the downloaded binary must itself be signed (run cloudflared's `codesign --verify`).
+### Native — `client/src-tauri/src/llm.rs` + `llm/`
+- **`llm/engine.rs` — the runtime.** Download-on-enable, NOT bundled (same reasoning as
+  `cloudflared.rs`: the app bundle and its signature stay untouched, and only people who use local AI
+  pay the download). One upstream llama.cpp build is pinned (`PINNED_BUILD`), with the exact size and
+  SHA-256 of every archive we can select (macOS arm64/x64, Linux x64/arm64; CPU/Metal builds). The
+  archive is verified BEFORE unpacking, unpacked into a staging directory through a strict entry filter
+  (regular files, directories and sibling symlinks only; no `..`, absolute paths, hard links or
+  out-of-tree links), checked with `codesign --verify --strict` on macOS, then renamed into place with
+  an `.installed` marker. Lives in `<app_local_data_dir>/llm/engine/<build>/`.
+  - *Deviation from the original plan:* the plan assumed a binary **we** sign. Upstream macOS builds
+    are ad-hoc signed (no Developer ID), so there is no team to pin; the pinned SHA-256 is the trust
+    anchor and `codesign` only proves the binary unpacked intact. Re-signing and hosting our own copy
+    is a release-engineering follow-up (below).
+- **`llm/catalog.rs` — vetted models.** Three GGUFs from the publisher's own repositories
+  (Qwen2.5 1.5B, Qwen3 4B, Qwen3 8B; Apache-2.0), each pinned to a Hugging Face **commit**, byte size
+  and SHA-256, with minimum/recommended memory. The webview names a model by id only; URLs and
+  digests never cross IPC.
+- **`llm/download.rs` — resumable verified downloads.** `<file>.part` + HTTP `Range` resume (append
+  only when the server returns the exact range asked for; `200` restarts; `416` restarts once),
+  free-disk check before any request (remaining bytes + 256 MB), progress over a
+  `tauri::ipc::Channel`, cancel that keeps the partial. The file is hashed in full and renamed into
+  place only when size and SHA-256 match; a mismatch deletes it. A `<file>.ok` fingerprint
+  (size + mtime at verification) makes later launches skip re-hashing unless the file changed, in
+  which case it is re-hashed and **removed** if wrong.
+- **`llm/supervisor.rs` — lifecycle as a pure state machine** (`Stopped → Starting → Running ⇄
+  Restarting → Failed`, plus `Stopping`). Every start/stop bumps a generation; background tasks carry
+  theirs and stale transitions are ignored. Crash policy: 3 automatic restarts per 10 minutes with
+  1 s / 2 s / 4 s backoff, then `Failed` with the reason.
+- **`llm.rs` — the process.** `llama-server --host 127.0.0.1 --port <OS-picked> --model … --alias
+  <id> --ctx-size 8192 --parallel 1 --jinja --no-webui`. A fresh 256-bit key per launch goes to the
+  child via `LLAMA_API_KEY` in its **environment** (argv is world-readable). Readiness = `/health`
+  is 200 **and** a request without the key is refused **and** one with it succeeds; otherwise the
+  process is killed, not used. Killed on app exit (`RunEvent::Exit`), by a watchdog helper if the app
+  dies without running its exit hook (macOS has no parent-death signal), and a stale pid record is
+  reaped at next launch (only if it still points at our own binary).
+
+### IPC (all in `app_commands.rs` + `capabilities/app-commands.json`, main window only)
+`llm_hardware_info`, `llm_models_list`, `llm_model_download`, `llm_download_cancel`,
+`llm_model_delete`, `llm_engine_ensure`, `llm_server_start`, `llm_server_stop`, `llm_server_status`,
+`llm_server_connection`. Status changes are also emitted as the `llm-engine-status` event. Failures
+are typed (`ErrorCode`: `insufficient_disk`, `hash_mismatch`, `startup_failed`, `port_unavailable`,
+`insufficient_memory`, `unsupported_platform`, `crashed`, …) so the UI can say what went wrong.
+Production builds serve the UI from an origin whose HTTP scope is HTTPS-only, so `llm.rs` grants the
+webview's HTTP client **exactly** `http://127.0.0.1:<engine port>/**` at runtime instead of opening
+loopback statically.
+
+### Client
+- `engine/managedEngine.ts` — the only caller of `llm_*`. Mirrors native state into
+  `aiSlice.managed` (hardware, status, catalogue, download progress, last error per target) and
+  registers the engine with `llmManager` as provider `managed-llama` (kind `local-llama`) once the
+  runtime and a verified model are present. The provider is a thin facade: it starts the engine on
+  first use (or switches model, or waits out an automatic restart) and then delegates to the shared
+  **OpenAI-compatible adapter**, so `ChatChunk`s, tool calls and the write gate are identical to
+  every other tier.
+- `engine/tiers.ts` — tier ranking + default selection (pure).
+- `ManagedEngineSection.tsx` (rendered at the top of `AISettingsTab`) + `managedFormat.ts` — status
+  badge, machine summary, runtime row, model list with size and memory guidance, progress/cancel,
+  resume/discard, start/stop/delete, and an error box per failure class.
+- `AIProvider` brings the engine module up after the account's providers load, and tears it down
+  (stopping the process) on logout or when the AI feature is turned off.
+- **Web build:** `isManagedEngineAvailable()` is false, nothing is invoked and the section renders
+  nothing.
+
+### Contracts added in Phase 2 (don't break)
+- **The per-launch key never enters Redux, the keychain or disk.** It arrives once from
+  `llm_server_connection` and goes straight into `llmManager`'s in-memory key map
+  (`setManagedCredentials`). `EngineStatus` (native) and `aiSlice.managed.status` (client) have no key
+  field by construction, and the key is not in the status event. It is dropped the moment the engine
+  is not `running`.
+- **Credentials before status.** `applyStatus` settles credentials before `running` becomes visible
+  in the store, and a status sequence number stops a slow key fetch for an old report overwriting a
+  newer one.
+- **The engine is never a stored provider.** `persistConfigs` skips `managed-llama`, the id is
+  reserved, and the generic provider API refuses to edit or remove it.
+- **Nothing unverified is executed or loaded.** No archive or model without a pinned digest is ever
+  fetched; a failed check removes the file.
+- **Loopback + key, always.** `server_args` binds `127.0.0.1` and never carries the key; a launch
+  that would answer without the key is refused.
+
+### Live QA (2026-11-15, `tauri dev`, macOS arm64, 36 GB)
+Runtime download + verify + install; model download cancelled at 25%, resumed after an app restart
+from the exact byte, verified (SHA-256 re-checked by hand against the pin); start; streamed chat; a
+read-tool call (`list_my_spaces`) and a gated `publish_note` that was declined (never signed);
+start-on-first-use from chat. Failure paths: engine killed → auto-restart on a new port + key and
+chat works again; four kills → `Failed` with the reason; model corrupted in place → refused at start
+and removed; graceful quit and a signal-terminated app both leave no engine behind; the port
+answers 401 without or with a wrong key, binds loopback only, and has no web UI.
+
+### Remaining for Phase 2 (not done)
+- **Windows.** Upstream archives are `.zip`; no asset is wired, so the tier reports "not available
+  on this system". Needs zip extraction and Windows code signing (SmartScreen).
+- **Packaged-build pass.** The runtime HTTP-scope grant is compiled under
+  `tauri/custom-protocol` but has not been exercised in a built, signed app. Do that before a
+  release, on macOS and Linux.
+- **Our own signed runtime.** Re-sign (and notarize) the pinned build and host it ourselves, then
+  pin our Developer ID team in the `codesign` requirement like `cloudflared.rs` does.
+- **Not exercised live:** Linux and Intel macOS (asset table is unit-tested only), the
+  insufficient-disk and port-retry paths (unit/integration tests only).
+- `llm_scan_local_models` (reuse GGUFs from LM Studio / Ollama / the HF cache) — deliberately left
+  out: those files have no pinned digest. GPU detail (`wgpu`, `nvidia-smi`) and CUDA/Vulkan builds.
+- Prune the archive's unused tools after install; per-model tool-capability probe (the 1.5B model
+  sometimes calls a tool with malformed arguments).
+- The webview is paused by the OS while the window is hidden or the screen is locked, which stalls
+  streaming for **every** provider (the engine itself keeps running). A `backgroundThrottling`
+  window setting would fix it; that is a shell decision.
+
+---
+
+## ⏭ REMAINING PHASES
 
 ### Phase 3 — Image + audio engines
 Remote (DALL·E/Stability/fal/Replicate/ElevenLabs/MusicGen) = pure TS HTTP via `engineFetch`. Local (ComfyUI :8188 / A1111 :7860) = detect + HTTP (localhost cap already added); optional download/spawn reuses Phase-2 commands. Implement `imageProvider`/`audioProvider` (same `LLMProvider`, yield `image`/`audio` chunks — already in `ChatChunk`). Pipe into artifacts + publish-out (upload via `lib/api/blossom.ts`; consider kind:20).
@@ -165,6 +279,7 @@ A `Workflow` audit (`ai-harden-audit`: correctness/security/perf/UX reviewers + 
 - **Remaining gaps:** broader render tests for the chat view (message list / streaming bubble); the abort path is covered in logic but not via a full mid-stream-abort integration test.
 
 ## Verify
+- `cd client/src-tauri && cargo test` (managed engine: `cargo test llm::`); `cargo check --features tauri/custom-protocol` for the production-only path
 - `pnpm --filter @thewired/client typecheck` (clean)
 - `pnpm exec vitest run` (in `client/`) — **754 pass**; AI-specific: `pnpm exec vitest run src/features/ai`
 - `pnpm exec vite build` (in `client/`) — recharts is code-split into a lazy `ChartArtifact` chunk

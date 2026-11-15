@@ -649,6 +649,31 @@ describe("downloads", () => {
     expect(managed().errors[ENGINE_TARGET]).toBeUndefined();
   });
 
+  it("REGRESSION: re-downloading a model clears the 'removed, download it again' error", async () => {
+    // Found in live QA: after a damaged model was removed and downloaded again,
+    // the old verification error stayed on screen beside the verified model.
+    await initManagedEngine();
+    backend.startError = { code: "hash_mismatch", message: "so it was removed. Download it again." };
+    backend.models = [rawModel(MODEL), rawModel(BIG)];
+    await startManagedEngine(MODEL);
+    expect(managed().errors[ENGINE_TARGET]?.code).toBe("hash_mismatch");
+
+    backend.download = async () => {
+      backend.models = [rawModel(MODEL, { installed: true }), rawModel(BIG)];
+    };
+    expect(await downloadManagedModel(MODEL)).toBe(true);
+    expect(managed().errors[ENGINE_TARGET]).toBeUndefined();
+  });
+
+  it("a successful download leaves an unrelated engine error alone", async () => {
+    await initManagedEngine();
+    backend.startError = { code: "startup_failed", message: "nope" };
+    await startManagedEngine(MODEL);
+    backend.models = [rawModel(MODEL, { installed: true }), rawModel(BIG)];
+    expect(await downloadManagedModel(BIG)).toBe(true);
+    expect(managed().errors[ENGINE_TARGET]?.code).toBe("startup_failed");
+  });
+
   it("ignores a second request for a download already in flight", async () => {
     backend.models = [rawModel(MODEL), rawModel(BIG)];
     await initManagedEngine();

@@ -67,3 +67,8 @@ keyring = { version = "3", features = ["windows-native", "sync-secret-service"] 
 
 [dev-dependencies]
 tempfile = "3"
+
+# Hashing a multi-gigabyte model with an unoptimized SHA-256 takes over a minute
+# in `tauri dev`. Optimize just that crate in dev builds (release is unaffected).
+[profile.dev.package.sha2]
+opt-level = 3

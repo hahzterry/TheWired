@@ -428,6 +428,14 @@ export async function downloadManagedModel(modelId: string): Promise<boolean> {
   if (managed().downloads[modelId]) return false;
   if (!managed().status?.engineInstalled && !(await installManagedRuntime())) return false;
   const ok = await runDownload(modelId, "llm_model_download", { modelId });
+  if (ok) {
+    // "Removed, download it again" (or "not downloaded") has just been acted
+    // on: do not leave that message standing next to a verified model.
+    const stale = managed().errors[ENGINE_TARGET]?.code;
+    if (stale === "hash_mismatch" || stale === "not_installed") {
+      store.dispatch(setManagedError({ id: ENGINE_TARGET, error: null }));
+    }
+  }
   await Promise.all([refreshManagedModels().catch(() => {}), refreshHardware()]);
   return ok;
 }

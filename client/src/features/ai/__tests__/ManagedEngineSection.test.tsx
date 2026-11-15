@@ -408,6 +408,35 @@ describe("ManagedEngineSection — error states", () => {
     expect(engine.dismissManagedError).toHaveBeenCalledWith("engine");
   });
 
+  it("REGRESSION: a crash loop explains itself even though no command failed", () => {
+    // Found in live QA: the engine gave up after repeated crashes, the header
+    // said "Failed", and the reason (only in the status) was shown nowhere.
+    renderSection({
+      status: status({
+        phase: "failed",
+        modelId: SMALL,
+        restarts: 3,
+        error: { code: "crashed", message: "The engine stopped unexpectedly 4 times in a row and was not restarted again." },
+      }),
+      models: [model(SMALL, { installed: true }), model(LARGE)],
+    });
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("The engine keeps stopping");
+    expect(alert).toHaveTextContent("4 times in a row");
+    // Dismissing it resets the engine to Stopped rather than hiding a live state.
+    fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+    expect(engine.stopManagedEngine).toHaveBeenCalledTimes(1);
+    expect(engine.dismissManagedError).not.toHaveBeenCalled();
+  });
+
+  it("a stale status error is not shown once the engine is no longer failed", () => {
+    renderSection({
+      status: status({ phase: "stopped", error: { code: "crashed", message: "old" } }),
+      models: [model(SMALL, { installed: true }), model(LARGE)],
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("a failed probe is reported instead of an endless spinner", () => {
     renderSection({
       hardware: null,

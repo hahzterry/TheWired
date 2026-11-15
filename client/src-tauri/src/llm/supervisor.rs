@@ -173,7 +173,7 @@ impl Lifecycle {
                 self.crashes.len() + 1
             );
             if let Some(d) = detail.filter(|d| !d.trim().is_empty()) {
-                message.push_str(" Last output: ");
+                message.push(' ');
                 message.push_str(d.trim());
             }
             self.error = Some(LlmError::new(ErrorCode::Crashed, message));
@@ -311,9 +311,8 @@ pub fn classify_startup_failure(log_tail: &[String]) -> ErrorCode {
     }
 }
 
-/// The most useful line to show a person: the last one that mentions a failure,
-/// else simply the last one.
-pub fn failure_detail(log_tail: &[String]) -> Option<String> {
+/// The last line of engine output that mentions a failure, if any.
+pub fn error_line(log_tail: &[String]) -> Option<String> {
     log_tail
         .iter()
         .rev()
@@ -321,8 +320,23 @@ pub fn failure_detail(log_tail: &[String]) -> Option<String> {
             let l = l.to_ascii_lowercase();
             l.contains("error") || l.contains("failed") || l.contains("unable") || l.contains("invalid")
         })
-        .or_else(|| log_tail.last())
         .cloned()
+}
+
+/// The most useful line to show a person: the last one that mentions a failure,
+/// else simply the last one.
+pub fn failure_detail(log_tail: &[String]) -> Option<String> {
+    error_line(log_tail).or_else(|| log_tail.last().cloned())
+}
+
+/// Why a RUNNING engine went away, as a sentence: what it said if it said
+/// anything about a failure, otherwise how it exited. A healthy engine's last
+/// line is routine chatter, which would only mislead.
+pub fn crash_detail(log_tail: &[String], exit: &str) -> String {
+    match error_line(log_tail) {
+        Some(line) => format!("Last output: {line}"),
+        None => format!("It exited with {exit}."),
+    }
 }
 
 #[cfg(test)]
@@ -422,13 +436,13 @@ mod tests {
         }
 
         // Fourth crash inside the window: no more restarts.
-        let decision = lc.on_exit(gen, t0 + Duration::from_secs(80), Some("  error: out of memory \n".into()));
+        let decision = lc.on_exit(gen, t0 + Duration::from_secs(80), Some("  Last output: error: out of memory \n".into()));
         assert_eq!(decision, Some(CrashDecision::GiveUp));
         assert_eq!(lc.phase(), Phase::Failed);
         let err = lc.error().unwrap();
         assert_eq!(err.code, ErrorCode::Crashed);
         assert!(err.message.contains("4 times"), "{}", err.message);
-        assert!(err.message.ends_with("error: out of memory"), "{}", err.message);
+        assert!(err.message.ends_with("again. Last output: error: out of memory"), "{}", err.message);
         // Terminal until the user acts.
         assert_eq!(lc.on_exit(gen, t0 + Duration::from_secs(81), None), None);
         assert!(!lc.mark_running(gen, 1));
@@ -653,5 +667,23 @@ mod tests {
         assert_eq!(failure_detail(&["just this".to_string()]).unwrap(), "just this");
         assert_eq!(classify_startup_failure(&[]), ErrorCode::StartupFailed);
         assert_eq!(failure_detail(&[]), None);
+    }
+
+    #[test]
+    fn a_crash_is_described_by_its_error_or_else_by_how_it_exited() {
+        // Killed from outside: its last line is routine, so say how it exited.
+        let routine = vec!["srv  server_on_li: listening on http://127.0.0.1:59026".to_string()];
+        assert_eq!(error_line(&routine), None);
+        assert_eq!(
+            crash_detail(&routine, "signal: 9 (SIGKILL)"),
+            "It exited with signal: 9 (SIGKILL)."
+        );
+        // It said why: quote that.
+        let oom = vec!["listening".to_string(), "ggml_metal: error: insufficient memory".to_string(), "bye".to_string()];
+        assert_eq!(
+            crash_detail(&oom, "exit status: 1"),
+            "Last output: ggml_metal: error: insufficient memory"
+        );
+        assert_eq!(crash_detail(&[], "exit status: 0"), "It exited with exit status: 0.");
     }
 }
