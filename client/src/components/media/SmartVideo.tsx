@@ -286,6 +286,9 @@ export const SmartVideo = memo(function SmartVideo({
           if (rate !== playbackRate) setPlaybackRate(rate);
         }}
         className={`relative z-10 mx-auto block w-full ${fitted ? "h-full" : d.maxH} object-contain`}
+        // Size known up front (imeta `dim` or an earlier load): hold the
+        // card's box before the metadata arrives so the feed doesn't shift.
+        style={!fitted && natural ? { aspectRatio: `${natural.w} / ${natural.h}` } : undefined}
       />
       {overlay}
     </div>

@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useRef,
@@ -45,6 +46,19 @@ export class EngagementWindow {
   report(id: string, index: number, isVisible: boolean): void {
     if (isVisible) this.visible.set(id, index);
     else this.visible.delete(id);
+    if (this.timer === null) {
+      this.timer = setTimeout(() => this.flush(), this.debounceMs);
+    }
+  }
+
+  /**
+   * Replace the whole visible set in one call. A virtualized list knows the
+   * range it has rendered, so it reports that range here instead of mounting
+   * an observer per card. `startIndex` is the feed position of `ids[0]`.
+   */
+  setVisible(ids: readonly string[], startIndex: number): void {
+    this.visible.clear();
+    for (let i = 0; i < ids.length; i++) this.visible.set(ids[i], startIndex + i);
     if (this.timer === null) {
       this.timer = setTimeout(() => this.flush(), this.debounceMs);
     }
@@ -119,6 +133,40 @@ export function EngagementCollectorProvider({
   }, []);
 
   return <Ctx.Provider value={ref.current}>{children}</Ctx.Provider>;
+}
+
+/**
+ * Engagement for a virtualized feed: returns a callback to hand the ids of the
+ * rendered range (the virtualizer's `rangeChanged`). Each note is fetched once,
+ * the first time it is rendered, in feed order; only the newest batch keeps a
+ * live subscription.
+ *
+ * The window, and with it the record of what was already fetched, is rebuilt
+ * when `resetKey` or the relay set changes (another channel, another profile).
+ */
+export function useEngagementRange(
+  relayUrls: string[] | undefined,
+  resetKey: string,
+): (ids: readonly string[], startIndex: number) => void {
+  const ref = useRef<EngagementWindow | null>(null);
+  const relayKey = relayUrls ? relayUrls.join(",") : "";
+
+  useEffect(() => {
+    const win = new EngagementWindow(relayUrls, undefined, (noteIds) =>
+      selectReactionEventIdsFor(store.getState(), noteIds),
+    );
+    ref.current = win;
+    return () => {
+      win.dispose();
+      if (ref.current === win) ref.current = null;
+    };
+    // relayUrls is compared by content (relayKey), not identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relayKey, resetKey]);
+
+  return useCallback((ids: readonly string[], startIndex: number) => {
+    ref.current?.setVisible(ids, startIndex);
+  }, []);
 }
 
 /** Attach to a note card's root element. Reports the card's viewport visibility
