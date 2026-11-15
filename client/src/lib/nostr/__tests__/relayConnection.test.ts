@@ -67,6 +67,10 @@ function reqSubIds(ws: MockWebSocket): string[] {
 
 let mockWsInstances: MockWebSocket[] = [];
 
+/** Long enough for the first reconnect (1 s ± 25%), short of the connect
+ *  timeout that would abandon the new socket before the test opens it. */
+const RECONNECT_WAIT_MS = 2_000;
+
 beforeEach(() => {
   mockWsInstances = [];
   vi.stubGlobal(
@@ -184,7 +188,7 @@ describe("RelayConnection", () => {
       ws1.simulateClose();
 
       // Advance timers to trigger reconnect
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(RECONNECT_WAIT_MS);
       const ws2 = latestWs();
       expect(ws2).not.toBe(ws1);
 
@@ -208,7 +212,7 @@ describe("RelayConnection", () => {
       conn.closeSubscription("sub-1");
 
       ws1.simulateClose();
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(RECONNECT_WAIT_MS);
       latestWs().simulateOpen();
 
       const ids = reqSubIds(latestWs());
@@ -487,7 +491,7 @@ describe("RelayConnection", () => {
 
       // Drop and reconnect.
       ws1.simulateClose();
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(RECONNECT_WAIT_MS);
       const ws2 = latestWs();
       expect(ws2).not.toBe(ws1);
       ws2.simulateOpen();
@@ -518,7 +522,7 @@ describe("RelayConnection", () => {
       // Drop. The pre-reconnect deferred state ("sub-3-deferred is the deferred one")
       // is irrelevant after reconnect — server has no record of any sub.
       ws1.simulateClose();
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(RECONNECT_WAIT_MS);
       latestWs().simulateOpen();
       vi.runAllTimers();
 
@@ -578,7 +582,7 @@ describe("RelayConnection", () => {
 
       // Reconnect.
       ws1.simulateClose();
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(RECONNECT_WAIT_MS);
       const ws2 = latestWs();
       expect(ws2).not.toBe(ws1);
 
@@ -602,7 +606,7 @@ describe("RelayConnection", () => {
       await flush();
 
       ws1.simulateClose();
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(RECONNECT_WAIT_MS);
       const ws2 = latestWs();
       conn.subscribe("sub-3", [{ kinds: [9] }]);
       ws2.simulateOpen();
@@ -621,7 +625,7 @@ describe("RelayConnection", () => {
       ws1.simulateMessage(["AUTH", "c1"]);
       await flush();
       ws1.simulateClose();
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(RECONNECT_WAIT_MS);
       const ws2 = latestWs();
       conn.subscribe("sub-4", [{ kinds: [9] }]);
       ws2.simulateOpen(); // held

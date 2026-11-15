@@ -39,38 +39,133 @@ returns `result.map(parseLongFormEvent)`, minting new objects every call, so the
 article objects (e.g. cache `parseLongFormEvent` by event id, or select raw
 events and parse in a `useMemo`).
 
-### 3. Account-switch cold-start freeze (~2s)
+### 3. Account-switch freeze (PARTLY SHIPPED — the longest task remains)
 
-**Why:** A ~1900ms main-thread freeze occurs during `switchAccount` →
-`performCleanup` → `relayManager.disconnectAll()` followed by the reconnect storm
-(all relays redial at once). This is a one-time cold-start path, distinct from the
-profile-navigation freeze that the optimization work fixed.
+The original note blamed `switchAccount` → `performCleanup` →
+`relayManager.disconnectAll()` and the redial storm. Profiling a switch between
+two accounts in 30 spaces each (loaded feed on screen, dev build) says
+otherwise: relay teardown and dialing are 1–2% of the main-thread time. About
+85% is React rendering, in three places — the app shell re-mounting when the
+switch overlay lifts, the feed's first page rendering, and the shell
+re-rendering once per joined space as each space's member list revalidated.
 
-**Where:** `loginFlow.ts` (`switchAccount`/`performCleanup`) +
-`relayManager.ts`/`relayConnection.ts` reconnect scheduling. Likely wants
-staggered redials and/or deferring heavy first-render work off the switch.
+**Shipped:**
+- **No-op member syncs skip the store** (`store/thunks/spaceMembers.ts`). After
+  a login or switch every space re-fetches the roster it just hydrated from
+  IndexedDB; an unchanged answer no longer dispatches. This was the largest
+  post-switch cost.
+- **Staggered, prioritised redial** (`relayManager.ts`). The platform relay
+  dials at once, then a burst of 4, then one relay per 40 ms in rank order:
+  the user's write relays, their read-only relays, fan-out targets.
+- **Quiet teardown.** `disconnectAll()` no longer fires two store updates per
+  relay; `performCleanup` clears the connection rows with one action.
 
-### 4. Relay connection noise from outbox fan-out
+**Measured** (longest main-thread task / total long-task time / long tasks per
+switch, medians of 5 switches, builds run back to back):
 
-**Why:** Outbox routing (Phase 6) dials each viewed author's NIP-65 write relays,
-so a profile can now target 7–21 relays; unreachable ones spam
-`WebSocket … network connection lost`. Cosmetic (dead relays are skipped) but
-noisy, and it raises connection churn. Includes the long-standing
-`relay.nostr.band`/`relay.thewired.app` reconnect retries.
+| | before | after |
+|---|---|---|
+| 4× CPU throttle | 213 ms / 843 ms / 8 | 221 ms / 407 ms / 2 |
+| no throttle | 54 ms / 54 ms / 1 | 58 ms / 58 ms / 1 |
 
-**Where:** `relayConnection.ts` reconnect logic — add an **N-strike backoff** so a
-relay that fails to connect N times is dropped (or backed off hard) for the
-session instead of retried every few seconds.
+Total blocked time halved and the trail of long tasks after the switch is
+gone, but the **longest single task did not move**: it is the shell re-mount,
+which no relay-side change touches. The ~1.9 s figure in the original note was
+never reproduced with these accounts.
 
-### 5. "Load more" on accounts with many joined spaces
+**Still open — where the rest lives:**
+- The shell mounts in one synchronous render when `identity.switchingAccount`
+  flips back (`App.tsx`). Options: reveal before hydration finishes so the
+  mount is cheap and data streams in, or stop rendering closed modals
+  (`CreateSpaceModal`, `CreateAlbumModal`, `UploadTrackModal` render on every
+  shell update).
+- The feed's first page mounts in one go — list virtualization (#1).
+- `performLogin` hydration is shared with cold start (#9).
 
-**Why:** Intermittent failures clicking "load more" on a heavily-joined account.
-Low priority / edge case per product owner.
+### 4. Relay connection noise from outbox fan-out (SHIPPED)
 
-**Where:** space feed pagination (`groupSubscriptions.ts` `loadMoreSpaceFeed`) +
-the relay subscription cap (`relayConnection.ts` `DEFAULT_MAX_SUBS`); the trace
-shows per-relay sub caps (20/10) being hit during heavy fan-out, which can defer
-the pagination REQ.
+Outbox routing dials each viewed author's NIP-65 write relays (7–21 per
+profile), and an unreachable one used to be redialed forever, each attempt
+logging `WebSocket … failed` in the console. Two profiles with dead write
+relays produced 97 fan-out dials in 150 s with no end in sight.
+
+**Shipped** (`relayConnection.ts`, `relayManager.ts`, `reconnect.ts`):
+- **Strikes.** A connect that never opens, times out (`CONNECT_TIMEOUT`, 15 s),
+  or opens and closes again within `STABLE_AFTER` (5 s) is a strike. A
+  connection that holds resets the count.
+- **Tiers.** `relayManager` classifies every relay at failure time:
+  - *app* — the platform relay. Retried forever.
+  - *pinned* — relays the user or the app chose: the user's relay list, DM
+    relays, anything a feature `connect()`s explicitly, space hosts and mirrors
+    (`pinRelay`, called by `groupSubscriptions`), bootstrap and indexer relays.
+    Retried forever.
+  - *transient* — relays dialed only because someone else's data names them:
+    the auto-dial in `relayManager.subscribe` (outbox), a DM recipient's inbox
+    (`connectPeer`), the search relay. After `STRIKE_LIMIT` (3) strikes the
+    relay is **dropped for the session**: 3 dials, then nothing. Subscriptions
+    it never answered get an end-of-stored-events so no EOSE quorum sits out
+    its timeout, and later subscriptions skip it.
+
+  Every tier backs off on the same schedule as before (1, 2, 4 … capped at
+  60 s). The noise came from fan-out relays, and those are now dropped, so the
+  cap for chosen relays did not need to change.
+- **Not the relay's fault.** A transient relay is only dropped while some
+  non-loopback relay is connected (and `navigator.onLine` is true). With the
+  network down it keeps backing off instead.
+- **Reset.** The browser `online` event clears strikes, redials whatever was
+  backing off and lifts session drops that a live subscription still wants.
+  So does an outside relay connecting after none had been connected for 10 s
+  (wake from sleep), at most once a minute — a single relay flapping does not
+  count.
+- **Asking again dials at once.** `relayManager.connect()` on a chosen relay
+  that is waiting out its backoff dials immediately (a send to a space whose
+  host just came back does not wait for the retry timer), at most once per
+  5 s per relay. Transient callers never shorten a backoff.
+- Failed dials no longer trip the reconnect-storm detector, and a past storm
+  now expires on its own. Dead relays used to hold every healthy relay's
+  reconnect to the 10 s storm cooldown.
+
+**Left as is:** a dead relay in the user's own list is still dialed (at most
+once a minute, as before) and still logs each attempt; that is the price of
+never dropping a relay the user chose. A relay dialed for a group-import
+preview is treated as chosen, not transient.
+
+### 5. "Load more" on accounts with many joined spaces (SHIPPED)
+
+The pagination REQ from `loadMoreSpaceFeed` was an ordinary subscription. When
+an account's standing subs filled a relay's cap, the REQ went to the back of
+`deferredSubs`, nothing was sent, and the button spun for the 30 s timeout and
+then silently went back to "Load more".
+
+**Shipped:**
+- **Priority requests borrow a slot** (`relayConnection.ts`). Standing subs
+  keep the relay's whole cap. When a priority subscription finds the relay
+  full, the connection CLOSEs one standing sub (the most recently opened one
+  on the wire), sends the priority REQ in its place, and re-sends the parked
+  sub the moment a slot frees — normally when the one-shot closes, well under
+  a second later. At most two subs are parked at a time; a third concurrent
+  priority request waits at the front of the deferred queue. On reconnect
+  priority subs are re-sent first.
+- **"Load more" is priority** (`groupSubscriptions.ts`, `fetchPage`), for space
+  feeds and the friends feed. Refreshes (including the automatic first fetch
+  of a feed) stay ordinary subscriptions so they cannot crowd it out.
+- **Error and retry.** `subscribeOnce` now reports how many relays the REQ was
+  actually written to. If no read relay is connected (after a 4 s grace for a
+  reconnect) or the request never left the client, the feed shows "Couldn't
+  reach a relay to load more." with a Retry button; a request that was sent
+  but not answered in time shows "The relays took too long to answer." State
+  lives in `feed.meta[contextId].loadMoreError`.
+
+**Trade-off:** the parked sub misses live events while it is closed. It is
+re-sent with its original filters, so stored events inside its `since`/`limit`
+window come back; a sub that only wants events newer than "now" can miss what
+arrived in that gap.
+
+**Not covered:** refresh on a saturated relay still waits for a slot, as it
+always did. The profile page's `LoadMoreSentinel` (`useProfileNotes`) is a
+separate path and still uses plain subscriptions. Which standing subs win the
+slots when an account is over the cap is still decided in insertion order —
+see #8.
 
 ### 6. Media-feed video thumbnails — re-seek caching (SHIPPED, with residual)
 

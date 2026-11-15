@@ -25,10 +25,13 @@ vi.mock("../relayManager", () => ({
       hoisted.reconnectCb = cb;
       return () => {};
     },
+    pinRelay: vi.fn(),
+    waitForReadRelay: vi.fn(() => Promise.resolve(true)),
   },
 }));
 
 import { subscriptionManager } from "../subscriptionManager";
+import { relayManager } from "../relayManager";
 import {
   startBackgroundChatSubs,
   openBgChatSub,
@@ -38,15 +41,21 @@ import {
   refreshSpaceFeed,
   loadMoreSpaceFeed,
   enterSpace,
+  loadMoreFriendsFeed,
+  refreshFriendsFeed,
 } from "../groupSubscriptions";
 import { store, resetAll } from "@/store";
 import { setActiveChannel, setChannelSubscription } from "@/store/slices/spacesSlice";
-import { trackFeedTimestamp } from "@/store/slices/feedSlice";
+import { trackFeedTimestamp, setLoadMoreError } from "@/store/slices/feedSlice";
+import { setFollowList } from "@/store/slices/identitySlice";
+import { FRIENDS_FEED_ID } from "@/features/friends/friendsFeedConstants";
 
 const subscribe = vi.mocked(subscriptionManager.subscribe);
 const subscribeOnce = vi.mocked(subscriptionManager.subscribeOnce);
 const close = vi.mocked(subscriptionManager.close);
 const getReconnectSince = vi.mocked(subscriptionManager.getReconnectSince);
+const pinRelay = vi.mocked(relayManager.pinRelay);
+const waitForReadRelay = vi.mocked(relayManager.waitForReadRelay);
 
 function space(id: string, hostRelay: string): Space {
   return {
@@ -62,6 +71,9 @@ function space(id: string, hostRelay: string): Space {
     createdAt: 0,
   };
 }
+
+/** Let the page request's promise chain (relay wait → subscribeOnce → settle) run. */
+const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /** Extract the filter object passed to a given subscribe() call. */
 function filterOf(callIndex: number) {
@@ -80,6 +92,8 @@ beforeEach(() => {
   let n = 0;
   subscribe.mockImplementation(() => `sub-${++n}`);
   subscribeOnce.mockResolvedValue({ reason: "all-eose" });
+  pinRelay.mockClear();
+  waitForReadRelay.mockReset().mockResolvedValue(true);
 });
 
 describe("groupSubscriptions — bg chat sub collapse", () => {
@@ -231,11 +245,12 @@ describe("groupSubscriptions — refresh-feed leak", () => {
     store.dispatch(resetAll());
   });
 
-  it("uses the auto-closing subscribeOnce so the refresh sub can't leak", () => {
+  it("uses the auto-closing subscribeOnce so the refresh sub can't leak", async () => {
     const sp = space("spaceR", "wss://h");
     sp.memberPubkeys = ["pk1"];
 
     refreshSpaceFeed(sp, "notes");
+    await settle();
 
     // PRE-fix: a manual subscribe()+onEOSE that forgot to close → the sub
     // streamed forever. POST-fix: subscribeOnce guarantees close on every path
@@ -284,8 +299,7 @@ describe("groupSubscriptions — loadMore hasMore on timeout vs all-eose (#78)",
     subscribeOnce.mockResolvedValue({ reason: "timeout" });
 
     loadMoreSpaceFeed(sp, "notes");
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle();
 
     // PRE-fix: ANY EOSE (incl. the backstop timeout) flipped hasMore off, falsely
     // ending pagination after a slow relay. POST-fix: only all-eose can.
@@ -300,8 +314,7 @@ describe("groupSubscriptions — loadMore hasMore on timeout vs all-eose (#78)",
     subscribeOnce.mockResolvedValue({ reason: "all-eose" });
 
     loadMoreSpaceFeed(sp, "notes");
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle();
 
     // flushEventPipeline is mocked → oldestAt unchanged → honest end-of-feed.
     expect(store.getState().feed.meta[contextId].hasMore).toBe(false);
@@ -415,5 +428,156 @@ describe("groupSubscriptions — space-only music backfill", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("groupSubscriptions — load more is delivered or says why not", () => {
+  const contextId = "spaceL:notes";
+  function member(): Space {
+    const sp = space("spaceL", "wss://h");
+    sp.memberPubkeys = ["pk1"];
+    return sp;
+  }
+  const meta = () => store.getState().feed.meta[contextId];
+
+  beforeEach(() => {
+    store.dispatch(resetAll());
+    store.dispatch(trackFeedTimestamp({ contextId, createdAt: 1000 })); // oldestAt = 1000
+  });
+
+  it("asks as a priority one-shot so a saturated relay cap cannot starve it", async () => {
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(subscribeOnce).toHaveBeenCalledTimes(1);
+    const opts = subscribeOnce.mock.calls[0][0];
+    expect(opts.priority).toBe(true);
+    expect(opts.filters[0]).toMatchObject({ authors: ["pk1"], until: 999 });
+  });
+
+  // Refreshes (the automatic first fetch of a feed among them) are ordinary
+  // one-shots: two of them must not be able to crowd a "load more" out.
+  it("a refresh is NOT a priority request, automatic or manual", async () => {
+    refreshSpaceFeed(member(), "notes", true);
+    refreshSpaceFeed(member(), "notes", false);
+    store.dispatch(setFollowList({ follows: ["f1"], createdAt: 5 }));
+    refreshFriendsFeed("notes", true);
+    refreshFriendsFeed("notes");
+    await settle();
+    expect(subscribeOnce).toHaveBeenCalledTimes(4);
+    for (const call of subscribeOnce.mock.calls) expect(call[0].priority).toBeUndefined();
+  });
+
+  it("only load more is priority, for space feeds and the friends feed", async () => {
+    loadMoreSpaceFeed(member(), "notes");
+    store.dispatch(setFollowList({ follows: ["f1"], createdAt: 5 }));
+    store.dispatch(trackFeedTimestamp({ contextId: `${FRIENDS_FEED_ID}:notes`, createdAt: 1000 }));
+    loadMoreFriendsFeed("notes");
+    await settle();
+    expect(subscribeOnce.mock.calls.map((c) => c[0].priority)).toEqual([true, true]);
+  });
+
+  it("shows the loading state while the request is out and clears it after", async () => {
+    let finish!: (v: { reason: "all-eose" }) => void;
+    subscribeOnce.mockReturnValue(new Promise((r) => { finish = r; }));
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(meta().isLoadingMore).toBe(true);
+    finish({ reason: "all-eose" });
+    await settle();
+    expect(meta().isLoadingMore).toBe(false);
+  });
+
+  it("no relay connected: waits briefly, then reports the request could not be sent", async () => {
+    waitForReadRelay.mockResolvedValue(false);
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(subscribeOnce).not.toHaveBeenCalled(); // nothing to send it to
+    expect(meta()).toMatchObject({ isLoadingMore: false, hasMore: true, loadMoreError: "unreachable" });
+  });
+
+  it("a relay connecting during the wait lets the request go out", async () => {
+    let connected!: (ok: boolean) => void;
+    waitForReadRelay.mockReturnValue(new Promise((r) => { connected = r; }));
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(subscribeOnce).not.toHaveBeenCalled();
+    connected(true);
+    await settle();
+    expect(subscribeOnce).toHaveBeenCalledTimes(1);
+    expect(meta().loadMoreError ?? null).toBeNull();
+  });
+
+  it("timed out without ever reaching a relay → unreachable, with hasMore kept", async () => {
+    subscribeOnce.mockResolvedValue({ reason: "timeout", sentTo: 0 });
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(meta()).toMatchObject({ isLoadingMore: false, hasMore: true, loadMoreError: "unreachable" });
+  });
+
+  it("sent but unanswered → timeout error rather than a silent no-op", async () => {
+    subscribeOnce.mockResolvedValue({ reason: "timeout", sentTo: 2 });
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(meta()).toMatchObject({ isLoadingMore: false, hasMore: true, loadMoreError: "timeout" });
+  });
+
+  it("a slow relay is not an error when another one delivered older notes", async () => {
+    subscribeOnce.mockImplementation(async () => {
+      store.dispatch(trackFeedTimestamp({ contextId, createdAt: 500 })); // the page arrived
+      return { reason: "timeout", sentTo: 2 };
+    });
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(meta().loadMoreError ?? null).toBeNull();
+    expect(meta().hasMore).toBe(true);
+  });
+
+  it("an honest end of feed is not an error", async () => {
+    subscribeOnce.mockResolvedValue({ reason: "all-eose", sentTo: 1 });
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(meta().hasMore).toBe(false);
+    expect(meta().loadMoreError ?? null).toBeNull();
+  });
+
+  it("retrying clears the previous error as soon as the new attempt starts", async () => {
+    store.dispatch(setLoadMoreError({ contextId, value: "unreachable" }));
+    let finish!: (v: { reason: "all-eose" }) => void;
+    subscribeOnce.mockReturnValue(new Promise((r) => { finish = r; }));
+    loadMoreSpaceFeed(member(), "notes");
+    await settle();
+    expect(meta()).toMatchObject({ isLoadingMore: true, loadMoreError: null });
+    finish({ reason: "all-eose" });
+    await settle();
+  });
+
+  it("the friends feed gets the same treatment", async () => {
+    store.dispatch(setFollowList({ follows: ["f1"], createdAt: 5 }));
+    const friends = `${FRIENDS_FEED_ID}:notes`;
+    store.dispatch(trackFeedTimestamp({ contextId: friends, createdAt: 1000 }));
+    subscribeOnce.mockResolvedValue({ reason: "timeout", sentTo: 0 });
+    loadMoreFriendsFeed("notes");
+    await settle();
+    expect(subscribeOnce.mock.calls[0][0].priority).toBe(true);
+    expect(store.getState().feed.meta[friends]).toMatchObject({ isLoadingMore: false, loadMoreError: "unreachable" });
+  });
+});
+
+describe("groupSubscriptions — space hosts are pinned (never dropped as dead fan-out)", () => {
+  it("pins the host of the background chat sub", () => {
+    startBackgroundChatSubs([space("s1", "wss://relay-a"), space("s2", "wss://relay-b")]);
+    expect(pinRelay).toHaveBeenCalledWith("wss://relay-a");
+    expect(pinRelay).toHaveBeenCalledWith("wss://relay-b");
+  });
+
+  it("pins the relay a native space's metadata is read from", () => {
+    enterSpace("native-1", "wss://groups.example");
+    expect(pinRelay).toHaveBeenCalledWith("wss://groups.example");
+  });
+
+  it("pins the relays of the open chat channel", () => {
+    store.dispatch(resetAll());
+    switchSpaceChannel(space("s3", "wss://relay-c"), "chat");
+    expect(pinRelay).toHaveBeenCalledWith("wss://relay-c");
   });
 });

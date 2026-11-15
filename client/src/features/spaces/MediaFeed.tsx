@@ -912,6 +912,7 @@ export function MediaFeed() {
               isLoading={meta.isLoadingMore}
               hasMore={!hasMoreLocal && meta.hasMore}
               onLoadMore={loadMore}
+              error={meta.loadMoreError}
             />
           </>
         )}
