@@ -61,6 +61,7 @@ import { musicTokenCache } from "../cache/tokenCache";
 import { abandonMediaSessions } from "../webrtc/mediaSession";
 import { endMediaSessionsForAccountChange } from "../../features/calling/accountChangeMedia";
 import { loginState } from "./login/state";
+import { isMultiAccountSession, persistSessionAccount, type MultiAccountSession, type LegacySession } from "./login/sessionStore";
 import { subscribeFollowers } from "./login/followers";
 import { subscribeGiftWraps } from "./login/giftWrapSub";
 import { hydrateMusicFromCache, subscribeMusic } from "./login/music";
@@ -78,38 +79,6 @@ const idLog = createLogger("identity");
  *  dev, firing tryRestoreSession twice; without this guard two full logins race,
  *  doubling all subscriptions + IDB work. Concurrent callers share one promise. */
 let restoreInFlight: Promise<boolean> | null = null;
-
-/** Multi-account session format */
-interface MultiAccountSession {
-  accounts: AccountEntry[];
-  activePubkey: string;
-}
-
-/** Legacy session format (pre-multi-account) */
-interface LegacySession {
-  pubkey: string;
-  signerType: SignerType;
-}
-
-function isMultiAccountSession(s: unknown): s is MultiAccountSession {
-  return !!s && typeof s === "object" && "accounts" in s && Array.isArray((s as MultiAccountSession).accounts);
-}
-
-/** performLogin step 8: record this account in the multi-account session. */
-async function persistSessionAccount(pubkey: string, storeSignerType: SignerType): Promise<void> {
-  // Step 8: Persist multi-account session
-  const existingSession = await getUserState<MultiAccountSession>("session");
-  const accounts: AccountEntry[] = existingSession?.accounts ?? [];
-  const existingIdx = accounts.findIndex((a) => a.pubkey === pubkey);
-  const entry: AccountEntry = { pubkey, signerType: storeSignerType, addedAt: Date.now() };
-  if (existingIdx >= 0) {
-    accounts[existingIdx] = entry;
-  } else {
-    accounts.push(entry);
-  }
-  await saveUserState("session", { accounts, activePubkey: pubkey } satisfies MultiAccountSession);
-  store.dispatch(setAccounts(accounts));
-}
 
 /**
  * Full login flow.
