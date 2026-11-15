@@ -360,8 +360,15 @@ async function publishGrants(
     recipients,
   });
   for (const unsigned of grants) {
-    await signAndPublish(unsigned, targets.length ? targets : undefined);
+    const signed = await signAndPublish(unsigned, targets.length ? targets : undefined);
+    // Only once the grant is signed and handed to the relay layer: recording a
+    // holder before that would leave them without a key and never retried.
+    const header = readGrantHeader(signed);
+    if (header) {
+      store.dispatch(addEpochHolders({ spaceId: space.id, epochId: header.epochId, holders: header.recipients }));
+    }
   }
+  persist();
 }
 
 /** The managers an epoch issued now names: the root, the issuer, and the
@@ -411,8 +418,6 @@ export async function publishFirstEpoch(space: Space): Promise<void> {
   const current = sendEpochOf(space.id);
   if (!account || !current) throw new Error("This space's key isn't on this device.");
   const recipients = uniq([account, ...space.memberPubkeys]);
-  store.dispatch(addEpochHolders({ spaceId: space.id, epochId: current.info.id, holders: recipients }));
-  persist();
   await publishGrants(space, account, current.key, current.info, recipients);
 }
 
@@ -440,8 +445,6 @@ export async function rotateSpaceKey(spaceId: string, recipients: string[]): Pro
     grantedBy: account,
   };
   if (!(await adoptEpoch(account, spaceId, root, info, key, gen))) return;
-  store.dispatch(addEpochHolders({ spaceId, epochId: info.id, holders: to }));
-  persist();
   await publishGrants(space, account, key, info, to);
 }
 
@@ -454,10 +457,8 @@ export async function grantEpochs(spaceId: string, epochs: SpaceEpochInfo[], rec
   for (const info of epochs) {
     const key = getEpochKey(spaceId, info.id);
     if (!key) continue;
-    store.dispatch(addEpochHolders({ spaceId, epochId: info.id, holders: recipients }));
     await publishGrants(space, account, key, info, recipients);
   }
-  persist();
 }
 
 /** Forget a space's keys and its encrypted marker on this device. */

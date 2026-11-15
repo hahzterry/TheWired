@@ -85,7 +85,8 @@ beforeEach(async () => {
   vi.spyOn(subscriptionManager, "close").mockImplementation(() => undefined as never);
   store.dispatch(resetAll());
   resetEventPipelineCaches();
-  _resetKeyReconcile();
+  // The authority's roster, for these tests, is whatever the store holds now.
+  _resetKeyReconcile(async (sp) => store.getState().spaces.list.find((x) => x.id === sp.id)?.memberPubkeys ?? null);
   setActivePubkey(me);
   store.dispatch(login({ pubkey: me, signerType: "nip07" }));
   store.dispatch(setFeatureEnabled({ feature: FEATURE_E2EE_SPACES, enabled: true }));

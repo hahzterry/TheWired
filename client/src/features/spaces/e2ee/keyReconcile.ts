@@ -7,6 +7,7 @@
 import { compareEpochsForSend } from "@ishtarservices/core";
 import type { SpaceEpochInfo, SpaceHistoryPolicy } from "@ishtarservices/shared-types";
 import { store } from "@/store";
+import { fetchFreshRoster, type RosterSource } from "./freshRoster";
 import {
   grantEpochs,
   isSpaceE2eeEnabled,
@@ -46,9 +47,12 @@ export function epochsToGrant(policy: SpaceHistoryPolicy, held: readonly SpaceEp
   return policy === "full" ? newestFirst.reverse() : [newestFirst[0]];
 }
 
+let rosterSource: RosterSource = fetchFreshRoster;
+
 /** How long a just-removed member is kept off the roster this device acts on.
- *  The roster in the store lags a kick (a 39002 from the relay, or a backend
- *  refetch); without this the next pass would hand the new key straight back. */
+ *  The authority's roster can lag a kick by a moment (the relay has not
+ *  processed the 9001 yet); without this the next pass would hand the new key
+ *  straight back. */
 const REMOVED_TTL_MS = 10 * 60_000;
 /** spaceId -> pubkey -> when the exclusion lapses. */
 const recentlyRemoved = new Map<string, Map<string, number>>();
@@ -80,6 +84,10 @@ async function reconcileOnce(spaceId: string, opts?: ReconcileOptions): Promise<
   const current = sendEpochOf(spaceId);
   if (!current) return;
 
+  // Always the authority's roster as of now, never the store's cached copy.
+  const fresh = await rosterSource(space);
+  if (!fresh) return;
+
   const now = Date.now();
   if (opts?.exclude?.length) {
     let entries = recentlyRemoved.get(spaceId);
@@ -90,9 +98,10 @@ async function reconcileOnce(spaceId: string, opts?: ReconcileOptions): Promise<
     for (const pk of opts.exclude) if (pk !== me) entries.set(pk, now + REMOVED_TTL_MS);
   }
   const explicit = new Set(opts?.exclude ?? []);
-  const lagging = activeExclusions(spaceId, space.memberPubkeys, now);
-  const roster = space.memberPubkeys.filter((pk) => !explicit.has(pk) && !lagging.has(pk));
-  const holders = state.spaceE2ee.spaces[spaceId].holders[current.info.id] ?? [];
+  const lagging = activeExclusions(spaceId, fresh, now);
+  const roster = fresh.filter((pk) => !explicit.has(pk) && !lagging.has(pk));
+  // Read after the fetch: grants may have arrived meanwhile.
+  const holders = store.getState().spaceE2ee.spaces[spaceId]?.holders[current.info.id] ?? [];
   const plan = planKeyReconcile(roster, holders, me);
 
   if (plan.rotate) {
@@ -116,8 +125,10 @@ export function reconcileSpaceKeys(spaceId: string, opts?: ReconcileOptions): Pr
   return run;
 }
 
-/** Test-only: forget remembered removals and queued passes. */
-export function _resetKeyReconcile(): void {
+/** Test-only: forget remembered removals and queued passes, and optionally
+ *  replace where the roster comes from. */
+export function _resetKeyReconcile(source: RosterSource = fetchFreshRoster): void {
   recentlyRemoved.clear();
   chains.clear();
+  rosterSource = source;
 }

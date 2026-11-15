@@ -201,7 +201,8 @@ beforeEach(async () => {
   resetEventPipelineCaches();
   clearSpaceE2eeSession();
   clearSealedChatSession();
-  _resetKeyReconcile();
+  // The authority's roster, for these tests, is whatever the store holds now.
+  _resetKeyReconcile(async (sp) => store.getState().spaces.list.find((x) => x.id === sp.id)?.memberPubkeys ?? null);
   setActivePubkey(me.pubkey);
   store.dispatch(login({ pubkey: me.pubkey, signerType: "nip07" }));
   store.dispatch(setFeatureEnabled({ feature: FEATURE_E2EE_SPACES, enabled: true }));
@@ -499,6 +500,30 @@ describe("handing out keys and rotating (manager)", () => {
 
   it("does nothing on a roster that does not include this account, or when not a manager", async () => {
     setRoster([bob.pubkey, carol.pubkey]);
+    await reconcileSpaceKeys(SPACE);
+    expect(h.published).toHaveLength(0);
+  });
+
+  it("acts on the authority's roster, not the store's cached copy", async () => {
+    setRoster([me.pubkey, bob.pubkey, carol.pubkey]);
+    await reconcileSpaceKeys(SPACE);
+    await settle();
+    const seq = sendEpochOf(SPACE)!.info.seq;
+    h.published.length = 0;
+
+    // The store's copy is a session old and lists only this account. Acting
+    // on it would rotate Bob and Carol out. The authority still lists them.
+    setRoster([me.pubkey]);
+    _resetKeyReconcile(async () => [me.pubkey, bob.pubkey, carol.pubkey]);
+    await reconcileSpaceKeys(SPACE);
+    await settle();
+    expect(sendEpochOf(SPACE)!.info.seq).toBe(seq);
+    expect(h.published).toHaveLength(0);
+  });
+
+  it("does nothing when the authority's roster can't be fetched", async () => {
+    setRoster([me.pubkey, bob.pubkey]);
+    _resetKeyReconcile(async () => null);
     await reconcileSpaceKeys(SPACE);
     expect(h.published).toHaveLength(0);
   });
