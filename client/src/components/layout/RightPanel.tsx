@@ -3,11 +3,8 @@ import { cn } from "@/lib/utils";
 import { Users, Info, ListMusic, Music2, User, Link2, BrainCircuit, Shapes } from "lucide-react";
 import { MemberList } from "../../features/spaces/MemberList";
 import { SpaceInfoPanel } from "../../features/spaces/SpaceInfoPanel";
-import { QueueContent } from "../../features/music/QueueContent";
-import { NowPlayingDetail } from "../../features/music/NowPlayingDetail";
-import { DMContactPanel } from "../../features/dm/DMContactPanel";
-import { ProfileSidePanel } from "../../features/profile/ProfileSidePanel";
-import { SpacePreviewPanel } from "../../features/discover/SpacePreviewPanel";
+import { lazyView } from "@/components/ui/lazyView";
+import { PanelLoading } from "@/components/ui/LazyFallbacks";
 // Lazy: the artifacts panel pulls recharts (already split) + the markdown
 // renderer; load it only once the AI panel is actually shown.
 const ArtifactsPanel = lazyWithRetry(() =>
@@ -17,6 +14,31 @@ const ArtifactsPanel = lazyWithRetry(() =>
 );
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
+
+// The space tabs are what the panel opens on, so they ship with the shell.
+// Every other context loads with the section it belongs to. Each sits in a
+// `PanelTab` boundary, which is what a failed load falls back to.
+const tabLoading = <PanelLoading className="py-10" />;
+const QueueContent = lazyView(
+  () => import("../../features/music/QueueContent").then((m) => ({ default: m.QueueContent })),
+  tabLoading,
+);
+const NowPlayingDetail = lazyView(
+  () => import("../../features/music/NowPlayingDetail").then((m) => ({ default: m.NowPlayingDetail })),
+  tabLoading,
+);
+const DMContactPanel = lazyView(
+  () => import("../../features/dm/DMContactPanel").then((m) => ({ default: m.DMContactPanel })),
+  tabLoading,
+);
+const ProfileSidePanel = lazyView(
+  () => import("../../features/profile/ProfileSidePanel").then((m) => ({ default: m.ProfileSidePanel })),
+  tabLoading,
+);
+const SpacePreviewPanel = lazyView(
+  () => import("../../features/discover/SpacePreviewPanel").then((m) => ({ default: m.SpacePreviewPanel })),
+  tabLoading,
+);
 import { useResizeHandle } from "./useResizeHandle";
 import { useRightPanelContext } from "./useRightPanelContext";
 import { RightPanelTabBar } from "./RightPanelTabBar";

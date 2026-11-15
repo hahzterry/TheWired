@@ -60,6 +60,14 @@ import {
   onAbandonMediaSessions,
 } from "./mediaSession";
 
+import {
+  addRoomListener,
+  notifyTopology,
+  onTrackTopologyChanged,
+  roomListeners,
+  type RoomListener,
+} from "./roomEvents";
+
 const log = createLogger("call");
 const e2eeLog = createLogger("e2ee");
 import {
@@ -98,29 +106,10 @@ const ENCRYPTION_ERROR_DEBOUNCE_MS = 5000;
  *  hide a permanently wrong key for the whole first minute. */
 const ENCRYPTION_ERROR_JOIN_GRACE_MS = 8000;
 
-/**
- * Coarse room lifecycle hooks for feature code that must react to the
- * shared room (the 1:1 call service watches for its partner joining /
- * leaving). Keeps callService out of this module's imports.
- */
-export interface RoomListener {
-  onParticipantConnected?(identity: string): void;
-  onParticipantDisconnected?(identity: string): void;
-  /** `clientInitiated` = our own disconnect() (hangup, room switch). */
-  onDisconnected?(reason: DisconnectReason | undefined, clientInitiated: boolean): void;
-  /** A REMOTE participant's tracks are (not) end-to-end encrypted. `false`
-   *  in an encrypted room means their client doesn't encrypt (outdated). */
-  onParticipantEncryption?(identity: string, encrypted: boolean): void;
-}
-
-const roomListeners = new Set<RoomListener>();
-
-export function addRoomListener(listener: RoomListener): () => void {
-  roomListeners.add(listener);
-  return () => {
-    roomListeners.delete(listener);
-  };
-}
+// The listener registries live in `roomEvents.ts` (no SDK import) so feature
+// code can subscribe before this module has been loaded. Re-exported here for
+// callers that already hold the room module.
+export { addRoomListener, onTrackTopologyChanged, type RoomListener };
 
 /** Get the current LiveKit room (or null if not connected) */
 export function getLivekitRoom(): Room | null {
@@ -842,31 +831,6 @@ const TOPOLOGY_EVENTS = [
   RoomEvent.TrackMuted,
   RoomEvent.TrackUnmuted,
 ] as const;
-
-/** Everyone who resolves tracks (video tiles). Deliberately not bound to one
- *  Room: see `onTrackTopologyChanged`. */
-const topologyListeners = new Set<() => void>();
-
-function notifyTopology(): void {
-  for (const cb of [...topologyListeners]) cb();
-}
-
-/**
- * Fires whenever a track may have changed: (un)published, (un)subscribed,
- * (un)muted, and when the room itself comes up or goes away.
- *
- * Subscriptions outlive any single Room. They used to be bound to whatever
- * room existed at subscribe time, and did nothing if there was none — but a
- * 1:1 call renders its tiles the moment the call starts, before the room is
- * connected, so the self-view never learned its camera had been published
- * and stayed black for the whole call.
- */
-export function onTrackTopologyChanged(cb: () => void): () => void {
-  topologyListeners.add(cb);
-  return () => {
-    topologyListeners.delete(cb);
-  };
-}
 
 /**
  * The microphone track LiveKit is currently publishing, wrapped in a

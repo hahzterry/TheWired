@@ -14,8 +14,8 @@ import {
   setMicrophoneEnabled,
   setCameraEnabled,
   setScreenShareEnabled,
-} from "@/lib/webrtc/livekitClient";
-import { e2eeSupported, E2EEUnsupportedError } from "@/lib/webrtc/e2ee/session";
+} from "@/lib/webrtc/livekit";
+import { e2eeSupported, E2EEUnsupportedError } from "@/lib/webrtc/e2ee/support";
 import { E2EE_REQUIRED_CODE } from "@/lib/api/voice";
 import { setRemoteAudioOutputMuted } from "@/lib/webrtc/remoteAudio";
 import { describeMediaError } from "@/lib/webrtc/mediaDevices";

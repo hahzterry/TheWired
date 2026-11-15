@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import Hls from "hls.js";
+import { attachVideoSource } from "@/lib/media/hls";
 import {
   Play,
   Pause,
@@ -48,7 +48,6 @@ export function EnhancedVideoPlayer({
 }: EnhancedVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
   const hideControlsTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const [playing, setPlaying] = useState(false);
@@ -72,23 +71,7 @@ export function EnhancedVideoPlayer({
 
     const isHls = src.endsWith(".m3u8") || src.includes("m3u8");
 
-    if (isHls && Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
-      hlsRef.current = hls;
-      hls.loadSource(src);
-      hls.attachMedia(video);
-    } else if (isHls && video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = src;
-    } else {
-      video.src = src;
-    }
-
-    return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-    };
+    return attachVideoSource(video, src, { isHls });
   }, [src]);
 
   // Sync playback rate

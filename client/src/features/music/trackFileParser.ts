@@ -1,5 +1,3 @@
-import { parseBlob } from "music-metadata";
-
 /** Embedded cover art extracted from audio file metadata */
 export interface EmbeddedCoverArt {
   /** Object URL for preview display (must be revoked when done) */
@@ -161,6 +159,8 @@ export async function readAudioMetadata(file: File): Promise<{
   coverArt?: EmbeddedCoverArt | null;
 }> {
   try {
+    // The tag parsers are large and only needed once a file has been picked.
+    const { parseBlob } = await import("music-metadata");
     const metadata = await parseBlob(file, { duration: true });
     const common = metadata.common;
     return {

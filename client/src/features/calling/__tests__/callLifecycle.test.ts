@@ -46,7 +46,7 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock("@/lib/webrtc/e2ee/session", () => ({
+vi.mock("@/lib/webrtc/e2ee/support", () => ({
   e2eeSupported: () => h.e2eeSupported,
   E2EEUnsupportedError: class E2EEUnsupportedError extends Error {
     constructor() {
@@ -55,7 +55,7 @@ vi.mock("@/lib/webrtc/e2ee/session", () => ({
     }
   },
 }));
-vi.mock("@/lib/webrtc/livekitClient", () => ({
+vi.mock("@/lib/webrtc/livekit", () => ({
   connectToRoom: (...a: [string, string, unknown]) => h.connectRoom(...a),
   disconnectFromRoom: () => h.disconnectRoom(),
   setMicrophoneEnabled: (e: boolean) => h.micEnabled(e),

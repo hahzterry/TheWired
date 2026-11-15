@@ -32,6 +32,12 @@ const callService = vi.hoisted(() => ({
   initiateCall: vi.fn().mockResolvedValue(undefined),
 }));
 
+/** Lazy-chunk wiring: the audio engine hook and the media SDK preload. */
+const lazyWiring = vi.hoisted(() => ({
+  useAudioPlayer: vi.fn(() => ({})),
+  livekitPreload: vi.fn(),
+}));
+
 function stub(testId: string, flag?: keyof typeof boom) {
   return function Stub() {
     if (flag && boom[flag]) throw new Error(`${testId} exploded`);
@@ -110,11 +116,14 @@ vi.mock("@/features/calling/callService", () => callService);
 vi.mock("@/features/calling/callRingtone", () => ({ startRinging: vi.fn(), stopRinging: vi.fn() }));
 vi.mock("@/features/calling/CallNotice", () => ({ CallNotice: stub("call-notice") }));
 vi.mock("@/features/voice/ScreenSharePill", () => ({ ScreenSharePill: stub("screen-share") }));
+vi.mock("@/features/music/useAudioPlayer", () => ({ useAudioPlayer: lazyWiring.useAudioPlayer }));
+vi.mock("@/lib/webrtc/livekit", () => ({ livekitPreload: { preload: lazyWiring.livekitPreload } }));
 vi.mock("@/hooks/useExternalLinkHandler", () => ({ useExternalLinkHandler: () => {} }));
 vi.mock("@/hooks/useCallShortcuts", () => ({ useCallShortcuts: () => {} }));
 
 import { Layout } from "../Layout";
 import { BoundaryResetProvider } from "../BoundaryResetProvider";
+import { setLazyImportsFailingForTests } from "@/lib/lazyWithRetry";
 
 function FeedPage() {
   if (boom.page) throw new Error("feed page exploded");
@@ -288,13 +297,14 @@ describe("Layout error containment", () => {
     expect(screen.getByTestId("voice-status")).toBeInTheDocument();
   });
 
-  it("a throwing call view leaves the user able to end the call", () => {
+  it("a throwing call view leaves the user able to end the call", async () => {
     boom.call = true;
     const store = storeWithCall({ activeCall: ACTIVE_CALL });
     renderShell(store);
 
     // The call is still connected; its controls must not vanish with its UI.
-    const fallback = screen.getByRole("alert");
+    // (The call view is a lazy chunk, so it throws one tick after mount.)
+    const fallback = await screen.findByRole("alert");
     expect(fallback).toHaveAttribute("data-boundary-fallback", "call");
     expect(fallback).toHaveTextContent("You are still connected.");
     for (const id of ["space-list", "notification-bell", "feed-page"]) {
@@ -310,12 +320,12 @@ describe("Layout error containment", () => {
     expect(fallbackFor("overlay:call")).toHaveLength(1);
   });
 
-  it("the call view comes back on Show call once it can render", () => {
+  it("the call view comes back on Show call once it can render", async () => {
     boom.call = true;
     renderShell(storeWithCall({ activeCall: ACTIVE_CALL }));
     boom.call = false;
-    fireEvent.click(screen.getByRole("button", { name: /show call/i }));
-    expect(screen.getByTestId("call")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /show call/i }));
+    expect(await screen.findByTestId("call")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -330,5 +340,107 @@ describe("Layout error containment", () => {
     fireEvent.click(within(fallback).getByRole("button", { name: "Decline" }));
     expect(callService.rejectCall).toHaveBeenCalledTimes(1);
     expect(fallbackFor("overlay:incoming-call")).toHaveLength(1);
+  });
+});
+
+/**
+ * The shell's lazy chunks: sidebar bodies per mode, the playback bar and the
+ * call view. Order matters in here: a lazy component is a module singleton, so
+ * a chunk's failure is exercised before its first successful load.
+ */
+describe("Layout lazy chunks", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(boom) as Array<keyof typeof boom>) boom[key] = false;
+    vi.clearAllMocks();
+    localStorage.clear();
+    resetCrashLogForTests();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    setLazyImportsFailingForTests(false);
+    vi.restoreAllMocks();
+  });
+
+  function storeInMode(sidebarMode: "music" | "messages") {
+    const base = createTestStore().getState();
+    return createTestStore({ ui: { ...base.ui, sidebarMode } });
+  }
+
+  it("a sidebar chunk that fails to load keeps the mode switcher, and recovers on Try again", async () => {
+    setLazyImportsFailingForTests(true);
+    renderShell(storeInMode("messages"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This part of the app didn't load");
+    expect(within(alert).getByRole("button", { name: "Reload app" })).toBeInTheDocument();
+    expect(fallbackFor("panel:sidebar.messages")).toHaveLength(1);
+    expect(fallbackFor("panel:sidebar")).toHaveLength(0);
+    // Everything around it is intact: mode buttons, footer, page, right panel.
+    for (const title of ["Spaces", "Music", "Messages"]) {
+      expect(screen.getByTitle(title)).toBeInTheDocument();
+    }
+    for (const id of ["voice-status", "feed-page", "member-list"]) {
+      expect(screen.getByTestId(id)).toBeInTheDocument();
+    }
+
+    setLazyImportsFailingForTests(false);
+    fireEvent.click(within(alert).getByRole("button", { name: /try again/i }));
+
+    expect(await screen.findByTestId("dm-sidebar")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("the music sidebar loads with its mode, holding the slot meanwhile", async () => {
+    const { container } = renderShell(storeInMode("music"));
+
+    expect(screen.queryByTestId("music-sidebar")).toBeNull();
+    expect(container.querySelector('[data-lazy-fallback="panel"]')).not.toBeNull();
+
+    expect(await screen.findByTestId("music-sidebar")).toBeInTheDocument();
+    expect(container.querySelector("[data-lazy-fallback]")).toBeNull();
+    expect(screen.queryByTestId("space-list")).toBeNull();
+  });
+
+  it("hovering or focusing a mode button starts loading that section", () => {
+    renderShell();
+    // Spreading the intent handlers must not break the buttons themselves.
+    fireEvent.pointerEnter(screen.getByTitle("Music"));
+    fireEvent.focus(screen.getByTitle("Messages"));
+    expect(screen.getByTestId("space-list")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("with a track playing, the audio engine runs at once and the bar arrives as a lazy overlay", async () => {
+    const base = createTestStore().getState();
+    const store = createTestStore({
+      music: { ...base.music, player: { ...base.music.player, currentTrackId: "31683:pk:track" } },
+    });
+    renderShell(store);
+
+    // Playback must not wait for the bar's chunk: the engine hook is already
+    // mounted on the first render, before the bar exists.
+    expect(lazyWiring.useAudioPlayer).toHaveBeenCalled();
+    expect(screen.queryByTestId("playback-bar")).toBeNull();
+
+    expect(await screen.findByTestId("playback-bar")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("without a track there is no audio engine and no bar", () => {
+    renderShell();
+    expect(lazyWiring.useAudioPlayer).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("playback-bar")).toBeNull();
+  });
+
+  it("an incoming call warms the media SDK before it is answered", () => {
+    renderShell();
+    expect(lazyWiring.livekitPreload).not.toHaveBeenCalled();
+
+    renderShell(
+      storeWithCall({ incomingCall: { callerPubkey: "b".repeat(64), callType: "audio", roomId: "room-1" } }),
+    );
+    expect(lazyWiring.livekitPreload).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("incoming")).toHaveLength(1);
   });
 });

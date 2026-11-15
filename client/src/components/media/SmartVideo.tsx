@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import Hls from "hls.js";
+import { attachVideoSource } from "@/lib/media/hls";
 import { Download, Gauge, Play } from "lucide-react";
 import { usePlaybackSpeed, VALID_SPEEDS } from "@/hooks/usePlaybackSpeed";
 import { downloadMedia } from "../ui/MediaLightbox";
@@ -71,7 +71,6 @@ export const SmartVideo = memo(function SmartVideo({
   const media = useMediaFallback(url, { fallbacks, author, gated });
   const src = media.src;
   const onMediaError = media.onError;
-  const hlsRef = useRef<Hls | null>(null);
   const [playbackRate, setPlaybackRate] = usePlaybackSpeed();
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const { aspect, natural, onLoad } = useMediaOrientation(dim, url);
@@ -103,25 +102,9 @@ export const SmartVideo = memo(function SmartVideo({
     const video = videoRef.current;
     if (!video || !src) return;
 
-    if (isHlsUrl(src) && Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
-      hlsRef.current = hls;
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) onMediaError();
-      });
-      hls.loadSource(src);
-      hls.attachMedia(video);
-    } else {
-      // Native MP4/WebM, or native HLS (Safari/WebKit)
-      video.src = src;
-    }
-
-    return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-    };
+    // hls.js for `.m3u8` where it is needed; native MP4/WebM and native HLS
+    // (Safari/WebKit) go straight to the element.
+    return attachVideoSource(video, src, { isHls: isHlsUrl(src), onFatalError: onMediaError });
   }, [src, onMediaError]);
 
   useEffect(() => {

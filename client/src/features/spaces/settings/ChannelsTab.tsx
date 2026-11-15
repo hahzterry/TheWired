@@ -19,7 +19,7 @@ import { CreateChannelModal } from "../CreateChannelModal";
 import { EditChannelModal } from "../EditChannelModal";
 import { CategoryModal } from "../CategoryModal";
 import { ChannelOverridesPanel } from "./ChannelOverridesPanel";
-import { ChannelTreeDnd, type DragHandle } from "../ChannelTreeDnd";
+import { ChannelTreeView, type DragHandle } from "../ChannelTreeView";
 import { moveCategory, moveChannel, removeCategory, renameCategory, MAX_CATEGORY_NAME_LENGTH, type CategoryNode } from "../channelTree";
 import { NATIVE_DEFAULT_CHAT_ID } from "../channelLayout";
 import type { SpaceChannel } from "../../../types/space";
@@ -106,7 +106,7 @@ export function ChannelsTab({ spaceId }: ChannelsTabProps) {
       )}
 
       <div className="space-y-1">
-        <ChannelTreeDnd
+        <ChannelTreeView
           tree={tree}
           enabled={layoutManageable}
           keyboard

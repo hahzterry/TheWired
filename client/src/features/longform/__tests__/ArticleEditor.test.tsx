@@ -185,14 +185,15 @@ describe("ArticleEditor — publishing", () => {
     await waitFor(async () => expect(await getDraftsForAccount(PK)).toHaveLength(0));
   });
 
-  it("renders a live preview of typed markdown", () => {
+  it("renders a live preview of typed markdown", async () => {
     renderEditor();
     fireEvent.click(screen.getByTitle("Markdown"));
     fireEvent.change(screen.getByPlaceholderText(/Write your article here/i), {
       target: { value: "# Heading\n\n**bold**" },
     });
     fireEvent.click(screen.getByTitle("Preview"));
-    expect(screen.getByText("Heading").tagName.toLowerCase()).toBe("h1");
+    // The markdown renderer is its own chunk; a skeleton holds the body first.
+    expect((await screen.findByText("Heading")).tagName.toLowerCase()).toBe("h1");
     expect(screen.getByText("bold").tagName.toLowerCase()).toBe("strong");
   });
 
