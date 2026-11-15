@@ -3,19 +3,19 @@ import { EVENT_KINDS } from "../../types/nostr";
 import { EventDeduplicator } from "./dedup";
 import { registerForgetSeen } from "./forgetSeen";
 import { inModGroup, verifySpaceModAuthority } from "./mutationAuthority";
-import { trackPendingDeletion, clearPendingDeletion } from "../../store/slices/eventsSlice";
+import { clearPendingDeletion } from "../../store/slices/eventsSlice";
 import { isValidEventStructure } from "./validation";
 import { verifyBridge } from "./verifyWorkerBridge";
 import { store } from "../../store";
 import type { AppDispatch } from "../../store";
 import { putEvent, deleteEvent, deleteAddressableEvent } from "../db/eventStore";
-import { addEvent, indexChatMessage, indexReel, indexLongForm, indexLiveStream, indexNote, indexMusicTrack, indexMusicAlbum, indexReply, indexRepost, indexRepostByAuthor, indexQuote, removeChatMessage, hideMessage, removeEvent, removeNote, removeRepost, trackDeletedNote, trackDeletedAddr, indexEditedMessage } from "../../store/slices/eventsSlice";
-import { addReaction, removeReactionByEventId } from "../../store/slices/reactionsSlice";
+import { addEvent, indexChatMessage, indexReel, indexLongForm, indexLiveStream, indexNote, indexMusicTrack, indexMusicAlbum, indexReply, indexRepost, indexRepostByAuthor, indexQuote, removeChatMessage, hideMessage, removeEvent, trackDeletedNote, indexEditedMessage } from "../../store/slices/eventsSlice";
+import { addReaction } from "../../store/slices/reactionsSlice";
 import { addZap } from "../../store/slices/zapsSlice";
-import { addPollVote, removeVoteByEventId, removePoll } from "../../store/slices/pollsSlice";
+import { addPollVote, removePoll } from "../../store/slices/pollsSlice";
 import { validateReceiptShape } from "../lightning/zapReceipt";
 import { notifyMusicUpdate } from "../../features/music/savedVersionSync";
-import { addTrack, indexTrackByArtist, indexTrackByAlbum, indexTrackByArtistName, indexAlbumByArtist, indexAlbumByArtistName, addAlbum, addPlaylist, addAnnotation, removeAnnotation, removeTrack, removeAlbum, removePlaylist, recordMovedRelease, libraryReleaseMoved } from "../../store/slices/musicSlice";
+import { addTrack, indexTrackByArtist, indexTrackByAlbum, indexTrackByArtistName, indexAlbumByArtist, indexAlbumByArtistName, addAlbum, addPlaylist, addAnnotation, removeTrack, removeAlbum, recordMovedRelease, libraryReleaseMoved } from "../../store/slices/musicSlice";
 import { parseTrackEvent, parsePrivateTrackEvent } from "../../features/music/trackParser";
 import { parseAlbumEvent, parsePrivateAlbumEvent } from "../../features/music/albumParser";
 import { parsePlaylistEvent } from "../../features/music/playlistParser";
@@ -46,6 +46,7 @@ import { createSpaceFeedIndexer } from "./pipeline/spaceFeeds";
 import { createCallWrapHandlers } from "./pipeline/callWraps";
 import { createFriendWrapHandlers } from "./pipeline/friendWraps";
 import { createGiftWrapHandler } from "./pipeline/giftWrapHandler";
+import { createDeletionIndexer } from "./pipeline/deletionIndex";
 
 export type { EventPipelineDeps };
 export { computeSweep };
@@ -90,6 +91,7 @@ const { emit, isBurstSource, scheduleFlush, flushEventPipeline, resetEventPipeli
 const { indexEventIntoSpaceFeeds } = createSpaceFeedIndexer(ctx, batching);
 const { handleCallInviteWrap, handleCallDeclineWrap, handleCallMissedWrap } = createCallWrapHandlers(ctx);
 const { handleFriendRequestWrap, handleFriendAcceptWrap, handleFriendRemoveWrap } = createFriendWrapHandlers(ctx);
+const { indexDeletion } = createDeletionIndexer(ctx, batching);
 const { handleGiftWrap } = createGiftWrapHandler(ctx, {
   handleFriendRequestWrap,
   handleFriendAcceptWrap,
@@ -559,117 +561,7 @@ async function indexEvent(event: NostrEvent, relayUrl: string): Promise<void> {
       break;
     }
     case EVENT_KINDS.DELETION: {
-      // NIP-09: Process deletion events -- remove referenced content.
-      // Only process deletions from the same author (can't delete others' content).
-      // Crucially, a deletion only applies to events created BEFORE the deletion.
-      // Re-published addressable events (same kind:pubkey:d-tag but newer created_at)
-      // supersede the deletion and must NOT be removed.
-      // Apply any buffered adds first so same-burst deletion targets resolve.
-      flushEventPipeline();
-      const state = getState();
-      for (const tag of event.tags) {
-        if (tag[0] === "a" && tag[1]) {
-          const addr = tag[1];
-          const [kindStr, addrPubkey] = addr.split(":");
-          if (addrPubkey !== event.pubkey) continue;
-          const kind = parseInt(kindStr, 10);
-          const addrDTag = addr.split(":").slice(2).join(":");
-
-          // Track this deletion so future re-deliveries from external relays are blocked
-          dispatch(trackDeletedAddr({ addr, deletedAt: event.created_at }));
-
-          if (kind === EVENT_KINDS.MUSIC_TRACK) {
-            const track = state.music.tracks[addr];
-            if (track && track.createdAt <= event.created_at) {
-              deps.persistence.deleteAddressableEvent(kind, addrPubkey, addrDTag).catch(() => {});
-              dispatch(removeTrack(addr));
-            }
-          } else if (kind === EVENT_KINDS.MUSIC_ALBUM) {
-            const album = state.music.albums[addr];
-            if (album && album.createdAt <= event.created_at) {
-              deps.persistence.deleteAddressableEvent(kind, addrPubkey, addrDTag).catch(() => {});
-              dispatch(removeAlbum(addr));
-            }
-          } else if (kind === EVENT_KINDS.MUSIC_PLAYLIST) {
-            const playlist = state.music.playlists[addr];
-            if (playlist && playlist.createdAt <= event.created_at) {
-              deps.persistence.deleteAddressableEvent(kind, addrPubkey, addrDTag).catch(() => {});
-              dispatch(removePlaylist(addr));
-            }
-          } else if (kind === EVENT_KINDS.MUSIC_TRACK_NOTES) {
-            for (const [targetRef, anns] of Object.entries(state.music.annotations)) {
-              const match = anns.find((a) => a.addressableId === addr);
-              if (match && match.createdAt <= event.created_at) {
-                dispatch(removeAnnotation({ targetRef, addressableId: addr }));
-                break;
-              }
-            }
-          }
-        }
-        // Handle "e" tag deletions (by event ID) — only if the referenced
-        // event is authored by the deletion event's author.
-        if (tag[0] === "e" && tag[1]) {
-          // Reactions and poll votes aren't stored as entities — clear them
-          // from their aggregates via the reverse index (no-op for other ids).
-          dispatch(removeReactionByEventId({ eventId: tag[1], byPubkey: event.pubkey }));
-          dispatch(removeVoteByEventId({ eventId: tag[1], byPubkey: event.pubkey }));
-          const refEvent = state.events.entities[tag[1]];
-          if (refEvent) {
-            // Target known — apply NIP-09 directly: only the author may delete it.
-            if (refEvent.pubkey === event.pubkey) {
-              // Safety: don't let "e" tag deletions cascade to addressable music
-              // events. Those must ONLY be deleted via "a" tags (handled above)
-              // to properly respect the created_at supersedence rule.
-              const isAddressableEvent = refEvent.kind >= 30000 && refEvent.kind < 40000;
-              if (!isAddressableEvent) {
-                deps.persistence.deleteEvent(tag[1]).catch(() => {});
-              }
-              if (refEvent.kind === EVENT_KINDS.CHAT_MESSAGE) {
-                const refHTag = refEvent.tags.find((t) => t[0] === "h")?.[1];
-                if (refHTag) {
-                  const refChannelTag = refEvent.tags.find((t) => t[0] === "channel")?.[1];
-                  const contextId = refChannelTag ? `${refHTag}:${refChannelTag}` : refHTag;
-                  dispatch(removeChatMessage({ contextId, eventId: tag[1] }));
-                }
-                dispatch(hideMessage(tag[1]));
-                dispatch(removeEvent(tag[1]));
-              } else if (refEvent.kind === EVENT_KINDS.POLL) {
-                const refHTag = refEvent.tags.find((t) => t[0] === "h")?.[1];
-                if (refHTag) {
-                  // Chat-scoped poll: remove from the chat timeline
-                  const refChannelTag = refEvent.tags.find((t) => t[0] === "channel")?.[1];
-                  const contextId = refChannelTag ? `${refHTag}:${refChannelTag}` : refHTag;
-                  dispatch(removeChatMessage({ contextId, eventId: tag[1] }));
-                  dispatch(hideMessage(tag[1]));
-                } else {
-                  // Posts-side poll: remove from notes surfaces
-                  dispatch(removeNote({ pubkey: event.pubkey, eventId: tag[1] }));
-                }
-                dispatch(removeEvent(tag[1]));
-                dispatch(trackDeletedNote(tag[1]));
-                dispatch(removePoll(tag[1]));
-              } else if (refEvent.kind === EVENT_KINDS.SHORT_TEXT) {
-                dispatch(removeNote({ pubkey: event.pubkey, eventId: tag[1] }));
-                dispatch(removeEvent(tag[1]));
-                dispatch(trackDeletedNote(tag[1]));
-              } else if (refEvent.kind === EVENT_KINDS.REPOST) {
-                dispatch(removeRepost({ pubkey: event.pubkey, eventId: tag[1] }));
-                dispatch(removeEvent(tag[1]));
-                dispatch(trackDeletedNote(tag[1]));
-              }
-            }
-            // else: a non-author asked to delete a known event — ignore it.
-          } else {
-            // Target not in the store yet. Record the request as PENDING instead of
-            // suppressing on faith — it is applied only if the target, when it
-            // arrives, was actually authored by this deleter (#21). Do NOT delete
-            // from IndexedDB here.
-            dispatch(trackPendingDeletion({ eventId: tag[1], deleter: event.pubkey }));
-          }
-        }
-      }
-      // Persist the deletion event itself so we can check on next startup
-      deps.persistence.putEvent(event).catch(() => {});
+      indexDeletion(event);
       break;
     }
     case EVENT_KINDS.EMOJI_SET: {
