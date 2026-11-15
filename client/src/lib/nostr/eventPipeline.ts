@@ -1,4 +1,22 @@
-import { EventDeduplicator } from "./dedup";
+/**
+ * Event pipeline: entry point and default instance.
+ *
+ * The pipeline itself lives in `./pipeline/`:
+ *   createEventPipeline.ts  builds one pipeline from its stages (the factory)
+ *   types.ts                EventPipelineDeps (injected platform couplings), PipelineContext
+ *   ingest.ts               processIncomingEvent: validate → dedup → verify → dispatch → index → notify → flush
+ *   batching.ts             burst buffer, flush timer, entity sweep, cache reset
+ *   sweep.ts                computeSweep (pure eviction choice)
+ *   indexEvent.ts           indexEvent: THE kind switch — a new kind gets its `case` there
+ *   deletionIndex.ts        kind:5 case      modDeleteIndex.ts  kind:9005 case
+ *   spaceFeeds.ts           author-scoped space / friends feed indexing
+ *   giftWrapHandler.ts      kind:1059: decrypt, validate, route the rumor
+ *   friendWraps.ts          friend-request rumors   callWraps.ts  call-signalling rumors
+ *
+ * Import the pipeline from this file, not from `./pipeline/*`: this module
+ * creates the one instance the app shares.
+ */
+import "./pipeline/evaluationOrder";
 import { registerForgetSeen } from "./forgetSeen";
 import { verifyBridge } from "./verifyWorkerBridge";
 import { store } from "../../store";
@@ -6,72 +24,12 @@ import type { AppDispatch } from "../../store";
 import { putEvent, deleteEvent, deleteAddressableEvent } from "../db/eventStore";
 import { profileCache } from "./profileCache";
 import { decryptQueue } from "./decryptQueue";
-import type { EventPipelineDeps, PipelineContext } from "./pipeline/types";
-import { computeSweep } from "./pipeline/sweep";
-import { createBatching } from "./pipeline/batching";
-import { createSpaceFeedIndexer } from "./pipeline/spaceFeeds";
-import { createCallWrapHandlers } from "./pipeline/callWraps";
-import { createFriendWrapHandlers } from "./pipeline/friendWraps";
-import { createGiftWrapHandler } from "./pipeline/giftWrapHandler";
-import { createDeletionIndexer } from "./pipeline/deletionIndex";
-import { createModDeleteIndexer } from "./pipeline/modDeleteIndex";
-import { createEventIndexer } from "./pipeline/indexEvent";
-import { createIngest } from "./pipeline/ingest";
+import { createEventPipeline } from "./pipeline/createEventPipeline";
 
-export type { EventPipelineDeps };
-export { computeSweep };
-
-
-
-// ── Dependency inversion (Phase 0, guide 01 §4) ──────────────────────────────
-// The pipeline's logic is pure and portable; its platform couplings (Redux
-// store, Web Worker verifier, IndexedDB persistence, profile cache, decrypt
-// queue) are injected here. The desktop wires its existing singletons into a
-// default instance below — behavior-identical to the old module-level form.
-
-export type EventPipeline = ReturnType<typeof createEventPipeline>;
-
-export function createEventPipeline(deps: EventPipelineDeps) {
-  const { dispatch, getState } = deps;
-
-const dedup = new EventDeduplicator();
-
-// Cached Set for space author lookups (O(1) instead of O(n) per check)
-const authorSetCache = new Map<string, { set: Set<string>; fingerprint: string }>();
-const ctx: PipelineContext = { deps, dispatch, getState, dedup, authorSetCache };
-
-const batching = createBatching(ctx);
-const { flushEventPipeline, resetEventPipelineCaches, forgetSeenEvents, __sweepForTest } = batching;
-const { indexEventIntoSpaceFeeds } = createSpaceFeedIndexer(ctx, batching);
-const { handleCallInviteWrap, handleCallDeclineWrap, handleCallMissedWrap } = createCallWrapHandlers(ctx);
-const { handleFriendRequestWrap, handleFriendAcceptWrap, handleFriendRemoveWrap } = createFriendWrapHandlers(ctx);
-const { indexDeletion } = createDeletionIndexer(ctx, batching);
-const { indexModDelete } = createModDeleteIndexer(ctx, batching);
-const { indexEvent } = createEventIndexer(ctx, batching, { indexEventIntoSpaceFeeds, indexDeletion, indexModDelete });
-const { processIncomingEvent } = createIngest(ctx, batching, { indexEvent });
-const { handleGiftWrap } = createGiftWrapHandler(ctx, {
-  handleFriendRequestWrap,
-  handleFriendAcceptWrap,
-  handleFriendRemoveWrap,
-  handleCallInviteWrap,
-  handleCallDeclineWrap,
-  handleCallMissedWrap,
-});
-
-
-// The decrypt queue defers gift-wrap handling with bounded concurrency; wire the
-// real handler once (function declaration is hoisted, so this is safe here).
-deps.decryptQueue.setHandler(handleGiftWrap);
-
-
-  return {
-    processIncomingEvent,
-    flushEventPipeline,
-    resetEventPipelineCaches,
-    forgetSeenEvents,
-    __sweepForTest,
-  };
-}
+export { createEventPipeline };
+export type { EventPipeline } from "./pipeline/createEventPipeline";
+export type { EventPipelineDeps } from "./pipeline/types";
+export { computeSweep } from "./pipeline/sweep";
 
 // ── Default desktop instance ─────────────────────────────────────────────────
 // Wired with the app's existing singletons. The dispatch/getState arrows are
