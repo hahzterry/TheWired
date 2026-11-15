@@ -396,6 +396,9 @@ export async function prepareFirstEpoch(space: Space, history: SpaceHistoryPolic
   if (!(await adoptEpoch(account, space.id, account, info, key, gen))) {
     throw new Error("The account changed while the space was being set up.");
   }
+  // The creator holds the key from this moment, whatever happens to the grant.
+  store.dispatch(addEpochHolders({ spaceId: space.id, epochId: info.id, holders: [account] }));
+  persist();
 }
 
 /**

@@ -335,9 +335,10 @@ describe("sending and receiving", () => {
   it("drops a tampered sealed event and one member re-posting another's ciphertext", async () => {
     const key = sendEpochOf(SPACE)!.key;
     const real = sealedFrom(bob, key, "authentic");
-    const bytes = Buffer.from(real.content, "base64");
-    bytes[bytes.length - 40] ^= 1;
-    await processIncomingEvent({ ...real, id: "1".repeat(64), content: bytes.toString("base64") }, HOST);
+    // Flip one bit in the middle of the base64 payload.
+    const i = Math.floor(real.content.length / 2);
+    const flipped = real.content.slice(0, i) + (real.content[i] === "A" ? "B" : "A") + real.content.slice(i + 1);
+    await processIncomingEvent({ ...real, id: "1".repeat(64), content: flipped }, HOST);
     const stolen = finalizeEvent(
       { kind: real.kind, created_at: real.created_at, tags: real.tags, content: real.content } as never,
       carol.sk,

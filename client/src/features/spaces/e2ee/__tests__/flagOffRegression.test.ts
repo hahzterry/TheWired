@@ -242,12 +242,60 @@ describe("feature on: subscriptions", () => {
   });
 
   function filters(): Array<Record<string, unknown>> {
-    return subscribe.mock.calls.flatMap((c) => (c[0] as { filters: Array<Record<string, unknown>> }).filters);
+    return subscribe.mock.calls.flatMap(
+      (c: unknown[]) => (c[0] as { filters: Array<Record<string, unknown>> }).filters,
+    );
   }
 
   it("asks only for key grants of the joined spaces, on the space's own relay", () => {
     expect(subscribe).toHaveBeenCalledTimes(1);
-    expect(subscribe.mock.calls[0][0]).toEqual({ filters: [{ kinds: [4291], "#h": [SPACE] }], relayUrls: [HOST] });
+    expect(subscribe.mock.calls[0][0]).toMatchObject({ filters: [{ kinds: [4291], "#h": [SPACE] }], relayUrls: [HOST] });
+  });
+
+  // A REQ that beats NIP-42 AUTH to the relay is answered empty and never
+  // re-run; the controller asks again while a stored query stays empty.
+  it("re-asks a stored query that came back empty, with backoff, a bounded number of times", async () => {
+    vi.useFakeTimers();
+    try {
+      const eose = (call: number) => (subscribe.mock.calls[call][0] as { onEOSE: () => void }).onEOSE();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        eose(attempt);
+        await vi.advanceTimersByTimeAsync(1_500 * 2 ** attempt - 1);
+        expect(subscribe).toHaveBeenCalledTimes(attempt + 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(subscribe).toHaveBeenCalledTimes(attempt + 2);
+        expect(vi.mocked(subscriptionManager.close)).toHaveBeenCalledWith(`sub-${attempt + 1}`);
+      }
+      // The sixth empty answer is accepted.
+      eose(5);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(subscribe).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops re-asking once a grant for the space has arrived", async () => {
+    await processIncomingEvent(grant(), HOST);
+    await settle();
+    const before = subscribe.mock.calls.length;
+    vi.useFakeTimers();
+    try {
+      (subscribe.mock.calls[0][0] as { onEOSE: () => void }).onEOSE();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(subscribe.mock.calls.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not re-ask the live-only background subscription", async () => {
+    await processIncomingEvent(grant(), HOST);
+    await settle();
+    const bg = subscribe.mock.calls.find(
+      (c: unknown[]) => typeof (c[0] as { filters: Array<{ since?: number }> }).filters[0].since === "number",
+    )!;
+    expect((bg[0] as { onEOSE?: unknown }).onEOSE).toBeUndefined();
   });
 
   it("adds sealed-event subscriptions once a space is known to be encrypted, and never asks for plaintext kinds", async () => {
