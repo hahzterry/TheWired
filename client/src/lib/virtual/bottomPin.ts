@@ -16,6 +16,22 @@ export function isNearBottom(g: ScrollGeometry, threshold: number): boolean {
   return g.scrollHeight - g.scrollTop - g.clientHeight < threshold;
 }
 
+/**
+ * Whether the reader still counts as "at the bottom" after a scroll event.
+ *
+ * Being within the threshold of the end attaches. Only moving up while away
+ * from the end releases. A scroll event that finds the reader away from the
+ * end without having moved up is the content changing under them: rows
+ * prepended above (the list scrolls them down by the added height), an image
+ * loading, rows being measured. That must not count as leaving, or the list
+ * would stop following in the middle of its own adjustment.
+ */
+export function nextPinned(prev: boolean, input: { nearBottom: boolean; movedUp: boolean }): boolean {
+  if (input.nearBottom) return true;
+  if (input.movedUp) return false;
+  return prev;
+}
+
 export type AppendAction =
   /** Nothing new at the tail: leave the reader where they are. */
   | "stay"

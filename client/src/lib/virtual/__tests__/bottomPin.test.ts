@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isNearBottom, jumpBehavior, onListChange } from "../bottomPin";
+import { isNearBottom, jumpBehavior, nextPinned, onListChange } from "../bottomPin";
 
 describe("isNearBottom", () => {
   it("is true within the threshold of the end", () => {
@@ -53,5 +53,26 @@ describe("jumpBehavior", () => {
 
   it("goes straight there when nothing is rendered yet", () => {
     expect(jumpBehavior(5, null)).toBe("auto");
+  });
+});
+
+describe("nextPinned", () => {
+  it("attaches whenever the reader is near the end", () => {
+    expect(nextPinned(false, { nearBottom: true, movedUp: false })).toBe(true);
+    expect(nextPinned(false, { nearBottom: true, movedUp: true })).toBe(true);
+  });
+
+  it("releases when the reader moves up away from the end", () => {
+    expect(nextPinned(true, { nearBottom: false, movedUp: true })).toBe(false);
+  });
+
+  it("stays attached when content changed under the reader (no upward move)", () => {
+    // History prepended: the list scrolls down by the added height while the
+    // total height is still catching up, so the geometry says "not at the end".
+    expect(nextPinned(true, { nearBottom: false, movedUp: false })).toBe(true);
+  });
+
+  it("stays released while the reader scrolls down but has not reached the end", () => {
+    expect(nextPinned(false, { nearBottom: false, movedUp: false })).toBe(false);
   });
 });
