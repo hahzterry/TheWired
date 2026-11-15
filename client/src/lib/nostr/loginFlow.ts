@@ -507,29 +507,16 @@ async function reconcileMySpaces(cachedSpaces: Space[]): Promise<void> {
   }
 }
 
-/**
- * Full login flow.
- * @param signerTypeOverride - force a specific signer type
- * @param knownPubkey - skip getPublicKey() call if we already know the pubkey
- *                      (avoids extra keychain reads on macOS)
- */
-export async function performLogin(
-  signerTypeOverride?: "nip07" | "tauri" | "nip46",
-  knownPubkey?: string,
-  nip46Connect?: Nip46Connection,
-): Promise<void> {
-  loginState.loginStartedAt = performance.now();
-  startupLog.info(
-    `performLogin start (signerType=${signerTypeOverride ?? "auto"}, knownPubkey=${knownPubkey ? shortKey(knownPubkey) : "none"})`,
-  );
+/** The signer kinds a login can be started with. */
+type LoginSignerType = "nip07" | "tauri" | "nip46";
 
-  // Step 1: Wire relay → Redux status bridge
-  wireRelayStatusBridge();
-
-  // Step 2: Connect to bootstrap relays and WAIT for at least one
-  await relayManager.connectToBootstrapAndWait();
-  startupLog.info(`bootstrap relays ready after ${(performance.now() - loginState.loginStartedAt).toFixed(0)}ms`);
-
+/** performLogin step 3: build the session's signer (it becomes
+ *  `loginState.currentSigner`) and read its pubkey. */
+async function createSessionSigner(
+  signerTypeOverride: LoginSignerType | undefined,
+  knownPubkey: string | undefined,
+  nip46Connect: Nip46Connection | undefined,
+): Promise<{ signerType: LoginSignerType; pubkey: string }> {
   // Step 3: Detect/create signer and get pubkey
   const signerType = signerTypeOverride ?? (await detectSigner());
   if (!signerType) {
@@ -581,51 +568,11 @@ export async function performLogin(
     throw new Error("Stored key not found in keystore. The key may have been removed from the OS keychain.");
   }
   const pubkey = signerPubkey;
+  return { signerType, pubkey };
+}
 
-  // Set active pubkey for per-account IndexedDB key prefixing
-  setActivePubkey(pubkey);
-
-  // Step 4: Dispatch login to Redux
-  const storeSignerType: SignerType =
-    signerType === "nip07"
-      ? "nip07"
-      : signerType === "nip46"
-        ? "nip46"
-        : "tauri_keystore";
-  store.dispatch(login({ pubkey, signerType: storeSignerType }));
-
-  // Fix #5: hydrate the logged-in user's own profile from IndexedDB immediately,
-  // so their name (ProfileCard, composer, etc.) renders instead of a hash while the
-  // kind:0 relay subscription below is still in flight. `identity.profile` was
-  // previously ONLY ever set from that relay event — never from cache — so on every
-  // cold start the user's own name was a hash for as long as the relay round-trip took
-  // (worse in prod, where there's no local relay). createdAt comes from the stored
-  // event, so a fresher relay kind:0 still wins via setProfile's freshness guard.
-  getProfile(pubkey)
-    .then((stored) => {
-      if (!stored) {
-        idLog.debug(`own profile not in IDB cache — name shows hash until own kind:0 arrives`);
-        return;
-      }
-      if (store.getState().identity.profile) return; // relay already populated it
-      idLog.info(
-        `hydrated own profile from IDB → "${stored.display_name || stored.name || "unnamed"}" (instant, before relay round-trip)`,
-      );
-      store.dispatch(setProfile({ profile: stored, createdAt: stored.created_at ?? 0 }));
-    })
-    .catch(() => {/* best-effort */});
-
-  // Persist the bunker connection (ephemeral key + URI) so we can reconnect on restart.
-  if (signerType === "nip46" && nip46Connect) {
-    await saveNip46Connection(pubkey, nip46Connect);
-  }
-
-  // Replay NIP-42 AUTH on any relay that connected (and challenged) before the
-  // signer was ready. Without this, a relay connection established pre-login
-  // stays unauthenticated forever — which silently filters out every h-tagged
-  // event (NIP-29 chat) on both query and broadcast paths.
-  relayManager.replayAuth();
-
+/** performLogin step 5: the account's cached lists, from IndexedDB, for instant UI. */
+async function hydrateCachedUserLists(): Promise<void> {
   // Step 5: Load cached user data from IndexedDB for instant UI
   // Disabled relays first, so the cached-list connect below never dials them.
   await loadAndApplyDisabledRelays();
@@ -672,7 +619,10 @@ export async function performLogin(
   if (cachedMuteList?.length) {
     store.dispatch(setMuteList({ mutes: cachedMuteList, createdAt: 0 }));
   }
+}
 
+/** performLogin step 6: the relay-list (kind:10002) bootstrap. */
+function subscribeRelayList(pubkey: string): void {
   // Step 6: Subscribe for relay list (kind:10002). The NIP-65 indexers
   // (purplepag.es / user.kindpag.es) specialize in this kind — the
   // 10002-only filter is indexer-safe, so they aren't stripped.
@@ -739,7 +689,10 @@ export async function performLogin(
       }
     },
   });
+}
 
+/** performLogin step 6b: the DM-relay-list (kind:10050) bootstrap. */
+function subscribeDMRelayList(pubkey: string, signerType: LoginSignerType): void {
   // Step 6b: Subscribe for DM relay list (kind:10050) from bootstrap relays
   /** The newest list a relay served this session (not the IndexedDB cache). */
   let newestDMRelayList: { relays: string[]; createdAt: number } | null = null;
@@ -790,37 +743,12 @@ export async function performLogin(
     },
     onEOSE: (_subId, relayUrl) => dmRelaySettler.onEOSE(relayUrl),
   });
+}
 
-  // Step 7: Subscribe for user metadata from bootstrap relays
-  subscribeUserData(pubkey, BOOTSTRAP_RELAYS);
-
-  // Step 7-a: Also fetch our OWN kind:0 from the profile indexers. subscribeUserData
-  // bundles kinds 0/3/10000/10003, which makes relayManager strip the indexer-only
-  // relays (purplepag.es / kindpag.es) from that sub — so our own profile would only
-  // ever come from bootstrap + the user's relays, resolving LESS reliably than a
-  // stranger's (which goes through PROFILE_RELAYS). A kind:0-only filter is
-  // indexer-safe, so this reaches the indexers where most clients aggregate kind:0.
-  relayManager.subscribe({
-    filters: [{ kinds: [EVENT_KINDS.METADATA], authors: [pubkey], limit: 1 }],
-    relayUrls: PROFILE_RELAYS,
-    onEvent: (event) => ingestOwnProfileEvent(event, pubkey),
-    onEOSE: () => store.dispatch(markProfileChecked()),
-  });
-
-  // Step 7b: Load spaces + last-channel cache from IndexedDB
-  await initLastChannelCache();
-  // Hydrate the per-account feature toggles (e.g. Decentralized Spaces) so any
-  // UI gated on them renders correctly from the first paint.
-  store.dispatch(setEnabledFeatures(await loadEnabledFeatures()));
-  // Hydrate the per-account Feed preferences (toggles + local hidden accounts).
-  store.dispatch(setFeedPrefs(await loadFeedPrefs()));
-  // Media storage prefs (docs/MEDIA_STORAGE.md §2): the cached copy now, the
-  // relay doc in the background. Uploads use the defaults (The Wired only)
-  // until either lands. The viewer's media grant is minted alongside so
-  // members-only space media renders without a first 404.
-  await hydrateMediaPrefs();
-  void fetchMediaPrefs();
-  void ensureMediaGrant();
+/** performLogin step 7b: the joined spaces — from the cache (or the backend
+ *  when the cache is empty), with members, channels and the active space.
+ *  Returns the spaces now in the store. */
+async function loadAndReconcileSpaces(): Promise<Space[]> {
   let savedSpaces = await loadSpaces();
   let recoveredFromBackend = false;
 
@@ -935,7 +863,11 @@ export async function performLogin(
     // restored (step 7f-c below) to ensure lastReadTimestamps are available.
     // This prevents re-fetched messages from being double-counted as unread.
   }
+  return savedSpaces;
+}
 
+/** performLogin steps 7c + 7d: music events and the music library, from IndexedDB. */
+async function hydrateMusicFromCache(pubkey: string): Promise<void> {
   // Step 7c: Load music events from IndexedDB, filtering out any that have
   // been deleted (kind:5 events referencing them via "a" tags)
   const [trackEvents, albumEvents, playlistEvents, annotationEvents, deletionEvents] = await Promise.all([
@@ -1176,13 +1108,10 @@ export async function performLogin(
       readFailed: musicReadFailed,
     }),
   );
+}
 
-  // Step 7d-b: Load notification state BEFORE relay subscriptions so that
-  // re-delivered events (which trigger evaluateCollaboratorNotification)
-  // find existing notifications and skip them via addNotification dedup.
-  await loadNotificationState();
-  loginState.cleanupNotificationPersistence = startNotificationPersistence();
-
+/** performLogin step 7e: the music subscriptions and library refills. */
+function subscribeMusic(pubkey: string): void {
   // Step 7e: Subscribe for user's own music events + deletion events from relays
   // Events flow through processIncomingEvent → Redux + IndexedDB persistence
   subscriptionManager.subscribe({
@@ -1242,6 +1171,254 @@ export async function performLogin(
     watchSavedItemsForUpdates([...lib.savedAlbumIds, ...lib.savedTrackIds]);
     void syncSavedVersions({ force: true });
   }
+}
+
+/** performLogin step 7g: the gift-wrap (kind:1059) subscription and inbox reconciliation. */
+async function subscribeGiftWraps(pubkey: string): Promise<void> {
+  // Step 7g: Subscribe for gift-wrapped DMs (kind:1059) addressed to us.
+  // Use a persisted timestamp so we catch all wraps since the last session.
+  // NIP-17 randomizes created_at up to 2 days back, so subtract a 3-day buffer
+  // from our last-seen timestamp to avoid missing events.
+  const THREE_DAYS = 3 * 24 * 60 * 60;
+  const lastGiftWrapTs = await getUserState<number>("last_gift_wrap_ts");
+  const giftWrapFilter: import("../../types/nostr").NostrFilter = {
+    kinds: [EVENT_KINDS.GIFT_WRAP],
+    "#p": [pubkey],
+  };
+  if (lastGiftWrapTs) {
+    // Fetch all wraps since (lastSeen - 3 days) to account for NIP-17 timestamp randomization
+    giftWrapFilter.since = lastGiftWrapTs - THREE_DAYS;
+  } else {
+    // First login: fetch a reasonable initial batch
+    giftWrapFilter.limit = 200;
+  }
+  // Subscribe on DM relays (if known) plus bootstrap for transition coverage
+  const dmRelays = store.getState().identity.dmRelayList;
+  const giftWrapRelayUrls = dmRelays.length > 0
+    ? [...new Set([...dmRelays, ...BOOTSTRAP_RELAYS])]
+    : BOOTSTRAP_RELAYS;
+  const giftWrapSubStartedAt = Math.floor(Date.now() / 1000);
+  subscriptionManager.subscribe({
+    filters: [giftWrapFilter],
+    relayUrls: giftWrapRelayUrls,
+    // Persist the watermark only once the backlog actually arrived: advancing
+    // it before EOSE silently narrowed the next window after a failed sync.
+    onEOSE: () => {
+      if (store.getState().identity.pubkey !== pubkey) return;
+      saveUserState("last_gift_wrap_ts", giftWrapSubStartedAt).catch(() => {});
+    },
+  });
+  // NIP-77: reconcile the inbox by event id on relays that speak it
+  // (docs/DM_WIRE_CONTRACT.md §7.5); the since-window sub above is the fallback.
+  loginState.cleanupGiftWrapReconciliation?.();
+  loginState.cleanupGiftWrapReconciliation = startGiftWrapReconciliation(pubkey, () => {
+    const dm = store.getState().identity.dmRelayList;
+    return dm.length > 0 ? [...new Set([...dm, ...BOOTSTRAP_RELAYS])] : [...BOOTSTRAP_RELAYS];
+  });
+}
+
+/** performLogin step 7h: cached followers, then the live follower subscription. */
+async function subscribeFollowers(pubkey: string): Promise<void> {
+  // Step 7h: Load cached followers, then subscribe for kind:3 events that tag us.
+  // Use all connected read relays (not just bootstrap) so user-configured relays are included.
+  // Buffer follower pubkeys until EOSE, then MERGE with cached set (never shrink).
+  await loadFollowerState();
+  loginState.cleanupFollowerPersistence = startFollowerPersistence();
+
+  const followerBuffer: string[] = [];
+  let followerMerged = false;
+
+  const mergeFollowers = () => {
+    if (followerMerged) return;
+    // #77 — the 10s safety timer (and the standing subscription) can fire AFTER an
+    // account switch. Without this guard, account A's buffered followers get merged
+    // into account B's knownFollowers (and persisted there). Bail if we're no longer
+    // the active identity.
+    if (store.getState().identity.pubkey !== pubkey) return;
+    followerMerged = true;
+    clearTimeout(followerTimer);
+    // Merge buffered followers with cached set — always union, never replace with smaller
+    const cached = store.getState().identity.knownFollowers;
+    const merged = Array.from(new Set([...cached, ...followerBuffer]));
+    store.dispatch(setKnownFollowers(merged));
+  };
+
+  relayManager.subscribe({
+    filters: [
+      {
+        kinds: [EVENT_KINDS.FOLLOW_LIST],
+        "#p": [pubkey],
+        limit: 500,
+      },
+    ],
+    relayUrls: PROFILE_RELAYS,
+    onEvent: (event) => {
+      // Stale-subscription guard (#77): ignore deliveries after an account switch.
+      if (store.getState().identity.pubkey !== pubkey) return;
+      // Only care about events that include us in their follow list
+      if (event.pubkey === pubkey) return;
+      const followsUs = event.tags.some(
+        (t) => t[0] === "p" && t[1] === pubkey,
+      );
+      if (!followsUs) return;
+
+      if (!followerMerged) {
+        // Still buffering — collect pubkeys
+        if (!followerBuffer.includes(event.pubkey)) {
+          followerBuffer.push(event.pubkey);
+        }
+      } else {
+        // Post-merge: genuinely new follower
+        store.dispatch(addKnownFollower(event.pubkey));
+      }
+    },
+    onEOSE: mergeFollowers,
+  });
+
+  // Safety: merge whatever we have if no EOSE arrives
+  const followerTimer = setTimeout(mergeFollowers, 10_000);
+}
+
+/** performLogin step 8: record this account in the multi-account session. */
+async function persistSessionAccount(pubkey: string, storeSignerType: SignerType): Promise<void> {
+  // Step 8: Persist multi-account session
+  const existingSession = await getUserState<MultiAccountSession>("session");
+  const accounts: AccountEntry[] = existingSession?.accounts ?? [];
+  const existingIdx = accounts.findIndex((a) => a.pubkey === pubkey);
+  const entry: AccountEntry = { pubkey, signerType: storeSignerType, addedAt: Date.now() };
+  if (existingIdx >= 0) {
+    accounts[existingIdx] = entry;
+  } else {
+    accounts.push(entry);
+  }
+  await saveUserState("session", { accounts, activePubkey: pubkey } satisfies MultiAccountSession);
+  store.dispatch(setAccounts(accounts));
+}
+
+/**
+ * Full login flow.
+ * @param signerTypeOverride - force a specific signer type
+ * @param knownPubkey - skip getPublicKey() call if we already know the pubkey
+ *                      (avoids extra keychain reads on macOS)
+ */
+export async function performLogin(
+  signerTypeOverride?: "nip07" | "tauri" | "nip46",
+  knownPubkey?: string,
+  nip46Connect?: Nip46Connection,
+): Promise<void> {
+  loginState.loginStartedAt = performance.now();
+  startupLog.info(
+    `performLogin start (signerType=${signerTypeOverride ?? "auto"}, knownPubkey=${knownPubkey ? shortKey(knownPubkey) : "none"})`,
+  );
+
+  // Step 1: Wire relay → Redux status bridge
+  wireRelayStatusBridge();
+
+  // Step 2: Connect to bootstrap relays and WAIT for at least one
+  await relayManager.connectToBootstrapAndWait();
+  startupLog.info(`bootstrap relays ready after ${(performance.now() - loginState.loginStartedAt).toFixed(0)}ms`);
+
+  // Step 3: Detect/create signer and get pubkey
+  const { signerType, pubkey } = await createSessionSigner(signerTypeOverride, knownPubkey, nip46Connect);
+
+  // Set active pubkey for per-account IndexedDB key prefixing
+  setActivePubkey(pubkey);
+
+  // Step 4: Dispatch login to Redux
+  const storeSignerType: SignerType =
+    signerType === "nip07"
+      ? "nip07"
+      : signerType === "nip46"
+        ? "nip46"
+        : "tauri_keystore";
+  store.dispatch(login({ pubkey, signerType: storeSignerType }));
+
+  // Fix #5: hydrate the logged-in user's own profile from IndexedDB immediately,
+  // so their name (ProfileCard, composer, etc.) renders instead of a hash while the
+  // kind:0 relay subscription below is still in flight. `identity.profile` was
+  // previously ONLY ever set from that relay event — never from cache — so on every
+  // cold start the user's own name was a hash for as long as the relay round-trip took
+  // (worse in prod, where there's no local relay). createdAt comes from the stored
+  // event, so a fresher relay kind:0 still wins via setProfile's freshness guard.
+  getProfile(pubkey)
+    .then((stored) => {
+      if (!stored) {
+        idLog.debug(`own profile not in IDB cache — name shows hash until own kind:0 arrives`);
+        return;
+      }
+      if (store.getState().identity.profile) return; // relay already populated it
+      idLog.info(
+        `hydrated own profile from IDB → "${stored.display_name || stored.name || "unnamed"}" (instant, before relay round-trip)`,
+      );
+      store.dispatch(setProfile({ profile: stored, createdAt: stored.created_at ?? 0 }));
+    })
+    .catch(() => {/* best-effort */});
+
+  // Persist the bunker connection (ephemeral key + URI) so we can reconnect on restart.
+  if (signerType === "nip46" && nip46Connect) {
+    await saveNip46Connection(pubkey, nip46Connect);
+  }
+
+  // Replay NIP-42 AUTH on any relay that connected (and challenged) before the
+  // signer was ready. Without this, a relay connection established pre-login
+  // stays unauthenticated forever — which silently filters out every h-tagged
+  // event (NIP-29 chat) on both query and broadcast paths.
+  relayManager.replayAuth();
+
+  // Step 5 (5–5e): cached relay, DM relay, follow, pin and mute lists
+  await hydrateCachedUserLists();
+
+  // Step 6: relay list (kind:10002)
+  subscribeRelayList(pubkey);
+
+  // Step 6b: DM relay list (kind:10050)
+  subscribeDMRelayList(pubkey, signerType);
+
+  // Step 7: Subscribe for user metadata from bootstrap relays
+  subscribeUserData(pubkey, BOOTSTRAP_RELAYS);
+
+  // Step 7-a: Also fetch our OWN kind:0 from the profile indexers. subscribeUserData
+  // bundles kinds 0/3/10000/10003, which makes relayManager strip the indexer-only
+  // relays (purplepag.es / kindpag.es) from that sub — so our own profile would only
+  // ever come from bootstrap + the user's relays, resolving LESS reliably than a
+  // stranger's (which goes through PROFILE_RELAYS). A kind:0-only filter is
+  // indexer-safe, so this reaches the indexers where most clients aggregate kind:0.
+  relayManager.subscribe({
+    filters: [{ kinds: [EVENT_KINDS.METADATA], authors: [pubkey], limit: 1 }],
+    relayUrls: PROFILE_RELAYS,
+    onEvent: (event) => ingestOwnProfileEvent(event, pubkey),
+    onEOSE: () => store.dispatch(markProfileChecked()),
+  });
+
+  // Step 7b: Load spaces + last-channel cache from IndexedDB
+  await initLastChannelCache();
+  // Hydrate the per-account feature toggles (e.g. Decentralized Spaces) so any
+  // UI gated on them renders correctly from the first paint.
+  store.dispatch(setEnabledFeatures(await loadEnabledFeatures()));
+  // Hydrate the per-account Feed preferences (toggles + local hidden accounts).
+  store.dispatch(setFeedPrefs(await loadFeedPrefs()));
+  // Media storage prefs (docs/MEDIA_STORAGE.md §2): the cached copy now, the
+  // relay doc in the background. Uploads use the defaults (The Wired only)
+  // until either lands. The viewer's media grant is minted alongside so
+  // members-only space media renders without a first 404.
+  await hydrateMediaPrefs();
+  void fetchMediaPrefs();
+  void ensureMediaGrant();
+
+  // Step 7b (continued): the joined spaces
+  const savedSpaces = await loadAndReconcileSpaces();
+
+  // Step 7c + 7d: music events and the music library, from IndexedDB
+  await hydrateMusicFromCache(pubkey);
+
+  // Step 7d-b: Load notification state BEFORE relay subscriptions so that
+  // re-delivered events (which trigger evaluateCollaboratorNotification)
+  // find existing notifications and skip them via addNotification dedup.
+  await loadNotificationState();
+  loginState.cleanupNotificationPersistence = startNotificationPersistence();
+
+  // Step 7e: music subscriptions (own, tagged, shared-project) and library refills
+  subscribeMusic(pubkey);
 
   // Step 7e-b: Load persisted deleted message IDs from IndexedDB
   {
@@ -1301,118 +1478,14 @@ export async function performLogin(
     });
   }
 
-  // Step 7g: Subscribe for gift-wrapped DMs (kind:1059) addressed to us.
-  // Use a persisted timestamp so we catch all wraps since the last session.
-  // NIP-17 randomizes created_at up to 2 days back, so subtract a 3-day buffer
-  // from our last-seen timestamp to avoid missing events.
-  const THREE_DAYS = 3 * 24 * 60 * 60;
-  const lastGiftWrapTs = await getUserState<number>("last_gift_wrap_ts");
-  const giftWrapFilter: import("../../types/nostr").NostrFilter = {
-    kinds: [EVENT_KINDS.GIFT_WRAP],
-    "#p": [pubkey],
-  };
-  if (lastGiftWrapTs) {
-    // Fetch all wraps since (lastSeen - 3 days) to account for NIP-17 timestamp randomization
-    giftWrapFilter.since = lastGiftWrapTs - THREE_DAYS;
-  } else {
-    // First login: fetch a reasonable initial batch
-    giftWrapFilter.limit = 200;
-  }
-  // Subscribe on DM relays (if known) plus bootstrap for transition coverage
-  const dmRelays = store.getState().identity.dmRelayList;
-  const giftWrapRelayUrls = dmRelays.length > 0
-    ? [...new Set([...dmRelays, ...BOOTSTRAP_RELAYS])]
-    : BOOTSTRAP_RELAYS;
-  const giftWrapSubStartedAt = Math.floor(Date.now() / 1000);
-  subscriptionManager.subscribe({
-    filters: [giftWrapFilter],
-    relayUrls: giftWrapRelayUrls,
-    // Persist the watermark only once the backlog actually arrived: advancing
-    // it before EOSE silently narrowed the next window after a failed sync.
-    onEOSE: () => {
-      if (store.getState().identity.pubkey !== pubkey) return;
-      saveUserState("last_gift_wrap_ts", giftWrapSubStartedAt).catch(() => {});
-    },
-  });
-  // NIP-77: reconcile the inbox by event id on relays that speak it
-  // (docs/DM_WIRE_CONTRACT.md §7.5); the since-window sub above is the fallback.
-  loginState.cleanupGiftWrapReconciliation?.();
-  loginState.cleanupGiftWrapReconciliation = startGiftWrapReconciliation(pubkey, () => {
-    const dm = store.getState().identity.dmRelayList;
-    return dm.length > 0 ? [...new Set([...dm, ...BOOTSTRAP_RELAYS])] : [...BOOTSTRAP_RELAYS];
-  });
+  // Step 7g: gift-wrapped DMs (kind:1059)
+  await subscribeGiftWraps(pubkey);
 
-  // Step 7h: Load cached followers, then subscribe for kind:3 events that tag us.
-  // Use all connected read relays (not just bootstrap) so user-configured relays are included.
-  // Buffer follower pubkeys until EOSE, then MERGE with cached set (never shrink).
-  await loadFollowerState();
-  loginState.cleanupFollowerPersistence = startFollowerPersistence();
-
-  const followerBuffer: string[] = [];
-  let followerMerged = false;
-
-  const mergeFollowers = () => {
-    if (followerMerged) return;
-    // #77 — the 10s safety timer (and the standing subscription) can fire AFTER an
-    // account switch. Without this guard, account A's buffered followers get merged
-    // into account B's knownFollowers (and persisted there). Bail if we're no longer
-    // the active identity.
-    if (store.getState().identity.pubkey !== pubkey) return;
-    followerMerged = true;
-    clearTimeout(followerTimer);
-    // Merge buffered followers with cached set — always union, never replace with smaller
-    const cached = store.getState().identity.knownFollowers;
-    const merged = Array.from(new Set([...cached, ...followerBuffer]));
-    store.dispatch(setKnownFollowers(merged));
-  };
-
-  relayManager.subscribe({
-    filters: [
-      {
-        kinds: [EVENT_KINDS.FOLLOW_LIST],
-        "#p": [pubkey],
-        limit: 500,
-      },
-    ],
-    relayUrls: PROFILE_RELAYS,
-    onEvent: (event) => {
-      // Stale-subscription guard (#77): ignore deliveries after an account switch.
-      if (store.getState().identity.pubkey !== pubkey) return;
-      // Only care about events that include us in their follow list
-      if (event.pubkey === pubkey) return;
-      const followsUs = event.tags.some(
-        (t) => t[0] === "p" && t[1] === pubkey,
-      );
-      if (!followsUs) return;
-
-      if (!followerMerged) {
-        // Still buffering — collect pubkeys
-        if (!followerBuffer.includes(event.pubkey)) {
-          followerBuffer.push(event.pubkey);
-        }
-      } else {
-        // Post-merge: genuinely new follower
-        store.dispatch(addKnownFollower(event.pubkey));
-      }
-    },
-    onEOSE: mergeFollowers,
-  });
-
-  // Safety: merge whatever we have if no EOSE arrives
-  const followerTimer = setTimeout(mergeFollowers, 10_000);
+  // Step 7h: followers
+  await subscribeFollowers(pubkey);
 
   // Step 8: Persist multi-account session
-  const existingSession = await getUserState<MultiAccountSession>("session");
-  const accounts: AccountEntry[] = existingSession?.accounts ?? [];
-  const existingIdx = accounts.findIndex((a) => a.pubkey === pubkey);
-  const entry: AccountEntry = { pubkey, signerType: storeSignerType, addedAt: Date.now() };
-  if (existingIdx >= 0) {
-    accounts[existingIdx] = entry;
-  } else {
-    accounts.push(entry);
-  }
-  await saveUserState("session", { accounts, activePubkey: pubkey } satisfies MultiAccountSession);
-  store.dispatch(setAccounts(accounts));
+  await persistSessionAccount(pubkey, storeSignerType);
 
   // Step 9: Check onboarding state and trigger wizard for new users
   const onboardingState = await loadOnboardingState();
