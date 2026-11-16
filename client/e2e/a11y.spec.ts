@@ -356,15 +356,43 @@ test.describe("app screens (baseline)", () => {
     await expect(account).toBeFocused();
   });
 
-  for (const [screen, path, ready] of [
-    ["discover", "/discover", "Discover"],
-    ["settings", "/settings", "Settings"],
-    ["messages", "/dm", "Direct Messages"],
-  ] as const) {
+  // Each screen is a lazy route. `ready` lists things only the loaded screen
+  // has, so the scan cannot run on (and pass for) a loading placeholder.
+  const SCREENS: { screen: string; path: string; ready: (page: Page) => ReturnType<Page["locator"]>[] }[] = [
+    {
+      screen: "discover",
+      path: "/discover",
+      ready: (page) => [
+        page.getByRole("heading", { level: 1, name: "Discover" }),
+        page.getByRole("searchbox", { name: "Search spaces" }),
+        page.getByRole("group", { name: "Sort" }),
+      ],
+    },
+    {
+      screen: "settings",
+      path: "/settings",
+      ready: (page) => [
+        page.getByRole("heading", { name: "Settings" }).first(),
+        page.getByRole("button", { name: "Appearance" }),
+        page.getByRole("heading", { name: "Profile Information" }),
+        page.getByRole("button", { name: "Save Profile" }),
+      ],
+    },
+    {
+      screen: "messages",
+      path: "/dm",
+      ready: (page) => [
+        page.getByRole("heading", { name: "Direct Messages" }),
+        page.getByRole("button", { name: "Start a conversation" }),
+      ],
+    },
+  ];
+
+  for (const { screen, path, ready } of SCREENS) {
     test(`${screen} screen`, async ({ page }) => {
       await enterShell(page);
       await navigateInApp(page, path);
-      await expect(page.getByRole("heading", { name: ready }).first()).toBeVisible({ timeout: 15_000 });
+      for (const locator of ready(page)) await expect(locator).toBeVisible({ timeout: 20_000 });
       await expectNoNewViolations(page, screen);
     });
   }

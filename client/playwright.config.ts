@@ -3,7 +3,8 @@ import { defineConfig, devices } from "@playwright/test";
 // WIRED_PORT picks the dev-server port (the Vite config reads the same
 // variable), so a checkout can run the suite beside another one's server.
 // PW_CHANNEL=chrome runs against an installed Chrome instead of the
-// Playwright-managed Chromium build.
+// Playwright-managed Chromium build; PW_EXECUTABLE_PATH points at any other
+// Chromium-based browser binary.
 const port = process.env.WIRED_PORT ?? "1420";
 const baseURL = `http://localhost:${port}`;
 
@@ -25,6 +26,9 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),
+        ...(process.env.PW_EXECUTABLE_PATH
+          ? { launchOptions: { executablePath: process.env.PW_EXECUTABLE_PATH } }
+          : {}),
       },
     },
   ],

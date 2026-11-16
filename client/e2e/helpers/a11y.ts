@@ -75,10 +75,23 @@ export function compareWithBaseline(
 }
 
 /**
+ * Routes, panels and heavy dialogs are separate chunks that arrive behind a
+ * Suspense fallback (marked `data-lazy-fallback`). A scan taken while one is
+ * still showing would check a placeholder and pass without looking at the
+ * screen, so every scan first waits for all of them to be gone.
+ */
+export async function expectLoaded(page: Page) {
+  await expect(page.locator("[data-lazy-fallback]"), "a lazy view is still loading").toHaveCount(0, {
+    timeout: 20_000,
+  });
+}
+
+/**
  * Scan and hold the result to the baseline entry for `screen`.
  * With UPDATE_A11Y_BASELINE=1 the entry is rewritten instead.
  */
 export async function expectNoNewViolations(page: Page, screen: string, options: { include?: string } = {}) {
+  await expectLoaded(page);
   const result = await scan(page, options);
 
   if (UPDATE) {
@@ -143,7 +156,10 @@ export async function enterShell(page: Page) {
   await page.getByRole("button", { name: /^skip$/i }).click();
   await wizard.waitFor({ state: "hidden", timeout: 10_000 });
 
+  // The landing view itself: sidebar body and centre panel, not their fallbacks.
   await expect(page.getByRole("button", { name: "New Space" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "Select a Space" })).toBeVisible({ timeout: 20_000 });
+  await expectLoaded(page);
 }
 
 /** Client-side navigation: a full reload would drop the in-memory session. */
