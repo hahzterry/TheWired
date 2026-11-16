@@ -12,12 +12,15 @@ import { config } from "../../src/config.js";
 import { getMeilisearchClient } from "../../src/lib/meilisearch.js";
 import { resetDependencyState } from "../../src/lib/dependencyHealth.js";
 import {
+  resetSamplerState,
+  SAMPLE_TIMEOUT_MS,
   sampleNotificationQueue,
   sampleOnce,
   sampleTranscodeQueue,
   startMetricsSampler,
 } from "../../src/workers/metricsSampler.js";
 import {
+  dependencyCheckFailures,
   dependencyUp,
   notificationQueueDepth,
   notificationQueueOldestAge,
@@ -41,11 +44,14 @@ beforeEach(() => {
   notificationQueueOldestAge.reset();
   transcodeQueueJobs.reset();
   dependencyUp.reset();
+  dependencyCheckFailures.reset();
   resetDependencyState();
+  resetSamplerState();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   const health = getMeilisearchClient().health as ReturnType<typeof vi.fn>;
   health.mockReset();
   health.mockResolvedValue({ status: "available" });
@@ -147,5 +153,90 @@ describe("startMetricsSampler", () => {
     const settled = health.mock.calls.length;
     await new Promise((r) => setTimeout(r, 150));
     expect(health.mock.calls.length).toBe(settled);
+  });
+});
+
+// Giving up on a sample does not cancel its query. With a database that has
+// stopped answering, a sampler that issued a fresh query every interval would
+// leave one more pending on the shared pool each time.
+describe("samples do not overlap", () => {
+  /** Make the queue-depth query (and only it) hang; returns how many were issued. */
+  function hangQueueQuery() {
+    const real = db.execute.bind(db);
+    let release!: (rows: unknown) => void;
+    const hung = new Promise((resolve) => (release = resolve));
+    let issued = 0;
+    const isQueueQuery = (query: unknown) => JSON.stringify(query).includes("notification_queue");
+    vi.spyOn(db, "execute").mockImplementation(((query: unknown) => {
+      if (!isQueueQuery(query)) return real(query as never);
+      issued += 1;
+      return hung;
+    }) as never);
+    return { issued: () => issued, release };
+  }
+
+  it("a second sample while the first query is pending issues no new query", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const hung = hangQueueQuery();
+
+    for (let pass = 0; pass < 5; pass++) {
+      const sample = sampleNotificationQueue();
+      const settled = expect(sample).rejects.toThrow("timeout");
+      await vi.advanceTimersByTimeAsync(SAMPLE_TIMEOUT_MS);
+      await settled;
+    }
+    expect(hung.issued()).toBe(1);
+  });
+
+  it("samples again once the pending query settles", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const hung = hangQueueQuery();
+
+    const first = sampleNotificationQueue();
+    const settled = expect(first).rejects.toThrow("timeout");
+    await vi.advanceTimersByTimeAsync(SAMPLE_TIMEOUT_MS);
+    await settled;
+
+    hung.release([{ depth: 0, oldest_age: 0 }]); // the old query finally returns
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+
+    await queueRow();
+    await sampleNotificationQueue();
+    expect(notificationQueueDepth.get()).toBe(1);
+  });
+
+  // The running sampler, over many intervals, against a hung queue query.
+  it("the sampler keeps ticking without stacking queries behind a hung one", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const hung = hangQueueQuery();
+    const health = getMeilisearchClient().health as ReturnType<typeof vi.fn>;
+    health.mockClear();
+
+    const sampler = startMetricsSampler(20);
+    try {
+      await new Promise((r) => setTimeout(r, 400)); // ~20 intervals
+    } finally {
+      sampler.stop();
+    }
+    // One queue query in total, however many ticks fired.
+    expect(hung.issued()).toBe(1);
+    // And a pass never starts while the previous pass is still running: the
+    // first pass is still waiting on the hung query, so nothing was re-probed.
+    expect(health).toHaveBeenCalledTimes(1);
+  });
+
+  it("a pass that finishes lets the next tick run", async () => {
+    const health = getMeilisearchClient().health as ReturnType<typeof vi.fn>;
+    health.mockClear();
+    const sampler = startMetricsSampler(20);
+    try {
+      const deadline = Date.now() + 3000;
+      while (health.mock.calls.length < 4 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      sampler.stop();
+    }
+    expect(health.mock.calls.length).toBeGreaterThanOrEqual(4);
   });
 });

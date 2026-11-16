@@ -11,6 +11,8 @@ export const healthRoutes: FastifyPluginAsync = async (server) => {
   // gates on backend health (the proxy waits on the gateway, whose /health is
   // static), so a 503 here only reports; it never takes the API down.
   server.get("/health", async (_request, reply) => {
+    // Read-only: this route is reachable from outside, so it must not move
+    // the dependency metrics. The metrics sampler is their only writer.
     const checks = await checkDependencies();
     const healthy = Object.values(checks).every((s) => s === "ok");
     if (!healthy) reply.code(503);
