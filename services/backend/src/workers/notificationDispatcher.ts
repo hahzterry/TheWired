@@ -612,7 +612,12 @@ export function startNotificationDispatcher(
   const runKick = async () => {
     if (stopped) return;
     try {
-      const ran = await runWithWorkerLock(DISPATCHER_LOCK, DISPATCH_INTERVAL_MS, () => exclusive(pass));
+      // A kick is an extra attempt on top of the tick and routinely finds the
+      // tick (or another replica) holding the lock; that is not a skipped
+      // run of the dispatcher, so it stays out of the lock-skip counter.
+      const ran = await runWithWorkerLock(DISPATCHER_LOCK, DISPATCH_INTERVAL_MS, () => exclusive(pass), {
+        countLockSkip: false,
+      });
       if (ran) lockMisses = 0;
       // Another pass holds the lock (this replica's tick, or another
       // replica): it may have read the queue before the kicking row landed.

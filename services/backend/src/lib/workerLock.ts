@@ -58,6 +58,17 @@ function newLockToken(): string {
   return `${PROCESS_ID}:${acquisitionSeq}`;
 }
 
+export interface WorkerLockOptions {
+  /**
+   * Count a lost lock in `backend_job_lock_skips_total` (default true). That
+   * series means "a scheduled tick did not run here because another replica
+   * or pass had the job". Pass false for an extra, opportunistic attempt that
+   * is EXPECTED to lose to the scheduled run most of the time, or its misses
+   * would drown the signal.
+   */
+  countLockSkip?: boolean;
+}
+
 /**
  * Run `task` iff this process wins the lock named `name`.
  *
@@ -78,6 +89,7 @@ export async function runWithWorkerLock(
   name: string,
   ttlMs: number,
   task: () => Promise<void> | void,
+  opts: WorkerLockOptions = {},
 ): Promise<boolean> {
   const key = `${LOCK_PREFIX}${name}`;
   const token = newLockToken();
@@ -96,7 +108,7 @@ export async function runWithWorkerLock(
   }
 
   if (acquired !== "OK") {
-    jobLockSkips.inc({ job: name });
+    if (opts.countLockSkip !== false) jobLockSkips.inc({ job: name });
     return false;
   }
 

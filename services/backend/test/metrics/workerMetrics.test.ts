@@ -20,7 +20,14 @@ import { getMeilisearchClient } from "../../src/lib/meilisearch.js";
 import { LUNA } from "../helpers/testUsers.js";
 import { pushService } from "../../src/services/pushService.js";
 import { processEvent, type IngestContext, type NostrEvent } from "../../src/workers/ingestHandlers.js";
-import { dispatchOnce, pollReceiptsOnce, TICKETS_KEY, RECEIPT_DELAY_MS } from "../../src/workers/notificationDispatcher.js";
+import {
+  dispatchOnce,
+  pollReceiptsOnce,
+  requestDispatchSoon,
+  startNotificationDispatcher,
+  TICKETS_KEY,
+  RECEIPT_DELAY_MS,
+} from "../../src/workers/notificationDispatcher.js";
 import { instrumentTranscode } from "../../src/workers/transcodeWorker.js";
 import { runWithWorkerLock, startLockedInterval } from "../../src/lib/workerLock.js";
 import type { ExpoPushMessage, ExpoReceipt, ExpoSender, ExpoTicket } from "../../src/services/expoPushSender.js";
@@ -522,6 +529,53 @@ describe("periodic job metrics (worker lock)", () => {
     release();
     await first;
     expect(jobRuns.get({ job: "contended-job", result: "success" })).toBe(1);
+  });
+
+  // A dispatcher kick is an extra attempt that routinely finds the tick
+  // holding the lock. Counting those would bury the real signal (a scheduled
+  // tick that did not run here).
+  it("does not count a lost lock when the caller says the miss is expected", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const first = runWithWorkerLock("kicked-job", 5000, () => held);
+    await sleep(10);
+
+    for (let i = 0; i < 5; i++) {
+      expect(await runWithWorkerLock("kicked-job", 5000, async () => {}, { countLockSkip: false })).toBe(false);
+    }
+    expect(jobLockSkips.get({ job: "kicked-job" })).toBe(0);
+
+    // The default still counts.
+    expect(await runWithWorkerLock("kicked-job", 5000, async () => {})).toBe(false);
+    expect(jobLockSkips.get({ job: "kicked-job" })).toBe(1);
+    release();
+    await first;
+  });
+
+  it("a dispatcher kick that loses the lock is not a lock skip; a scheduled tick that loses it is", async () => {
+    // Another replica holds the dispatcher's lock for the whole test.
+    await getRedis().set("worker:lock:notificationDispatcher", "another-replica", "PX", 60_000);
+    const noop: ExpoSender = { send: vi.fn(async () => []), receipts: vi.fn(async () => ({})) };
+
+    // Ticks far apart, so only the kicks below try for the lock.
+    const kicked = startNotificationDispatcher({ sender: noop, intervalMs: 3_600_000, initialDelayMs: 3_600_000 });
+    try {
+      requestDispatchSoon(0);
+      requestDispatchSoon(0);
+      await sleep(150); // the kick has run and missed
+      expect(jobLockSkips.get({ job: "notificationDispatcher" })).toBe(0);
+      expect(jobRuns.get({ job: "notificationDispatcher", result: "success" })).toBe(0);
+    } finally {
+      kicked.stop();
+    }
+
+    // The scheduled tick losing the same lock IS counted.
+    const ticking = startNotificationDispatcher({ sender: noop, intervalMs: 3_600_000, initialDelayMs: 1 });
+    try {
+      await until(() => jobLockSkips.get({ job: "notificationDispatcher" }) === 1);
+    } finally {
+      ticking.stop();
+    }
   });
 
   it("still records the run when Redis is unreachable and the job runs unguarded", async () => {
