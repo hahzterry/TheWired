@@ -23,8 +23,7 @@ export type WrapHandlers = ReturnType<typeof createFriendWrapHandlers> & ReturnT
  * decrypt queue calls `handleGiftWrap`; a wrap never takes the `indexEvent`
  * path.
  *
- * The body is the code as it stood inside `createEventPipeline`, at its
- * original indentation.
+ * The body is the code as it stood inside `createEventPipeline`.
  */
 export function createGiftWrapHandler(ctx: PipelineContext, handlers: WrapHandlers) {
   const { dispatch, getState, dedup } = ctx;

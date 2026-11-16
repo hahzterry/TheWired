@@ -9,8 +9,7 @@ import type { PipelineContext } from "./types";
  * Friend-request rumors that arrive inside gift wraps: request, accept,
  * removal. Called by the gift-wrap handler once a rumor is parsed.
  *
- * The body is the code as it stood inside `createEventPipeline`, at its
- * original indentation.
+ * The body is the code as it stood inside `createEventPipeline`.
  */
 export function createFriendWrapHandlers(ctx: PipelineContext) {
   const { dispatch, getState } = ctx;

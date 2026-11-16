@@ -13,7 +13,7 @@ import type { Batching } from "./batching";
  * Synchronous on purpose: `indexEvent` calls it without awaiting, exactly as
  * the inline case ran.
  *
- * The body is the case as it stood in the switch, at its original indentation.
+ * The body is the case as it stood in the switch.
  */
 export function createDeletionIndexer(ctx: PipelineContext, batching: Batching) {
   const { deps, dispatch, getState } = ctx;

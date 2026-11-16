@@ -12,8 +12,7 @@ import type { Batching } from "./batching";
  * notes / media / articles / music channels. Runs after the kind switch in
  * `indexEvent`, for every event.
  *
- * The body is the code as it stood inside `createEventPipeline`, at its
- * original indentation.
+ * The body is the code as it stood inside `createEventPipeline`.
  */
 export function createSpaceFeedIndexer(ctx: PipelineContext, batching: Batching) {
   const { dispatch, getState, authorSetCache } = ctx;

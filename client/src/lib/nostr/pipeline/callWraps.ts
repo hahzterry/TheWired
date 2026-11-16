@@ -10,8 +10,7 @@ const callLog = createLogger("call");
  * 1:1 call signalling that arrives inside gift wraps: invite, decline, missed.
  * Called by the gift-wrap handler once a rumor is parsed.
  *
- * The body is the code as it stood inside `createEventPipeline`, at its
- * original indentation.
+ * The body is the code as it stood inside `createEventPipeline`.
  */
 export function createCallWrapHandlers(ctx: PipelineContext) {
   const { dispatch, getState } = ctx;

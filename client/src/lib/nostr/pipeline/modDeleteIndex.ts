@@ -11,8 +11,8 @@ import type { Batching } from "./batching";
  * of `indexEvent`. Synchronous on purpose: `indexEvent` calls it without
  * awaiting, exactly as the inline case ran.
  *
- * The body is the case as it stood in the switch, at its original indentation;
- * its four early `break`s out of the switch are `return`s here.
+ * The body is the case as it stood in the switch; its four early `break`s out
+ * of the switch are `return`s here.
  */
 export function createModDeleteIndexer(ctx: PipelineContext, batching: Batching) {
   const { deps, dispatch, getState, dedup } = ctx;

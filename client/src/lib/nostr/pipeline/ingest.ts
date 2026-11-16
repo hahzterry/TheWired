@@ -31,8 +31,7 @@ function logChatLatency(event: NostrEvent, relayUrl: string, receivedAt: number)
  * validate, dedup, verify, the gift-wrap exit, the deleted-content guards,
  * dispatch, index, notify, flush.
  *
- * The body is the code as it stood inside `createEventPipeline`, at its
- * original indentation.
+ * The body is the code as it stood inside `createEventPipeline`.
  */
 export function createIngest(
   ctx: PipelineContext,

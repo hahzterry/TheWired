@@ -17,8 +17,7 @@ export type Batching = ReturnType<typeof createBatching>;
  * everything a pipeline caches. One instance per pipeline: the buffer, the
  * flush timer and the sweep counter live in this closure.
  *
- * The body is the code as it stood inside `createEventPipeline`, at its
- * original indentation.
+ * The body is the code as it stood inside `createEventPipeline`.
  */
 export function createBatching(ctx: PipelineContext) {
   const { deps, dispatch, getState, dedup, authorSetCache } = ctx;

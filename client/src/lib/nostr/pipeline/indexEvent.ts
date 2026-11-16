@@ -47,8 +47,7 @@ export interface IndexHandlers {
  * The music cases stay inline: they await a decrypt for private releases, and
  * a public release must still be indexed without yielding.
  *
- * The body is the code as it stood inside `createEventPipeline`, at its
- * original indentation.
+ * The body is the code as it stood inside `createEventPipeline`.
  */
 export function createEventIndexer(ctx: PipelineContext, batching: Batching, handlers: IndexHandlers) {
   const { dispatch, getState } = ctx;
