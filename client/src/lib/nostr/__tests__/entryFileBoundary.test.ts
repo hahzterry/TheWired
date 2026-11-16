@@ -12,6 +12,12 @@
  * It covers every `.ts` / `.tsx` under `src`, tests included. A unit test for
  * one of the internal modules belongs inside that folder (e.g.
  * `lib/nostr/login/__tests__/`), where the rule does not apply.
+ *
+ * The second block checks the pin lists themselves: a line in an
+ * `evaluationOrder.ts` is a static import, so it loads its module at startup.
+ * If it is the only static import of that module left (the real importers
+ * moved to `import()`, or are gone), the pin is what keeps the module in the
+ * startup graph, silently.
  */
 import { describe, it, expect } from "vitest";
 
@@ -126,5 +132,86 @@ describe("lib/nostr/login and lib/nostr/pipeline are imported only through their
 
   it("has no import that goes around an entry file", () => {
     expect(findViolations(sources)).toEqual([]);
+  });
+});
+
+/** Static value imports (`import … from`, `export … from`, `import "x"`); not `import type`, not `import()`. */
+const STATIC_FROM = /(?:^|[\n;])[ \t]*(?:import|export)\s+([^'"`;]*?)\s*from\s*["']([^"'\n]+)["']/g;
+const SIDE_EFFECT = /(?:^|[\n;])[ \t]*import\s*["']([^"'\n]+)["']/g;
+
+function isTypeOnlyClause(clause: string): boolean {
+  const c = clause.trim();
+  if (/^type\b/.test(c)) return true;
+  const named = /^\{([\s\S]*)\}$/.exec(c);
+  if (!named) return false;
+  const names = named[1].split(",").map((n) => n.trim()).filter(Boolean);
+  return names.length > 0 && names.every((n) => /^type\s/.test(n));
+}
+
+/** `a/b.ts`, `a/b.tsx`, `a/b/index.ts`, `a/b` → `a/b` */
+function moduleId(srcRelative: string): string {
+  return srcRelative.replace(/\.tsx?$/, "").replace(/\/index$/, "");
+}
+
+function staticValueImports(text: string, importer: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(STATIC_FROM)) {
+    if (isTypeOnlyClause(m[1])) continue;
+    const target = resolveSpecifier(m[2], importer);
+    if (target) out.push(moduleId(target));
+  }
+  for (const m of text.matchAll(SIDE_EFFECT)) {
+    const target = resolveSpecifier(m[1], importer);
+    if (target) out.push(moduleId(target));
+  }
+  return out;
+}
+
+const PIN_FILES = ["lib/nostr/login/evaluationOrder.ts", "lib/nostr/pipeline/evaluationOrder.ts"];
+
+/** Pin lines of `pinFile` whose module no other source file imports statically. */
+function findStalePins(files: Record<string, string>, pinFile: string): string[] {
+  const importedElsewhere = new Set<string>();
+  for (const [key, text] of Object.entries(files)) {
+    const importer = toSrcRelative(key);
+    if (PIN_FILES.includes(importer)) continue;
+    if (/(^|\/)__tests__\/|\.test\.tsx?$/.test(importer)) continue;
+    for (const id of staticValueImports(text, importer)) importedElsewhere.add(id);
+  }
+  return staticValueImports(files[`/src/${pinFile}`], pinFile).filter(
+    (id) => !importedElsewhere.has(id),
+  );
+}
+
+describe("evaluationOrder.ts pins", () => {
+  const moduleIds = new Set(Object.keys(sources).map((key) => moduleId(toSrcRelative(key))));
+
+  it.each(PIN_FILES)("%s lists only modules that exist", (pinFile) => {
+    const pins = staticValueImports(sources[`/src/${pinFile}`], pinFile);
+    expect(pins.length).toBeGreaterThan(0);
+    expect(pins.filter((id) => !moduleIds.has(id))).toEqual([]);
+  });
+
+  it("reports a pin that is the only static import of its module", () => {
+    const pinFile = PIN_FILES[0];
+    const files = {
+      [`/src/${pinFile}`]: `import "../../../store";\nimport "../publish";\nimport "../relayList";\nimport "../kickHandler";`,
+      "/src/lib/nostr/login/performLogin.ts": `import { store } from "../../../store";\nimport type { X } from "../publish";`,
+      "/src/lib/nostr/login/spaces.ts": `const { publish } = await import("../publish");\nimport { type RelayList } from "../relayList";`,
+      "/src/lib/nostr/__tests__/kickHandler.test.ts": `import { handleKick } from "../kickHandler";`,
+    };
+    // store has a real static importer; the others are reached only by a type
+    // import, a dynamic import or a test, so their pins are stale.
+    expect(findStalePins(files, pinFile)).toEqual([
+      "lib/nostr/publish",
+      "lib/nostr/relayList",
+      "lib/nostr/kickHandler",
+    ]);
+  });
+
+  it.each(PIN_FILES)("%s has no line that is the only static import of its module", (pinFile) => {
+    // A module listed here means: delete its line from the pin file. Nothing
+    // else imports it statically, so the pin alone keeps it loading at startup.
+    expect(findStalePins(sources, pinFile)).toEqual([]);
   });
 });
