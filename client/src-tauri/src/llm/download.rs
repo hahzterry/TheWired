@@ -124,6 +124,60 @@ pub fn parse_content_range_start(value: &str) -> Option<u64> {
     start.trim().parse().ok()
 }
 
+/// `bytes 100-999/1000` → `1000`; an unknown total (`*`) → `None`.
+pub fn parse_content_range_total(value: &str) -> Option<u64> {
+    let rest = value.trim().strip_prefix("bytes")?;
+    let (_range, total) = rest.split_once('/')?;
+    total.trim().parse().ok()
+}
+
+/// What a response says about its own length, checked against the pinned size
+/// BEFORE a single byte is written.
+///
+/// - `Ok(true)`: the server vouched that this is (the rest of) a file of
+///   exactly the pinned size. What it sends may be kept and resumed later.
+/// - `Ok(false)`: it declared nothing (a chunked body). Accepted, but if it
+///   stops short, what it sent is not kept: nothing ties it to our file.
+/// - `Err`: it declared a different length. That is not our file — typically a
+///   captive portal's sign-in page or an error page answered with `200`. Saving
+///   it would make it the prefix of the next resume, and the mismatch would
+///   only surface after the whole file had been downloaded again.
+pub fn check_declared_length(
+    action: &BodyAction,
+    from: u64,
+    content_length: Option<u64>,
+    range_total: Option<u64>,
+    expected: u64,
+) -> Result<bool, LlmError> {
+    let start = if *action == BodyAction::Append { from } else { 0 };
+    let remaining = expected.saturating_sub(start);
+    let declared = match (range_total, content_length) {
+        (Some(total), _) if total != expected => Some(total),
+        (_, Some(len)) if len != remaining => Some(start.saturating_add(len)),
+        _ => None,
+    };
+    if let Some(got) = declared {
+        return Err(LlmError::new(
+            ErrorCode::UnexpectedResponse,
+            format!(
+                "The download server sent something other than the expected file \
+                 ({got} bytes instead of {expected}). Nothing was saved. If this network \
+                 has a sign-in page, sign in and try again."
+            ),
+        ));
+    }
+    Ok(content_length.is_some() || range_total.is_some())
+}
+
+/// Undo what one response wrote: back to the offset it started from.
+fn roll_back(part: &Path, from: u64) {
+    if from == 0 {
+        let _ = std::fs::remove_file(part);
+    } else if let Ok(file) = std::fs::OpenOptions::new().write(true).open(part) {
+        let _ = file.set_len(from);
+    }
+}
+
 /// Refuse to start (or resume) a download the volume cannot hold. An unknown
 /// free-space figure does not block: the write itself will fail if it must.
 pub fn check_disk(expected: u64, part_len: u64, free: Option<u64>) -> Result<(), LlmError> {
@@ -336,7 +390,7 @@ async fn fetch_into(
     if from > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={from}-"));
     }
-    let mut response = tokio::select! {
+    let response = tokio::select! {
         r = request.send() => r.map_err(|e| network("Could not reach the download server", e))?,
         _ = wait_cancelled(cancel) => return Err(cancelled()),
     };
@@ -347,17 +401,44 @@ async fn fetch_into(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
     let action = body_action(from, response.status().as_u16(), content_range.as_deref())?;
+    if action == BodyAction::Restart {
+        return Ok(FetchOutcome::Restart);
+    }
+    // Before the partial file is opened (and possibly truncated): is this
+    // response our file at all?
+    let vouched = check_declared_length(
+        &action,
+        from,
+        response.content_length(),
+        content_range.as_deref().and_then(parse_content_range_total),
+        spec.size_bytes,
+    )?;
 
-    let mut downloaded = match action {
-        BodyAction::Restart => return Ok(FetchOutcome::Restart),
-        BodyAction::Append => from,
-        BodyAction::Overwrite => 0,
-    };
+    let start = if action == BodyAction::Append { from } else { 0 };
+    let result = write_body(response, spec, part, &action, start, cancel, on_event).await;
+    if result.is_err() && !vouched {
+        // The server never said this was the pinned file, and it did not
+        // deliver all of it: none of what it sent may become a resume base.
+        roll_back(part, start);
+    }
+    result.map(|()| FetchOutcome::Complete)
+}
+
+async fn write_body(
+    mut response: reqwest::Response,
+    spec: &DownloadSpec,
+    part: &Path,
+    action: &BodyAction,
+    start: u64,
+    cancel: &mut watch::Receiver<bool>,
+    on_event: &mut (dyn FnMut(DownloadEvent) + Send),
+) -> Result<(), LlmError> {
+    let mut downloaded = start;
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .append(action == BodyAction::Append)
-        .truncate(action == BodyAction::Overwrite)
+        .append(*action == BodyAction::Append)
+        .truncate(*action == BodyAction::Overwrite)
         .open(part)
         .await
         .map_err(|e| LlmError::io("open the partial download", e))?;
@@ -407,7 +488,7 @@ async fn fetch_into(
             "The connection closed before the download finished. Start it again to resume.",
         ));
     }
-    Ok(FetchOutcome::Complete)
+    Ok(())
 }
 
 /// Resolves once the cancel flag is `true` (or its sender is gone).
@@ -599,6 +680,13 @@ mod tests {
         reject_range: bool,
         /// Trickle the body so a test can cancel mid-stream.
         slow: bool,
+        /// Answer every request `200` with this body instead of the file (a
+        /// captive portal's sign-in page).
+        bogus: Option<Vec<u8>>,
+        /// Send bodies chunked, with no `Content-Length`.
+        chunked: bool,
+        /// Report this total in `Content-Range` instead of the real one.
+        range_total: Option<u64>,
     }
 
     struct TestServer {
@@ -669,6 +757,49 @@ mod tests {
         (format!("http://127.0.0.1:{port}/file"), ranges)
     }
 
+    /// Answers a ranged request with `206`, `Content-Range: bytes N-M/*` (total
+    /// unknown) and a chunked body that stops after `send` bytes: a reply that
+    /// says nothing checkable about the file it comes from.
+    fn serve_unvouched_short(body: Vec<u8>, send: usize) -> (String, Arc<Mutex<Vec<Option<u64>>>>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let seen = ranges.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                let from = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("range: bytes="))
+                    .and_then(|v| v.trim().trim_end_matches('-').parse::<u64>().ok());
+                seen.lock().unwrap().push(from);
+                let start = from.unwrap_or(0) as usize;
+                let piece = &body[start..(start + send).min(body.len())];
+                let header = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{}/*\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                    body.len() - 1
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(format!("{:x}\r\n", piece.len()).as_bytes());
+                let _ = stream.write_all(piece);
+                let _ = stream.write_all(b"\r\n0\r\n\r\n");
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        (format!("http://127.0.0.1:{port}/file"), ranges)
+    }
+
     fn serve(body: Vec<u8>, opts: ServerOpts) -> TestServer {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
@@ -688,6 +819,17 @@ mod tests {
                     .and_then(|v| v.trim_end_matches('-').parse::<u64>().ok());
                 r2.lock().unwrap().push(from);
 
+                if let Some(page) = opts.bogus.clone() {
+                    let len = (!opts.chunked).then_some(page.len());
+                    let _ = request.respond(tiny_http::Response::new(
+                        tiny_http::StatusCode(200),
+                        vec![],
+                        std::io::Cursor::new(page),
+                        len,
+                        None,
+                    ));
+                    continue;
+                }
                 let total = body.len();
                 let start = match from {
                     Some(_) if opts.reject_range => {
@@ -710,7 +852,12 @@ mod tests {
                     headers.push(
                         tiny_http::Header::from_bytes(
                             &b"Content-Range"[..],
-                            format!("bytes {start}-{}/{total}", total.saturating_sub(1)).as_bytes(),
+                            format!(
+                                "bytes {start}-{}/{}",
+                                total.saturating_sub(1),
+                                opts.range_total.unwrap_or(total as u64)
+                            )
+                            .as_bytes(),
                         )
                         .unwrap(),
                     );
@@ -720,13 +867,16 @@ mod tests {
                 } else {
                     Box::new(std::io::Cursor::new(slice))
                 };
+                // A real file host declares the length; `tiny_http` would switch
+                // to chunked for anything over 32 KiB unless told otherwise.
                 let response = tiny_http::Response::new(
                     tiny_http::StatusCode(status),
                     headers,
                     reader,
-                    Some(len),
+                    (!opts.chunked).then_some(len),
                     None,
-                );
+                )
+                .with_chunked_threshold(usize::MAX);
                 let _ = request.respond(response);
             }
         });
@@ -898,12 +1048,176 @@ mod tests {
     async fn a_server_sending_more_than_the_pinned_size_is_cut_off() {
         let tmp = tempfile::tempdir().unwrap();
         let served = payload(300_000);
+        // Declared up front: refused before anything is written.
         let server = serve(served.clone(), ServerOpts::default());
         let mut spec = spec(&server, tmp.path(), &served);
         spec.size_bytes = 50_000;
+        let (result, events) = run(&spec, None).await;
+        assert_eq!(result.unwrap_err().code, ErrorCode::UnexpectedResponse);
+        assert!(events.is_empty());
+        assert!(!part_path(&spec.dest).exists());
+
+        // Not declared (chunked): cut off as soon as it overruns.
+        server.opts.lock().unwrap().chunked = true;
         let (result, _) = run(&spec, None).await;
         assert_eq!(result.unwrap_err().code, ErrorCode::HashMismatch);
         assert!(!part_path(&spec.dest).exists());
+    }
+
+    // ── responses that are not the file ────────────────────────────────────
+
+    #[test]
+    fn a_declared_length_must_match_the_pinned_file_exactly() {
+        let over = BodyAction::Overwrite;
+        let app = BodyAction::Append;
+        // Fresh download.
+        assert_eq!(check_declared_length(&over, 0, Some(1000), None, 1000).unwrap(), true);
+        assert_eq!(check_declared_length(&over, 0, Some(1000), Some(1000), 1000).unwrap(), true);
+        // Chunked: nothing declared, so nothing vouched.
+        assert_eq!(check_declared_length(&over, 0, None, None, 1000).unwrap(), false);
+        for wrong in [0u64, 1, 999, 1001, 2048] {
+            let err = check_declared_length(&over, 0, Some(wrong), None, 1000).unwrap_err();
+            assert_eq!(err.code, ErrorCode::UnexpectedResponse, "{wrong}");
+            assert!(err.message.contains(&format!("{wrong} bytes instead of 1000")), "{}", err.message);
+        }
+        // A server that ignored our Range and sends the whole file is judged
+        // as a whole file, whatever offset we had asked for.
+        assert_eq!(check_declared_length(&over, 400, Some(1000), None, 1000).unwrap(), true);
+        assert!(check_declared_length(&over, 400, Some(600), None, 1000).is_err());
+
+        // Resume from byte 400 of 1000.
+        assert_eq!(check_declared_length(&app, 400, Some(600), Some(1000), 1000).unwrap(), true);
+        assert_eq!(check_declared_length(&app, 400, Some(600), None, 1000).unwrap(), true);
+        assert_eq!(check_declared_length(&app, 400, None, Some(1000), 1000).unwrap(), true);
+        assert_eq!(check_declared_length(&app, 400, None, None, 1000).unwrap(), false);
+        // The server's file is a different size than ours: not the same file.
+        assert!(check_declared_length(&app, 400, Some(600), Some(1200), 1000).is_err());
+        assert!(check_declared_length(&app, 400, Some(800), Some(1000), 1000).is_err());
+        assert!(check_declared_length(&app, 400, Some(599), None, 1000).is_err());
+    }
+
+    #[test]
+    fn content_range_total_is_parsed() {
+        assert_eq!(parse_content_range_total("bytes 100-999/1000"), Some(1000));
+        assert_eq!(parse_content_range_total("bytes 0-0/1"), Some(1));
+        assert_eq!(parse_content_range_total("bytes 7-9/*"), None);
+        assert_eq!(parse_content_range_total("bytes */1000"), Some(1000));
+        assert_eq!(parse_content_range_total("items 0-9/10"), None);
+        assert_eq!(parse_content_range_total(""), None);
+    }
+
+    fn portal_page() -> Vec<u8> {
+        b"<html><body><h1>Sign in to Hotel Wi-Fi</h1><form>...</form></body></html>".to_vec()
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_page_is_never_saved_so_the_next_attempt_gets_the_real_file() {
+        // REGRESSION: a `200` whose body was a captive portal's page used to be
+        // written to the partial file. The next attempt resumed after it, the
+        // real bytes were appended to the page, and the checksum failed only
+        // once the whole file had been downloaded again.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = payload(400_000);
+        let server = serve(data.clone(), ServerOpts { bogus: Some(portal_page()), ..Default::default() });
+        let spec = spec(&server, tmp.path(), &data);
+
+        let (first, events) = run(&spec, None).await;
+        let err = first.unwrap_err();
+        assert_eq!(err.code, ErrorCode::UnexpectedResponse);
+        assert!(err.message.contains("sign-in page"), "{}", err.message);
+        assert!(events.is_empty(), "nothing was written, so no progress is reported");
+        assert!(!part_path(&spec.dest).exists(), "the page must not become a resume base");
+        assert!(!spec.dest.exists());
+
+        // Signed in: the same URL now serves the file.
+        server.opts.lock().unwrap().bogus = None;
+        let (second, _) = run(&spec, None).await;
+        second.unwrap();
+        assert_eq!(std::fs::read(&spec.dest).unwrap(), data);
+        // Both attempts started from byte 0: nothing was resumed.
+        assert_eq!(server.ranges.lock().unwrap().as_slice(), &[None, None]);
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_page_sent_without_a_length_is_rolled_back() {
+        // Chunked, so it cannot be refused up front. It is written, ends far
+        // short of the file, and must then be undone rather than kept.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = payload(400_000);
+        let server = serve(
+            data.clone(),
+            ServerOpts { bogus: Some(portal_page()), chunked: true, ..Default::default() },
+        );
+        let spec = spec(&server, tmp.path(), &data);
+
+        let (first, _) = run(&spec, None).await;
+        assert_eq!(first.unwrap_err().code, ErrorCode::Network);
+        assert!(!part_path(&spec.dest).exists(), "the page must not become a resume base");
+
+        server.opts.lock().unwrap().bogus = None;
+        server.opts.lock().unwrap().chunked = false;
+        let (second, _) = run(&spec, None).await;
+        second.unwrap();
+        assert_eq!(std::fs::read(&spec.dest).unwrap(), data);
+        assert_eq!(server.ranges.lock().unwrap().as_slice(), &[None, None]);
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_page_does_not_destroy_a_good_partial_download() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = payload(400_000);
+        let server = serve(data.clone(), ServerOpts { bogus: Some(portal_page()), ..Default::default() });
+        let spec = spec(&server, tmp.path(), &data);
+        std::fs::write(part_path(&spec.dest), &data[..150_000]).unwrap();
+
+        // The portal answers the ranged request with `200` and its page.
+        let (first, _) = run(&spec, None).await;
+        assert_eq!(first.unwrap_err().code, ErrorCode::UnexpectedResponse);
+        assert_eq!(
+            std::fs::read(part_path(&spec.dest)).unwrap(),
+            &data[..150_000],
+            "the 150 000 good bytes are still there, untouched"
+        );
+
+        server.opts.lock().unwrap().bogus = None;
+        let (second, _) = run(&spec, None).await;
+        second.unwrap();
+        assert_eq!(std::fs::read(&spec.dest).unwrap(), data);
+        assert_eq!(server.ranges.lock().unwrap().as_slice(), &[Some(150_000), Some(150_000)]);
+    }
+
+    #[tokio::test]
+    async fn a_ranged_reply_for_a_file_of_another_size_is_refused() {
+        // The server honours the offset but its copy is not our pinned file.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = payload(300_000);
+        let server = serve(data.clone(), ServerOpts { range_total: Some(999_999), ..Default::default() });
+        let spec = spec(&server, tmp.path(), &data);
+        std::fs::write(part_path(&spec.dest), &data[..100_000]).unwrap();
+
+        let (result, _) = run(&spec, None).await;
+        assert_eq!(result.unwrap_err().code, ErrorCode::UnexpectedResponse);
+        assert_eq!(std::fs::metadata(part_path(&spec.dest)).unwrap().len(), 100_000);
+        assert!(!spec.dest.exists());
+    }
+
+    #[tokio::test]
+    async fn a_chunked_resume_that_stops_short_is_rolled_back_to_where_it_started() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = payload(300_000);
+        let (url, _ranges) = serve_unvouched_short(data.clone(), 40_000);
+        let spec = DownloadSpec {
+            url,
+            dest: tmp.path().join("model.gguf"),
+            size_bytes: data.len() as u64,
+            sha256: sha(&data),
+        };
+        std::fs::write(part_path(&spec.dest), &data[..100_000]).unwrap();
+
+        let (result, _) = run(&spec, None).await;
+        assert_eq!(result.unwrap_err().code, ErrorCode::Network);
+        // 40 000 unvouched bytes were appended and then removed again.
+        assert_eq!(std::fs::read(part_path(&spec.dest)).unwrap(), &data[..100_000]);
     }
 
     #[tokio::test]
