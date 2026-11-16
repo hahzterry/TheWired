@@ -121,7 +121,11 @@ cd client/src-tauri && cargo build   # Build Rust binary
   - `relayManager.ts` -- Multi-relay WebSocket orchestrator (singleton)
   - `relayConnection.ts` -- Single WebSocket wrapper per relay
   - `subscriptionManager.ts` -- REQ/CLOSE/EOSE lifecycle (singleton)
-  - `eventPipeline.ts` -- Dedup + validate + verify + dispatch + feature routing
+  - `eventPipeline.ts` -- Entry point + the app's one pipeline instance (`processIncomingEvent`, `flushEventPipeline`, `resetEventPipelineCaches`). The stages live in `pipeline/`:
+    - `ingest.ts` (validate → dedup → verify → dispatch → index → notify → flush), `batching.ts` (burst buffer, flush, entity sweep), `indexEvent.ts` (**the kind switch**), `deletionIndex.ts` / `modDeleteIndex.ts` (kind 5 / 9005 cases), `spaceFeeds.ts`, `giftWrapHandler.ts` + `friendWraps.ts` + `callWraps.ts` (kind 1059 rumors), `createEventPipeline.ts` (the factory), `evaluationOrder.ts` (import-order pin, don't reorder)
+  - `loginFlow.ts` -- Entry point for the login path (`getSigner`, `performLogin`, `tryRestoreSession`, `switchAccount`, `performCleanup`, `performLogout`, …). The code lives in `login/`:
+    - `performLogin.ts` (the bootstrap order), `signerSession.ts`, `restore.ts`, `accounts.ts`, `cleanup.ts` (teardown order), `state.ts` (the one shared state object), plus per-step modules (`relayBridge`, `userData`, `relayBootstrap`, `spaces`, `music`, `giftWrapSub`, `followers`, `sessionStore`) and `evaluationOrder.ts`
+    - Import both from the entry files, never from `pipeline/*` or `login/*`
   - `dedup.ts` -- LRU deduplication (100k-entry `lru-cache`, zero false positives, supports `unmarkSeen` for retry)
   - `verifyWorkerBridge.ts` -- Main-thread bridge to Web Worker
   - `signer.ts` / `nip46Signer.ts` -- NostrSigner interface + factory; NIP-46 bunker backend
@@ -233,7 +237,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 
 - Use the `mcp__nostrbook` tools to look up NIP specs, event kinds, and tag definitions
 - Event kinds used: 0, 1, 3, 7, 9, 20, 22, 34235/34236, 30023, 30311, 1311, 1059/13/14 (NIP-17), 9734/9735 (NIP-57 zaps), 13194/23194/23195/23196/23197 (NIP-47 NWC), 24133 (NIP-46), 10000, 10002, 10009, 10063, 22242, 24242, 27235, 30078 (NIP-78 — also decentralized-space layout/relay-set overlays), 31683/33123/30119 (music), 39000-39002 + 9000-9022 (NIP-29). Full table in README/ARCHITECTURE.
-- Adding a new kind has many touch-points (`EVENT_KINDS`, routes, filterBuilder, `eventPipeline.indexEvent`, slices, render components) — load the `nostr-kind-rendering` skill; a missed step means the event silently never appears.
+- Adding a new kind has many touch-points (`EVENT_KINDS`, routes, filterBuilder, the `indexEvent` switch in `lib/nostr/pipeline/indexEvent.ts`, slices, render components) — load the `nostr-kind-rendering` skill; a missed step means the event silently never appears.
 - Bootstrap relays: `wss://relay.damus.io`, `wss://nos.lol`
 - Channel routing is defined in `client/src/lib/nostr/channelRoutes.ts`
 
