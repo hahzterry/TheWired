@@ -194,7 +194,9 @@ Spaces run in three modes side-by-side, gated by one client predicate (`features
 A space can be end-to-end encrypted (`features/spaces/e2ee/`, `docs/E2EE_SPACES.md`): chat travels as kind **4290** sealed events under a per-epoch space key handed out in kind **4291** key grants; the codec is `packages/core/src/crypto/spaceKeys.ts`, the contract constants `packages/shared-types/src/spaceE2ee.ts`. Load-bearing rules:
 - **Epoch keys NEVER touch Redux or IndexedDB** — only the keyring's memory + the keychain (`secretStore`). `spaceE2eeSlice` holds non-secret state only.
 - **Never publish plaintext content with an encrypted space's `h` tag.** `publish.ts` refuses to sign it; send through `sealForSpace`. The pipeline ignores plaintext kind 9 received there.
-- **The key reconcile acts on the authority's roster fetched at that moment** (`freshRoster.ts`), never the cached `memberPubkeys`.
+- **The key reconcile acts on the authority's roster fetched at that moment** (`freshRoster.ts`), never the cached `memberPubkeys`, and on the key holders the relay serves (`freshHolders.ts`), never a local note.
+- **Fail closed until the record loads.** `e2eeRecord.ts` loads which spaces are encrypted (no crypto, startup-safe) before any keychain read; the composer and the publish guard refuse space-scoped plaintext until it has. Keep the keyring, controller and codec off the startup path (dynamic `import()`).
+- **No encrypted-space content in AI context** (`isEncryptedSpaceContent` in `features/ai/context/aiContext.ts`).
 - **Key managers come from the epoch chain, never from the server's role list.** Accepting a grant goes through `judgeEpochGrant` (root pinned, `seq`/`prev` must link); look up `spaceE2ee.spaces` with `encryptedSpaceEntry` (own-property), since space ids are other people's strings.
 - The relay has no code for these kinds on purpose; `services/relay/tests/sealed_space_events.rs` pins that they are gated and stored like chat.
 

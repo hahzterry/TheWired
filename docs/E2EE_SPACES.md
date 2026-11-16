@@ -23,6 +23,8 @@ recommendation and keeps it behind one module so it is cheap to change (§15 say
 | D6 | **Which space modes** | All three (Platform, Decentralized A-lite, NIP-29-native). The envelope is an ordinary `h`-tagged event, so every relay that hosts the space gates it the same way. Platform spaces lose backend features (§8). | Native-only, so "encrypted" always means "no backend involved". | Low (one predicate in the create dialog). |
 | D7 | **Who may hand out and rotate keys** | The space's **key root** (whoever made the first epoch) plus the `managers` each epoch names. Clients enforce it as a signed chain (§5.4), never from the server's role list. The slice names only the root; appointing further managers is an explicit action for phase 2. | Any member may re-share the current key (faster onboarding, weaker against a server that adds a ghost member). | Medium. |
 | D11 | **How a device learns a space is encrypted** | Today: only from a key grant it has seen with the feature on (or by creating the space). Until then it treats the space as ordinary and can post plaintext there. D8 (a relay-enforced flag) is the fix and SHOULD land before this is offered beyond testing. | Carry a marker in invites and in 39000 as well; or make every client look for grants before its first post in any space. | Additive. |
+| D12 | **Who a device trusts for its first key** | Today (trust on first use): the first grant a device sees is accepted from the space's creator, or, when the creator is unknown (an imported group), from a listed admin, and only when that grant names its own signer as the key root. Those lists come from the relay or the backend, so **a relay or backend that lies about the creator, or any listed admin of a group whose creator is unknown, can hand a device with no key yet a key of its choosing**, and that device then rejects the real keys. The pinned root is shown in the space's info panel so a wrong one can be noticed. Options: **(a, recommended)** carry the key root in the invite / join link, so a joiner pins the root the inviter vouched for and the server is out of the loop; (b) show a short fingerprint of the root to compare out of band, and ask the user to confirm it before the first key is used; (c) both: the link pins it, the fingerprint lets people check later; (d) keep trust on first use as it is. (a) adds a field to invite links of all three space modes. | Medium: (a) touches the invite formats; (b) is client-only. |
+| D13 | **Which of two same-`seq` epochs to send with** | Today (§5.3): the smaller `epochId`. An issuer can generate keys until its epoch id is small, so a fork can always win the tie. Nothing can exploit it while only the root issues keys, so the slice leaves the rule as written. Options: (a, recommended) prefer the epoch the key root issued, then the earlier `at`, then the smaller id; (b) prefer the epoch whose grant the client accepted first (not the same on every device); (c) refuse a second epoch with an existing `seq` unless the root signed it. | Low while only the root issues; a rule every client must share once managers exist. |
 | D8 | **Server-side "encrypted" flag** | Phase 2: the relay stores an `encrypted` flag per group and refuses plaintext chat kinds there; the backend gets a column for the directory badge. Not in the slice (needs a relay and a backend migration). | Client-only marker forever (what the slice does). | Additive. |
 | D9 | **Push for encrypted spaces** | None in v1. Phase 3: opt-in, content-free "new activity in *space*" from the envelope's metadata only. | Mention pushes via cleartext `p` tags (see D5). | Additive. |
 | D10 | **Reports to the platform operator** | Phase 3: the reporter discloses the per-message NIP-44 keys for the one reported event, so the operator can verify and read that message and nothing else (§8.4). Needs a crypto review before it ships. | Reports stay inside the space (admins hold the key); or unverifiable plaintext reports. | Additive. |
@@ -157,7 +159,16 @@ event. The manager needs one signature; the per-member encryption is local.
 A member's client subscribes to grants for its spaces, finds its own `p` entry, asks the signer
 for one `nip44_decrypt(eph, entry)`, checks the result (§6.2) and stores the key.
 
-- **Creating a space**: the creator makes epoch 0 and publishes a grant to themselves.
+- **Creating a space**: the creator makes epoch 0 and publishes a grant to themselves. If the
+  creation fails or is cancelled, the prepared key and the space's encrypted marker are
+  removed again.
+- **A grant counts once the relay stored it.** A manager's client waits for the space's host
+  relay to accept each grant (NIP-01 `OK`). Who holds a key is then read back from the relay
+  at each reconcile (every valid grant for the epoch it serves), not from a local note: a
+  grant the relay refused handed nobody a key and is published again.
+- **Members fetch the grants that name them, to the end.** A relay answers one REQ with at
+  most its `max_limit` events (500 on ours), so the grants addressed to the account
+  (`#p`) are paged with `until` until the relay has no more.
 - **Someone joins**: a manager's client sees a roster member without the current key and
   publishes a grant for them (a *late grant*: same epoch, new throwaway key). Until then the
   member sees "Waiting for an admin to share the key".
@@ -179,7 +190,12 @@ a member triggers it directly; a roster change observed later (a voluntary leave
 too.
 
 - Senders MUST seal with the newest epoch they hold: highest `seq`, ties broken by the
-  smaller `epochId`.
+  smaller `epochId` (D13).
+- **A rotation takes effect once its grants are stored.** The new key goes to the keychain
+  first, then the grants are published; only when the host relay has accepted all of them does
+  the manager's client start sealing with it. Until then it keeps sealing under the previous
+  epoch, which everyone still in the space holds (the removed member is already refused by the
+  relay), and retries the same rotation with backoff and on the next roster change.
 - Receivers MUST accept any epoch they hold a key for. Messages sealed under the old epoch
   during the hand-over still decrypt for everyone who was a member then.
 - Two managers rotating at once produce two epochs with the same `seq`. Every member holds
@@ -202,9 +218,11 @@ The server's role list is not trusted for this. Every grant payload carries:
 
 A client accepts a grant's epoch when:
 
-1. **First key for this space** (trust on first use): the signer is the space's creator or
-   one of its admins as the client currently knows them, **and** the payload vouches for the
-   signer (it is the `root` or one of the `managers`). The client pins the payload's `root`.
+1. **First key for this space** (trust on first use, D12): the signer is the space's creator
+   when the client knows the creator, or one of its listed admins when it does not (an
+   imported group); **and** the payload names the signer itself as `root`. The client pins it.
+   No one can pin a root other than themselves, and a payload that merely lists the signer as
+   a manager is not enough.
 2. **Otherwise** the payload names the pinned root, and
    - the signer is the root; or
    - the epoch **extends the chain the client holds**: `prev` is an accepted epoch, `seq` is
@@ -214,8 +232,13 @@ A client accepts a grant's epoch when:
 
 Consequences:
 
-- A relay or backend that edits the role list cannot make members accept a key of its
-  choosing; it would need the root's or a manager's account key.
+- **Once a device holds a key**, a relay or backend that edits the role list cannot make it
+  accept a key of its choosing; it would need the root's or a manager's account key.
+- **Before that, it can** (D12). The creator and admin lists come from the relay or the
+  backend. One that names the wrong creator, or any listed admin of a group whose creator is
+  unknown, can hand a device that has no key for the space yet a first key it controls, and
+  that device then rejects the real ones. The pinned root is shown in the space's info panel
+  with its full key, so members can compare it; the invite-link option in D12 closes this.
 - Nobody but the root can jump ahead of the chain, start a second chain or re-root the space.
 - A manager dropped at a rotation can issue nothing after it. They can still fork *from the
   last epoch they managed*, one step, which every member would hold alongside the real one;
@@ -408,6 +431,7 @@ grant can be made for someone before they join.
 | **Server-side moderation** (operator reading reported content, spam filters on text) | no plaintext | Admins are members and read everything: 9005 delete, kick, ban and mute all still work. Operator suspension by pubkey still works. Rate limits still apply. |
 | **Reports to the operator** (kind 1984) | the operator cannot read the reported event | §8.4. Until then a report carries only ids, and the client offers "report to the space's admins". |
 | **Link previews, media gating by the backend, transcoding** | rumor URLs are hidden; attachments would upload in the clear | v1: attachments are disabled in encrypted spaces. Phase 2: encrypted blobs with the DM file scheme (AES-256-GCM per file, key in the rumor's `imeta`). |
+| **The AI assistant** | its context goes to whichever model is configured, which can be a cloud provider | Messages of an encrypted space are never part of an AI context: the auto-run read tools skip them, and "Ask AI" builds no context from such a space, channel, message or thread. A consent step like the one for DMs could open this later. |
 | **Polls, reactions, edits, notes/media/music channels** | each needs a sealed form | v1: chat only; the other channel types and actions are disabled in encrypted spaces. Phased in (§13). |
 | **Interop with other NIP-29 clients** | they do not know 4290 | They see an empty group. The 39000 metadata gets an `encrypted` marker in phase 2 so they can say why. |
 
@@ -517,6 +541,8 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 | Key state, accept rules, epoch choice | `client/src/features/spaces/e2ee/spaceKeyring.ts` |
 | Roster reconcile (late grant / rotate) | `client/src/features/spaces/e2ee/keyReconcile.ts` |
 | Roster the reconcile acts on | `client/src/features/spaces/e2ee/freshRoster.ts` |
+| Key holders as the relay serves them | `client/src/features/spaces/e2ee/freshHolders.ts` (paged with `pagedReq.ts`) |
+| Which spaces are encrypted (loaded before any key) | `client/src/features/spaces/e2ee/e2eeRecord.ts` |
 | Send and receive | `client/src/features/spaces/e2ee/sealedChat.ts` |
 | Subscriptions and lifecycle | `client/src/features/spaces/e2ee/e2eeController.ts` (mounted by `useSpaceE2ee` in `App.tsx`) |
 | Pipeline seam | `client/src/lib/nostr/spaceE2eeHooks.ts` |
@@ -540,6 +566,12 @@ being off by default.
   dropped one can still fork one step from the last epoch they managed (§5.4).
 - **An admin can mark a space encrypted on other members' devices** by publishing a grant
   there, which blocks plaintext chat on those devices; there is no "unmark" in the UI.
+- **The first key is trust on first use** (D12): a lying relay or backend can hand a device
+  its first key. The pinned root is shown so a wrong one can be noticed.
+- **The composer waits for the account's record** of encrypted spaces (one IndexedDB read
+  at startup and after an account switch), and nothing space-scoped is signed in the clear
+  until it has loaded. If it can't be read at all, posting into any space is refused with
+  "Still loading".
 
 - **History is one REQ of 500 sealed events per space**, newest first, with no paging.
 - **Reactions**: the reaction button still shows in an encrypted space, and reacting is
@@ -553,7 +585,7 @@ being off by default.
   (the endpoint returns every member). When that endpoint gains paging, the reconcile MUST
   walk every page first, or it would rotate out the members beyond the first one.
 - **Two managers online at once** both hand a joiner the key (harmless duplicates) and can
-  both rotate on a removal (two epochs with the same `seq`, resolved by the tie-break).
+  both rotate on a removal (two epochs with the same `seq`, resolved by the tie-break, D13).
 - **Live delivery right after creating or joining a group**: the relay refreshes a
   connection's membership at most every 30 s, so events from others in that window are not
   pushed live (true for plaintext chat as well). They load on the next history fetch.
