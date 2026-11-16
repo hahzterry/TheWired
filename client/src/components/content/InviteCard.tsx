@@ -4,7 +4,6 @@ import { Users, ArrowRight, Loader2, AlertCircle } from "lucide-react";
 import { Avatar } from "../ui/Avatar";
 import { getInviteWithPreview, type InviteWithPreview } from "@/lib/api/invites";
 import { useAppSelector } from "@/store/hooks";
-import { invitePath } from "@/features/spaces/inviteLink";
 
 interface InviteCardProps {
   code: string;
@@ -48,7 +47,9 @@ export function InviteCard({ code, spaceId }: InviteCardProps) {
       navigate("/");
     } else {
       // Open join flow — navigate to invite route which triggers JoinSpaceModal
-      navigate(spaceId ? invitePath(code, spaceId) : `/invite/${encodeURIComponent(code)}`);
+      // Same path as invitePath() in features/spaces/inviteLink.ts, built here so
+      // the invite checks stay out of the startup bundle.
+      navigate(`/invite/${encodeURIComponent(code)}` + (spaceId ? `/${encodeURIComponent(spaceId)}` : ""));
     }
   };
 
