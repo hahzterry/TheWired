@@ -1,13 +1,8 @@
-import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import type { Registry } from "./registry.js";
+import { createEventLoopDelaySampler, type EventLoopDelaySampler, type SamplerClock } from "./eventLoopDelay.js";
 
 /** How long one event-loop delay window is. */
 export const EVENT_LOOP_WINDOW_MS = 10_000;
-
-/** The delay histogram's sampling interval. Node records the time between
- *  two firings of this timer, so every sample includes the interval itself;
- *  it is subtracted to leave the delay. */
-const SAMPLE_RESOLUTION_MS = 20;
 
 export interface EventLoopMonitor {
   /** Begin measuring event-loop delay in fixed windows. No-op if running. */
@@ -22,13 +17,15 @@ export interface EventLoopMonitor {
  * scrape time; none of it does I/O.
  *
  * Event-loop delay is different: it is measured over fixed windows that the
- * process itself closes on a timer, and a scrape only reads the last closed
- * window. Scraping therefore never changes what is measured — a second
+ * process itself closes (eventLoopDelay.ts), and a scrape only reads the last
+ * closed window. Scraping therefore never changes what is measured — a second
  * scraper or a manual curl cannot shorten the window another one sees. The
  * measurement is off until the returned monitor is started (the metrics
  * listener does that), so a process that exports nothing measures nothing.
+ *
+ * `clock` is for tests: the timer and clock the delay sampler runs on.
  */
-export function registerProcessMetrics(registry: Registry): EventLoopMonitor {
+export function registerProcessMetrics(registry: Registry, clock?: SamplerClock): EventLoopMonitor {
   const cpuUser = registry.counter({
     name: "process_cpu_user_seconds_total",
     help: "User CPU time spent by the process.",
@@ -104,40 +101,31 @@ export function registerProcessMetrics(registry: Registry): EventLoopMonitor {
     external.set(mem.external);
   });
 
-  let loopDelay: IntervalHistogram | null = null;
-  let windowTimer: NodeJS.Timeout | null = null;
-
-  /** Publish the window that just ended and open the next one. */
-  const closeWindow = () => {
-    if (!loopDelay) return;
-    // The histogram reports nanoseconds (NaN before its first sample), and
-    // each sample is the sampling interval plus the delay: an idle loop
-    // would otherwise read as a constant 20 ms.
-    const delay = (v: number) => (Number.isFinite(v) ? Math.max(0, v / 1e9 - SAMPLE_RESOLUTION_MS / 1000) : 0);
-    lagMean.set(delay(loopDelay.mean));
-    lagP99.set(delay(loopDelay.percentile(99)));
-    lagMax.set(delay(loopDelay.max));
-    loopDelay.reset();
-  };
+  let sampler: EventLoopDelaySampler | null = null;
 
   return {
     start(windowMs: number = EVENT_LOOP_WINDOW_MS) {
-      if (loopDelay) return;
-      // Node unrefs the histogram's own timer.
-      loopDelay = monitorEventLoopDelay({ resolution: SAMPLE_RESOLUTION_MS });
-      loopDelay.enable();
+      if (sampler) return;
+      // Present (as 0) from the start, so the series exists before the first
+      // window closes.
       lagMean.set(0);
       lagP99.set(0);
       lagMax.set(0);
-      windowTimer = setInterval(closeWindow, windowMs);
-      windowTimer.unref?.();
+      sampler = createEventLoopDelaySampler({
+        windowMs,
+        clock,
+        onWindow: (window) => {
+          lagMean.set(window.mean);
+          lagP99.set(window.p99);
+          lagMax.set(window.max);
+        },
+      });
+      sampler.start();
     },
     stop() {
-      if (windowTimer) clearInterval(windowTimer);
-      windowTimer = null;
-      loopDelay?.disable();
-      loopDelay = null;
+      sampler?.stop();
+      sampler = null;
     },
-    running: () => loopDelay !== null,
+    running: () => sampler !== null,
   };
 }

@@ -96,8 +96,10 @@ Event-loop delay is measured in fixed 10 s windows that the process closes
 itself, and a scrape reads the last closed window. Scraping does not reset
 anything, so several scrapers (or a manual `curl`) all see the same values.
 The values are the delay itself, with the 20 ms sampling interval taken out,
-so an idle process reads close to 0. It is measured only while the metrics
-listener is running.
+so an idle process reads close to 0 (a millisecond or two of timer
+granularity). A stall is reported once, in the window that was open when it
+ended, including one that runs across a window boundary. It is measured only
+while the metrics listener is running.
 
 ### Dependencies
 
