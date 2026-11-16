@@ -11,7 +11,7 @@ import { togglePinnedSpace } from "../../store/slices/uiSlice";
 import { useSpaceMuted } from "../notifications/useNotifications";
 import { usePermissions } from "./usePermissions";
 import { useSpace } from "./useSpace";
-import { InviteGenerateModal } from "./InviteGenerateModal";
+import { InviteGenerateModal } from "./lazyModals";
 import { deleteSpaceApi, leaveSpaceApi } from "../../lib/api/spaces";
 import { ApiRequestError } from "../../lib/api/client";
 import { isBackendBacked } from "./spaceType";

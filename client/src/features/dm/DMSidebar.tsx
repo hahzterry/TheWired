@@ -15,6 +15,7 @@ import { getDisplayName } from "./dmUtils";
 import { SearchPanel } from "@/features/search/SearchPanel";
 import type { DMContact } from "@/store/slices/dmSlice";
 import type { MessageSearchResult } from "@/features/search/useMessageSearch";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 type SidebarTab = "messages" | "friends";
 
@@ -177,16 +178,17 @@ export function DMSidebar({ activePartner, onSelectContact }: DMSidebarProps) {
           ) : (
             <>
               {[...pinned, ...regular].map((contact) => (
-                <DMContactItem
-                  key={contact.pubkey}
-                  contact={contact}
-                  isActive={activePartner === contact.pubkey}
-                  filter={contactFilter}
-                  pinned={isConversationFlagged(flags, "pinned", contact.pubkey)}
-                  muted={isConversationFlagged(flags, "muted", contact.pubkey)}
-                  onClick={() => onSelectContact(contact.pubkey)}
-                  onContextMenu={(e) => handleContactContextMenu(contact.pubkey, e)}
-                />
+                <ItemBoundary key={contact.pubkey} id={contact.pubkey} label="dm-row" noun="conversation" className="mx-2 my-1">
+                  <DMContactItem
+                    contact={contact}
+                    isActive={activePartner === contact.pubkey}
+                    filter={contactFilter}
+                    pinned={isConversationFlagged(flags, "pinned", contact.pubkey)}
+                    muted={isConversationFlagged(flags, "muted", contact.pubkey)}
+                    onClick={() => onSelectContact(contact.pubkey)}
+                    onContextMenu={(e) => handleContactContextMenu(contact.pubkey, e)}
+                  />
+                </ItemBoundary>
               ))}
               {archived.length > 0 && (
                 <div className="border-t border-border">
@@ -202,15 +204,16 @@ export function DMSidebar({ activePartner, onSelectContact }: DMSidebarProps) {
                   </button>
                   {showArchived &&
                     archived.map((contact) => (
-                      <DMContactItem
-                        key={contact.pubkey}
-                        contact={contact}
-                        isActive={activePartner === contact.pubkey}
-                        filter={contactFilter}
-                        muted={isConversationFlagged(flags, "muted", contact.pubkey)}
-                        onClick={() => onSelectContact(contact.pubkey)}
-                        onContextMenu={(e) => handleContactContextMenu(contact.pubkey, e)}
-                      />
+                      <ItemBoundary key={contact.pubkey} id={contact.pubkey} label="dm-row" noun="conversation" className="mx-2 my-1">
+                        <DMContactItem
+                          contact={contact}
+                          isActive={activePartner === contact.pubkey}
+                          filter={contactFilter}
+                          muted={isConversationFlagged(flags, "muted", contact.pubkey)}
+                          onClick={() => onSelectContact(contact.pubkey)}
+                          onContextMenu={(e) => handleContactContextMenu(contact.pubkey, e)}
+                        />
+                      </ItemBoundary>
                     ))}
                 </div>
               )}

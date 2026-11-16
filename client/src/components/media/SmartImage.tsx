@@ -162,6 +162,11 @@ export const SmartImage = memo(function SmartImage({
           onError={media.onError}
           onClick={handleClick}
           className={`relative z-10 mx-auto block w-full ${fitted ? "h-full" : d.maxH} cursor-zoom-in object-contain ${media.retrying ? "invisible" : ""} ${src ? "" : "min-h-24"}`}
+          // Size known up front (imeta `dim` or an earlier load): hold the
+          // card's box before the image arrives so the feed doesn't shift.
+          // Same box the loaded image takes: full width, height from the
+          // ratio, capped by the density's max height.
+          style={!fitted && natural ? { aspectRatio: `${natural.w} / ${natural.h}` } : undefined}
         />
         {downloadBtn}
       </div>

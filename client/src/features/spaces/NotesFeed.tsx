@@ -9,12 +9,14 @@ import { useProfile } from "../profile/useProfile";
 import { useUserPopover } from "../profile/UserPopoverContext";
 import { useMusicNote } from "../../lib/media/useNoteMedia";
 import { imageCache } from "../../lib/cache/imageCache";
-import { useScrollRestore } from "../../hooks/useScrollRestore";
+import { useAnchoredScrollRestore } from "../../hooks/useAnchoredScrollRestore";
+import { readFeedScroll, writeFeedScroll } from "../../hooks/feedScrollMemory";
+import { useRetainedState } from "../../hooks/useRetainedState";
 import { useFeedPagination } from "./useFeedPagination";
 import { FeedToolbar } from "./FeedToolbar";
 import { LoadMoreButton } from "./LoadMoreButton";
-import { RevealSentinel } from "../../components/ui/RevealSentinel";
-import { useNoteEngagementSub } from "./useNoteEngagementSub";
+import { VirtualFeed, type VirtualFeedHandle, type VirtualFeedRange } from "../../components/virtual/VirtualFeed";
+import { useEngagementRange } from "../profile/engagementCollector";
 import { parseQuoteRef } from "./noteParser";
 import { useIsBlocked } from "../../hooks/useIsBlocked";
 import { useUnblock } from "../../hooks/useUnblock";
@@ -39,15 +41,23 @@ import {
 import { selectHiddenPubkeySet } from "../../store/slices/feedPrefsSlice";
 import { isEventVisibleInFeed } from "../friends/feedVisibility";
 import { FeedPrefsButton } from "../friends/FeedPrefsButton";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
-/** How many cards to add to the rendered window each time the sentinel is hit. */
-const RENDER_PAGE = 30;
+/** Height guess for a note card that was never measured (text + footer). */
+const NOTE_HEIGHT_ESTIMATE = 220;
+/** Space between cards (the old `space-y-4`). */
+const NOTE_GAP = 16;
+/** Cards that fade in on first paint. */
+const INTRO_CARDS = 15;
+
+const noteKey = (event: NostrEvent) => event.id;
 
 const NoteCard = memo(function NoteCard({ event }: { event: NostrEvent }) {
   const { profile } = useProfile(event.pubkey);
   const isBlocked = useIsBlocked(event.pubkey);
   const { openUserPopover } = useUserPopover();
-  const [showMedia, setShowMedia] = useState(true);
+  // Kept while the card is outside the feed's rendered window.
+  const [showMedia, setShowMedia] = useRetainedState(`note:${event.id}:media`, true);
   const avatarRef = useRef<HTMLButtonElement>(null);
 
   const quoteRef = useMemo(() => parseQuoteRef(event), [event]);
@@ -227,40 +237,80 @@ export function NotesFeed() {
   const noteIds = useAppSelector(
     isFriendsFeed ? selectFriendsFeedNoteIds : selectSpaceRootNoteIds,
   );
-  const scrollRef = useScrollRestore(activeChannelId);
   const { meta, refresh, loadMore } = useFeedPagination("notes");
   const { scrollPaddingClass } = usePlaybackBarSpacing();
 
-  // Render-cap: mount only a window of cards and grow it as the user scrolls,
-  // instead of mounting every fetched note (each card carries a profile sub,
-  // media, and an engagement subtree). Mirrors MediaFeed.
-  const [renderLimit, setRenderLimit] = useState(RENDER_PAGE);
-  // Switching channel/space starts a fresh window.
-  useEffect(() => {
-    setRenderLimit(RENDER_PAGE);
-  }, [activeChannelId, activeSpaceId]);
-  const revealMore = useCallback(() => setRenderLimit((n) => n + RENDER_PAGE), []);
+  // The feed is virtualized: only the cards around the viewport are mounted,
+  // each still carrying its own profile sub, media and engagement subtree.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const feedRef = useRef<VirtualFeedHandle>(null);
 
-  const visibleNotes = useMemo(() => notes.slice(0, renderLimit), [notes, renderLimit]);
-  const hasMoreLocal = renderLimit < notes.length;
+  // Leaving and coming back lands on the same card. The card is the anchor
+  // (not a pixel offset): cards outside the window are not measured, so pixel
+  // positions mean nothing until the list has rendered there.
+  const { containerRef } = useAnchoredScrollRestore({
+    key: activeChannelId,
+    read: () => readFeedScroll(activeChannelId),
+    write: (pos) => writeFeedScroll(activeChannelId, pos),
+    cardAttr: "data-feed-anchor",
+    scrollToAnchor: (id, offset) => feedRef.current?.scrollToKey(id, offset) ?? false,
+  });
+  const attachScroller = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef(node);
+      setScrollEl(node);
+    },
+    [containerRef],
+  );
+  const savedPosition = readFeedScroll(activeChannelId);
 
   // For Friends Feed and read-only spaces, replies/reactions live on repliers' own relays,
   // not a single host relay — use all read relays (undefined).
-  const engagementRelays =
-    isFriendsFeed || activeSpace?.mode === "read"
-      ? undefined
-      : activeSpace?.hostRelay
-        ? [activeSpace.hostRelay]
-        : undefined;
-
-  // Only subscribe to engagement for the rendered window — no point pulling
-  // reactions for notes that aren't on screen yet. Grows with the window;
-  // the sub itself still caps at BATCH_LIMIT and debounces.
-  const visibleNoteIds = useMemo(
-    () => noteIds.slice(0, renderLimit),
-    [noteIds, renderLimit],
+  const engagementRelays = useMemo(
+    () =>
+      isFriendsFeed || activeSpace?.mode === "read"
+        ? undefined
+        : activeSpace?.hostRelay
+          ? [activeSpace.hostRelay]
+          : undefined,
+    [isFriendsFeed, activeSpace?.mode, activeSpace?.hostRelay],
   );
-  useNoteEngagementSub(visibleNoteIds, engagementRelays);
+
+  // Engagement follows the rendered range: each note is fetched once, the
+  // first time it comes into the window, however far down the feed it is.
+  const reportVisible = useEngagementRange(engagementRelays, activeChannelId ?? "");
+  const noteIdsRef = useRef(noteIds);
+  noteIdsRef.current = noteIds;
+  const handleRange = useCallback(
+    ({ startIndex, endIndex }: VirtualFeedRange) => {
+      reportVisible(noteIdsRef.current.slice(startIndex, endIndex + 1), startIndex);
+    },
+    [reportVisible],
+  );
+
+  const renderNote = useCallback(
+    (event: NostrEvent, index: number, intro: boolean) => {
+      const animate = intro && index < INTRO_CARDS;
+      return (
+        <div
+          data-feed-anchor={event.id}
+          className={animate ? "animate-fade-in-up" : undefined}
+          style={animate ? { animationDelay: `${index * 50}ms` } : undefined}
+        >
+          <ItemBoundary id={event.id} label="note" noun="note">
+            {event.kind === EVENT_KINDS.REPOST ? (
+              <RepostCard event={event} />
+            ) : event.kind === EVENT_KINDS.POLL ? (
+              <PollNoteCard event={event} />
+            ) : (
+              <NoteCard event={event} />
+            )}
+          </ItemBoundary>
+        </div>
+      );
+    },
+    [],
+  );
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -269,7 +319,7 @@ export function NotesFeed() {
         onRefresh={refresh}
         rightSlot={isFriendsFeed ? <FeedPrefsButton channelType="notes" /> : undefined}
       />
-      <div ref={scrollRef} className={`flex-1 overflow-y-auto p-5 ${scrollPaddingClass}`}>
+      <div ref={attachScroller} className={`flex-1 overflow-y-auto p-5 ${scrollPaddingClass}`}>
         {isFriendsFeed && <NoteComposer className="mb-4 w-full" />}
         {notes.length === 0 ? (
           <div className="flex h-full items-center justify-center">
@@ -282,31 +332,34 @@ export function NotesFeed() {
             </p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {visibleNotes.map((event, index) => (
-              <div
-                key={event.id}
-                className={index < 15 ? "animate-fade-in-up" : undefined}
-                style={index < 15 ? { animationDelay: `${index * 50}ms` } : undefined}
-              >
-                {event.kind === EVENT_KINDS.REPOST ? (
-                  <RepostCard event={event} />
-                ) : event.kind === EVENT_KINDS.POLL ? (
-                  <PollNoteCard event={event} />
-                ) : (
-                  <NoteCard event={event} />
-                )}
-              </div>
-            ))}
-            {/* Reveal more rendered cards as you approach the end; once the whole
-                fetched set is shown, fall back to fetching more from the relay. */}
-            {hasMoreLocal && <RevealSentinel onReach={revealMore} />}
-            <LoadMoreButton
-              isLoading={meta.isLoadingMore}
-              hasMore={!hasMoreLocal && meta.hasMore}
-              onLoadMore={loadMore}
+          <>
+            <VirtualFeed
+              handleRef={feedRef}
+              items={notes}
+              itemKey={noteKey}
+              renderItem={renderNote}
+              scrollParent={scrollEl}
+              listKey={activeChannelId ?? "notes"}
+              heightScope="notes"
+              estimatedItemHeight={NOTE_HEIGHT_ESTIMATE}
+              gap={NOTE_GAP}
+              initialAnchor={
+                savedPosition?.anchorId
+                  ? { key: savedPosition.anchorId, offset: savedPosition.anchorOffset ?? 0 }
+                  : null
+              }
+              onRangeChange={handleRange}
             />
-          </div>
+            {/* Everything fetched is in the list; older notes come from the relay. */}
+            <div className="mt-4">
+              <LoadMoreButton
+                isLoading={meta.isLoadingMore}
+                hasMore={meta.hasMore}
+                onLoadMore={loadMore}
+                error={meta.loadMoreError}
+              />
+            </div>
+          </>
         )}
       </div>
     </div>

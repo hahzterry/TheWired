@@ -9,6 +9,7 @@ import { useProfile } from "../profile/useProfile";
 import { AddAccountModal } from "../identity/AddAccountModal";
 import { useEndCallConfirm } from "../calling/EndCallConfirmDialog";
 import { Avatar } from "../../components/ui/Avatar";
+import { DiagnosticsSection } from "./DiagnosticsSection";
 import { useAppUpdater } from "../../hooks/useAppUpdater";
 import { RefreshCw, Download, RotateCcw, Check, AlertCircle, Map, Plus, Trash2, Users, Minus, Plus as PlusIcon, ZoomIn } from "lucide-react";
 import {
@@ -23,44 +24,10 @@ import {
   setZoom,
   subscribeZoom,
 } from "../../lib/zoom";
+import { loadSettings, saveSettings, type AppSettings } from "./appSettingsStore";
 
 const isTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-const STORAGE_KEY = "thewired_app_settings";
-
-interface AppSettings {
-  sidebarDefaultExpanded: boolean;
-  memberListDefaultVisible: boolean;
-  autoUpdates: boolean;
-  developerMode: boolean;
-}
-
-const defaults: AppSettings = {
-  sidebarDefaultExpanded: true,
-  memberListDefaultVisible: true,
-  autoUpdates: true,
-  developerMode: false,
-};
-
-function loadSettings(): AppSettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaults;
-    return { ...defaults, ...JSON.parse(raw) };
-  } catch {
-    return defaults;
-  }
-}
-
-/** Read whether auto-updates are enabled (for use outside settings UI) */
-export function getAutoUpdatesEnabled(): boolean {
-  return loadSettings().autoUpdates;
-}
-
-function saveSettings(settings: AppSettings) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-}
 
 interface ToggleProps {
   label: string;
@@ -179,6 +146,9 @@ export function AppSettingsTab() {
 
       {/* Updates (Tauri only) */}
       {isTauri && <UpdateSection />}
+
+      {/* Local crash log */}
+      <DiagnosticsSection />
 
       {/* App info */}
       <div className="rounded-lg border border-border bg-panel p-4">

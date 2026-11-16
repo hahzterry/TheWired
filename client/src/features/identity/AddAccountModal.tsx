@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Download, Plus, X, Radio } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
 import {
@@ -18,7 +19,7 @@ interface AddAccountModalProps {
   onClose: () => void;
 }
 
-export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
+function AddAccountModalInner({ open, onClose }: AddAccountModalProps) {
   const dispatch = useAppDispatch();
   const mediaSession = useAppSelector(selectActiveMediaSession);
   const [nsecInput, setNsecInput] = useState("");
@@ -182,3 +183,5 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
     </Modal>
   );
 }
+
+export const AddAccountModal = withModalBoundary(AddAccountModalInner, "add-account");

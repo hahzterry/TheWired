@@ -1,19 +1,43 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { cn } from "@/lib/utils";
 import { Users, Info, ListMusic, Music2, User, Link2, BrainCircuit, Shapes } from "lucide-react";
 import { MemberList } from "../../features/spaces/MemberList";
 import { SpaceInfoPanel } from "../../features/spaces/SpaceInfoPanel";
-import { QueueContent } from "../../features/music/QueueContent";
-import { NowPlayingDetail } from "../../features/music/NowPlayingDetail";
-import { DMContactPanel } from "../../features/dm/DMContactPanel";
-import { ProfileSidePanel } from "../../features/profile/ProfileSidePanel";
-import { SpacePreviewPanel } from "../../features/discover/SpacePreviewPanel";
+import { lazyView } from "@/components/ui/lazyView";
+import { PanelLoading } from "@/components/ui/LazyFallbacks";
 // Lazy: the artifacts panel pulls recharts (already split) + the markdown
 // renderer; load it only once the AI panel is actually shown.
-const ArtifactsPanel = lazy(() =>
+const ArtifactsPanel = lazyWithRetry(() =>
   import("../../features/ai/artifacts/ArtifactsPanel").then((m) => ({
     default: m.ArtifactsPanel,
   })),
+);
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { lazyWithRetry } from "@/lib/lazyWithRetry";
+
+// The space tabs are what the panel opens on, so they ship with the shell.
+// Every other context loads with the section it belongs to. Each sits in a
+// `PanelTab` boundary, which is what a failed load falls back to.
+const tabLoading = <PanelLoading className="py-10" />;
+const QueueContent = lazyView(
+  () => import("../../features/music/QueueContent").then((m) => ({ default: m.QueueContent })),
+  tabLoading,
+);
+const NowPlayingDetail = lazyView(
+  () => import("../../features/music/NowPlayingDetail").then((m) => ({ default: m.NowPlayingDetail })),
+  tabLoading,
+);
+const DMContactPanel = lazyView(
+  () => import("../../features/dm/DMContactPanel").then((m) => ({ default: m.DMContactPanel })),
+  tabLoading,
+);
+const ProfileSidePanel = lazyView(
+  () => import("../../features/profile/ProfileSidePanel").then((m) => ({ default: m.ProfileSidePanel })),
+  tabLoading,
+);
+const SpacePreviewPanel = lazyView(
+  () => import("../../features/discover/SpacePreviewPanel").then((m) => ({ default: m.SpacePreviewPanel })),
+  tabLoading,
 );
 import { useResizeHandle } from "./useResizeHandle";
 import { useRightPanelContext } from "./useRightPanelContext";
@@ -63,7 +87,28 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
   artifacts: <Shapes size={16} />,
 };
 
+/** One tab's content. A tab that throws leaves the header, the tab bar and the other tabs alone. */
+function PanelTab({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <ErrorBoundary variant="panel" label={`right.${label}`} className="py-10">
+      {children}
+    </ErrorBoundary>
+  );
+}
+
 export function RightPanel() {
+  return (
+    <ErrorBoundary
+      variant="panel"
+      label="right"
+      className="glass w-72 flex-none border-l border-border"
+    >
+      <RightPanelInner />
+    </ErrorBoundary>
+  );
+}
+
+function RightPanelInner() {
   const { context, isOpen, activeTab, tabs, setTab } =
     useRightPanelContext();
   const { width, isDragging, onMouseDown, onDoubleClick } = useResizeHandle({
@@ -129,14 +174,14 @@ export function RightPanel() {
                 context === "space" && activeTab === "members" ? "" : "hidden"
               }
             >
-              <MemberList />
+              <PanelTab label="members"><MemberList /></PanelTab>
             </div>
             <div
               className={
                 context === "space" && activeTab === "info" ? "" : "hidden"
               }
             >
-              <SpaceInfoPanel />
+              <PanelTab label="info"><SpaceInfoPanel /></PanelTab>
             </div>
           </>
         )}
@@ -149,14 +194,14 @@ export function RightPanel() {
                 context === "music" && activeTab === "queue" ? "" : "hidden"
               }
             >
-              <QueueContent />
+              <PanelTab label="queue"><QueueContent /></PanelTab>
             </div>
             <div
               className={
                 context === "music" && activeTab === "details" ? "" : "hidden"
               }
             >
-              <NowPlayingDetail />
+              <PanelTab label="details"><NowPlayingDetail /></PanelTab>
             </div>
           </>
         )}
@@ -164,30 +209,32 @@ export function RightPanel() {
         {/* ── DM context ── */}
         {mounted.has("dm") && (
           <div className={context === "dm" ? "" : "hidden"}>
-            <DMContactPanel />
+            <PanelTab label="dm"><DMContactPanel /></PanelTab>
           </div>
         )}
 
         {/* ── Profile context ── */}
         {mounted.has("profile") && (
           <div className={context === "profile" ? "" : "hidden"}>
-            <ProfileSidePanel />
+            <PanelTab label="profile"><ProfileSidePanel /></PanelTab>
           </div>
         )}
 
         {/* ── AI artifacts context ── */}
         {mounted.has("ai") && (
           <div className={context === "ai" ? "" : "hidden"}>
-            <Suspense fallback={null}>
-              <ArtifactsPanel />
-            </Suspense>
+            <PanelTab label="artifacts">
+              <Suspense fallback={null}>
+                <ArtifactsPanel />
+              </Suspense>
+            </PanelTab>
           </div>
         )}
 
         {/* ── Discover context ── */}
         {mounted.has("discover") && (
           <div className={context === "discover" ? "" : "hidden"}>
-            <SpacePreviewPanel />
+            <PanelTab label="discover"><SpacePreviewPanel /></PanelTab>
           </div>
         )}
       </div>

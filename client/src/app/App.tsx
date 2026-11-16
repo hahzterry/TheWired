@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Outlet, useParams, useNavigate } from "react-router-dom";
 import { BrainCircuit } from "lucide-react";
 import { Layout } from "./Layout";
@@ -6,34 +6,41 @@ import { useAppSelector } from "../store/hooks";
 import { LoginScreen } from "../features/identity/LoginScreen";
 import { SpaceView } from "../features/spaces/SpaceView";
 import { ChannelPanel } from "../features/spaces/ChannelPanel";
-import { MusicRouter } from "../features/music/MusicRouter";
-import { MusicLinkResolver } from "../features/music/MusicLinkResolver";
-import { RelayStatusPanel } from "../features/relay/RelayStatusPanel";
-import { ProfilePage } from "../features/profile/ProfilePage";
-import { NoteThreadPage } from "../features/profile/NoteThreadPage";
-import { ArticlePage } from "../features/longform/ArticlePage";
-import { ArticleEditorPage } from "../features/longform/ArticleEditorPage";
-import { SettingsPage } from "../features/settings/SettingsPage";
-import { DMView } from "../features/dm/DMView";
-import { DiscoverPage } from "../features/discover/DiscoverPage";
+// Every route and overlay below the shell is a lazy chunk (with its Suspense
+// fallback built in); only the landing view is part of the startup bundle.
+import {
+  AppTour,
+  ArticleEditorPage,
+  ArticlePage,
+  DiscoverPage,
+  DMView,
+  JoinSpaceModal,
+  MusicLinkResolver,
+  MusicRouter,
+  NoteThreadPage,
+  ProfilePage,
+  ProfileWizard,
+  RelayStatusPanel,
+  SettingsPage,
+} from "./lazyRoutes";
 import { FriendsFeedPanel } from "../features/friends/FriendsFeedPanel";
-import { JoinSpaceModal } from "../features/spaces/JoinSpaceModal";
 import { FRIENDS_FEED_ID } from "../features/friends/friendsFeedConstants";
 import { ThemeProvider } from "../contexts/ThemeContext";
 import { tryRestoreSession } from "../lib/nostr/loginFlow";
-import { ProfileWizard } from "../features/onboarding/ProfileWizard";
-import { AppTour } from "../features/onboarding/AppTour";
 import { UpdateOverlay } from "../components/UpdateOverlay";
 import { ZoomIndicator } from "../components/ZoomIndicator";
 import { NavigationLogger } from "../lib/debug/NavigationLogger";
-import { getAutoUpdatesEnabled } from "../features/settings/AppSettingsTab";
+import { getAutoUpdatesEnabled } from "../features/settings/appSettingsStore";
 import { useAppUpdater } from "../hooks/useAppUpdater";
 import { useZoomShortcuts } from "../hooks/useZoomShortcuts";
 import { useEmbeddedRelayAutostart } from "../features/settings/useEmbeddedRelayAutostart";
+import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { BoundaryResetProvider } from "./BoundaryResetProvider";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
 
 // Lazy: the AI chat tree (react-markdown / rehype-highlight / marked) only loads
 // the first time the user opens the AI tab, then stays mounted (keep-alive).
-const AIChatView = lazy(() =>
+const AIChatView = lazyWithRetry(() =>
   import("../features/ai/AIChatView").then((m) => ({ default: m.AIChatView })),
 );
 
@@ -87,8 +94,17 @@ function OnboardingOverlays() {
 
   return (
     <>
-      {showProfileWizard && <ProfileWizard />}
-      {showAppTour && <AppTour />}
+      {/* Onboarding is optional chrome: if it throws, drop it and keep the app. */}
+      {showProfileWizard && (
+        <ErrorBoundary variant="inline" scope="overlay" label="profile-wizard" fallback={null}>
+          <ProfileWizard />
+        </ErrorBoundary>
+      )}
+      {showAppTour && (
+        <ErrorBoundary variant="inline" scope="overlay" label="app-tour" fallback={null}>
+          <AppTour />
+        </ErrorBoundary>
+      )}
     </>
   );
 }
@@ -116,25 +132,37 @@ function MainContent() {
   useEffect(() => {
     if (isAI) setAiEverOpened(true);
   }, [isAI]);
+  // Same for music: its chunk loads on first open, and the view then stays
+  // mounted so scroll positions and view state survive a sidebar switch.
+  // (Playback itself lives outside this tree and is unaffected either way.)
+  const [musicEverOpened, setMusicEverOpened] = useState(isMusic);
+  if (isMusic && !musicEverOpened) setMusicEverOpened(true);
 
   return (
     <>
-      {/* Music view — kept alive so audio playback doesn't restart on sidebar switch */}
-      <div className={isMusic ? "flex flex-1 flex-col overflow-hidden" : "hidden"}>
-        <MusicRouter />
-      </div>
+      {/* Music view — kept alive once opened so it doesn't restart on sidebar switch */}
+      {musicEverOpened && (
+        <div className={isMusic ? "flex flex-1 flex-col overflow-hidden" : "hidden"}>
+          <ErrorBoundary variant="panel" label="music-view">
+            <MusicRouter />
+          </ErrorBoundary>
+        </div>
+      )}
 
       {/* AI view — kept alive so streaming survives a sidebar switch */}
       {aiEverOpened && (
         <div className={isAI ? "flex flex-1 flex-col overflow-hidden" : "hidden"}>
-          <Suspense fallback={<AILoadingFallback />}>
-            <AIChatView />
-          </Suspense>
+          <ErrorBoundary variant="panel" label="ai-view">
+            <Suspense fallback={<AILoadingFallback />}>
+              <AIChatView />
+            </Suspense>
+          </ErrorBoundary>
         </div>
       )}
 
       {/* Spaces view */}
       <div className={isMusic || isAI ? "hidden" : "flex flex-1 flex-col overflow-hidden"}>
+        <ErrorBoundary variant="panel" label="spaces-view">
         {isFriendsFeed ? (
           <FriendsFeedPanel />
         ) : !activeChannelId ? (
@@ -156,6 +184,7 @@ function MainContent() {
             <ChannelPanel />
           </SpaceView>
         )}
+        </ErrorBoundary>
       </div>
     </>
   );
@@ -199,13 +228,19 @@ export default function App() {
     <ThemeProvider>
       <BrowserRouter>
         <NavigationLogger />
-        {shouldAutoUpdate ? (
-          <AutoUpdateGate>
-            <AppRoutes />
-          </AutoUpdateGate>
-        ) : (
-          <AppRoutes />
-        )}
+        <BoundaryResetProvider>
+          {/* Route level: catches the auth gate, the login screen and the
+              shell itself. Panels and items inside the shell have their own. */}
+          <ErrorBoundary variant="screen" label="routes">
+            {shouldAutoUpdate ? (
+              <AutoUpdateGate>
+                <AppRoutes />
+              </AutoUpdateGate>
+            ) : (
+              <AppRoutes />
+            )}
+          </ErrorBoundary>
+        </BoundaryResetProvider>
         <ZoomIndicator />
       </BrowserRouter>
     </ThemeProvider>

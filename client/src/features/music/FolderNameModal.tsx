@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { FOLDER_NAME_MAX, isDuplicateFolderName, isValidFolderName } from "@ishtarservices/core";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 
 interface FolderNameModalProps {
@@ -18,7 +19,7 @@ interface FolderNameModalProps {
 
 /** Name a new folder, or rename one. Folders are private and sync to your
  *  other devices; publishing is a separate, explicit step. */
-export function FolderNameModal({
+function FolderNameModalInner({
   open,
   onClose,
   onSubmit,
@@ -78,3 +79,5 @@ export function FolderNameModal({
     </Modal>
   );
 }
+
+export const FolderNameModal = withModalBoundary(FolderNameModalInner, "folder-name");

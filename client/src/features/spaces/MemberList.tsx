@@ -9,7 +9,7 @@ import { usePermissions } from "./usePermissions";
 import { useRoles } from "./useRoles";
 import { selectActiveSpace } from "./spaceSelectors";
 import { MemberContextMenu } from "./moderation/MemberContextMenu";
-import { InviteGenerateModal } from "./InviteGenerateModal";
+import { InviteGenerateModal } from "./lazyModals";
 import { useUserSearch } from "../search/useUserSearch";
 import { addFeedSources, removeFeedSource as removeFeedSourceApi } from "../../lib/api/spaces";
 import { updateSpaceFeedSources } from "../../store/slices/spacesSlice";

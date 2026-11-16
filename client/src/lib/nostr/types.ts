@@ -28,6 +28,10 @@ export interface SubscribeOptions {
   relayUrls?: string[];
   onEvent: RelayEventCallback;
   onEOSE?: RelayEOSECallback;
+  /** A request the user is waiting on ("load more"). On a relay whose cap is
+   *  full it borrows a slot from a standing sub until it closes, and it jumps
+   *  the deferred queue. Only for short-lived one-shot subs. */
+  priority?: boolean;
 }
 
 /** Relay connection config */

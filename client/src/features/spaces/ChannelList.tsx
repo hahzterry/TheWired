@@ -9,12 +9,10 @@ import { usePermissions } from "./usePermissions";
 import { parseChannelIdPart } from "./spaceSelectors";
 import { getLastChannel } from "../../lib/db/lastChannelCache";
 import { useChannelUnread, useChannelMentions, useChannelMuted } from "../notifications/useNotifications";
-import { CreateChannelModal } from "./CreateChannelModal";
-import { EditChannelModal } from "./EditChannelModal";
-import { CategoryModal } from "./CategoryModal";
+import { CreateChannelModal, EditChannelModal, CategoryModal } from "./lazyModals";
 import { ChannelContextMenu } from "./ChannelContextMenu";
 import { CategoryContextMenu } from "./CategoryContextMenu";
-import { ChannelTreeDnd, type DragHandle } from "./ChannelTreeDnd";
+import { ChannelTreeView, type DragHandle } from "./ChannelTreeView";
 import {
   buildChannelTree,
   filterTree,
@@ -296,7 +294,7 @@ export function ChannelList() {
       )}
 
       {!channelsCollapsed && (
-        <ChannelTreeDnd
+        <ChannelTreeView
           tree={visibleTree}
           enabled={canArrange}
           collapsed={collapsedCategories}

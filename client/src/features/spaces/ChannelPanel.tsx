@@ -2,12 +2,36 @@ import { useRef } from "react";
 import { useAppSelector } from "../../store/hooks";
 import { parseChannelIdPart } from "./spaceSelectors";
 import { ChatView } from "../chat/ChatView";
-import { ReelsView } from "../media/ReelsView";
-import { LongFormView } from "../longform/LongFormView";
 import { NotesFeed } from "./NotesFeed";
 import { MediaFeed } from "./MediaFeed";
-import { SpaceMusicView } from "../music/SpaceMusicView";
-import { VoiceChannel } from "../voice/VoiceChannel";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { lazyView } from "@/components/ui/lazyView";
+import { PanelLoading } from "@/components/ui/LazyFallbacks";
+import { livekitPreload } from "@/lib/webrtc/livekit";
+
+// Chat, notes and media are what a space opens on, so they ship with the
+// shell. The other channel types load the first time one is opened.
+const ReelsView = lazyView(
+  () => import("../media/ReelsView").then((m) => ({ default: m.ReelsView })),
+  <PanelLoading label="Loading reels" />,
+);
+const LongFormView = lazyView(
+  () => import("../longform/LongFormView").then((m) => ({ default: m.LongFormView })),
+  <PanelLoading label="Loading articles" />,
+);
+const SpaceMusicView = lazyView(
+  () => import("../music/SpaceMusicView").then((m) => ({ default: m.SpaceMusicView })),
+  <PanelLoading label="Loading music" />,
+);
+const VoiceChannel = lazyView(
+  () =>
+    import("../voice/VoiceChannel").then((m) => {
+      // Someone looking at a voice channel is about to join it.
+      void livekitPreload.preload();
+      return { default: m.VoiceChannel };
+    }),
+  <PanelLoading label="Loading voice channel" />,
+);
 
 /**
  * Keep-alive channel panel.
@@ -70,7 +94,11 @@ export function ChannelPanel() {
             key={type}
             className={isActive ? "flex flex-1 overflow-hidden" : "hidden"}
           >
-            <Component />
+            {/* One boundary per channel type: a view that throws, or whose
+                chunk fails to load, leaves the other channels usable. */}
+            <ErrorBoundary variant="panel" label="channel-view">
+              <Component />
+            </ErrorBoundary>
           </div>
         );
       })}

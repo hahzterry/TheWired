@@ -3,6 +3,7 @@ import { useAppSelector } from "../../store/hooks";
 import { X, Trash2, Shield, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { useSpaceChannels } from "./useSpaceChannels";
 import { usePermissions } from "./usePermissions";
@@ -21,7 +22,7 @@ interface EditChannelModalProps {
 
 /** Edit a channel: name, subfolder, behavior, permissions; or delete it. The
  *  body mounts fresh per open, seeded from the channel as it is now. */
-export function EditChannelModal(props: EditChannelModalProps) {
+function EditChannelModalInner(props: EditChannelModalProps) {
   const channel = useAppSelector((s) =>
     props.channelId ? s.spaces.channels[props.spaceId]?.find((c) => c.id === props.channelId) : undefined,
   );
@@ -220,3 +221,5 @@ function EditChannelModalBody({
     </>
   );
 }
+
+export const EditChannelModal = withModalBoundary(EditChannelModalInner, "edit-channel");

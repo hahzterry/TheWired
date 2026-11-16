@@ -17,6 +17,7 @@ import {
 import { useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/Button";
+import { BoundaryFallback, ErrorBoundary } from "../ui/ErrorBoundary";
 import { SearchInput } from "../../features/music/SearchInput";
 import { UserSearchInput } from "../../features/search/UserSearchInput";
 import { NotificationBell } from "../../features/notifications/NotificationBell";
@@ -60,7 +61,38 @@ const musicViewLabels: Record<MusicView, string> = {
   "for-you": "For You",
 };
 
-export function TopBar({
+export function TopBar(props: TopBarProps) {
+  return (
+    <ErrorBoundary
+      variant="inline"
+      scope="panel"
+      label="topbar"
+      fallback={({ retry, summary, reloadSuggested }) => (
+        // Keep the bar's footprint and drag region so the window stays movable.
+        <div
+          data-tauri-drag-region
+          className={cn(
+            "relative z-10 flex items-center border-b border-border glass px-2",
+            isTauriMacOS ? "h-[78px] pt-[30px]" : "h-12",
+          )}
+        >
+          <BoundaryFallback
+            variant="inline"
+            retry={retry}
+            summary={summary}
+            reloadSuggested={reloadSuggested}
+            noun="toolbar"
+            className="max-w-md border-0 bg-transparent"
+          />
+        </div>
+      )}
+    >
+      <TopBarInner {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function TopBarInner({
   sidebarExpanded,
   onToggleSidebar,
 }: TopBarProps) {

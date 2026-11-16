@@ -4,9 +4,10 @@ import { ChatReply } from "./ChatReply";
 import { ChatEditBanner } from "./ChatEditBanner";
 import { ChatInput } from "./ChatInput";
 import { useChat } from "./useChat";
+import { VirtualMessageList, type VirtualMessageListHandle } from "../../components/virtual/VirtualMessageList";
+import { useUnreadDividerFade } from "../../components/chat/useUnreadDividerFade";
 import { useFileUpload } from "../../hooks/useFileUpload";
 import { usePlaybackBarSpacing } from "../../hooks/usePlaybackBarSpacing";
-import { useStickToBottom } from "../../hooks/useStickToBottom";
 import { Spinner } from "../../components/ui/Spinner";
 import { UnreadDivider } from "../../components/chat/UnreadDivider";
 import { useAppSelector, useAppDispatch } from "../../store/hooks";
@@ -21,6 +22,13 @@ import { profileCache } from "../../lib/nostr/profileCache";
 import { usePollVotesSub } from "../polls/usePollVotesSub";
 import { EVENT_KINDS } from "../../types/nostr";
 import { AlertCircle, RefreshCw, Lock, ArrowDown } from "lucide-react";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
+
+type ChatRow =
+  | { kind: "message"; key: string; view: ReturnType<typeof useChat>["messages"][number] }
+  | { kind: "pending"; key: string; msg: ReturnType<typeof useChat>["pendingMessages"][number] };
+
+const chatRowKey = (row: ChatRow) => row.key;
 
 export function ChatView() {
   const dispatch = useAppDispatch();
@@ -66,7 +74,7 @@ export function ChatView() {
     context: { kind: "space", spaceId: activeSpaceId ?? "", gateable: mediaGateable },
     onContextChange: "drop",
   });
-  const { scrollPaddingClass } = usePlaybackBarSpacing();
+  const { scrollPaddingPx } = usePlaybackBarSpacing();
 
   // Unread divider: timestamp of old lastRead for this channel
   const dividerTimestamp = useAppSelector(
@@ -117,61 +125,49 @@ export function ChatView() {
   );
   usePollVotesSub(pollIds, voteSubRelays);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const dividerRef = useRef<HTMLDivElement>(null);
-  const hasScrolledToUnread = useRef(false);
-  const hasMessages = messages.length > 0 || pendingMessages.length > 0;
-  // Where the reader is: near the bottom (follow new messages) or up in
-  // history (keep their place, offer a pill). Same guard as DMConversation.
-  const isNearBottomRef = useRef(true);
-  const hasInitialScrolled = useRef(false);
-  const lastPendingCount = useRef(0);
-  const lastMessageCount = useRef(0);
+  // The message list is virtualized: only the rows around the viewport are
+  // mounted. Confirmed messages and messages still sending are one list.
+  const listRef = useRef<VirtualMessageListHandle>(null);
+  const rows = useMemo<ChatRow[]>(
+    () => [
+      ...messages.map((view): ChatRow => ({ kind: "message", key: view.event.id, view })),
+      ...pendingMessages.map((msg): ChatRow => ({ kind: "pending", key: msg.tempId, msg })),
+    ],
+    [messages, pendingMessages],
+  );
+  const hasMessages = rows.length > 0;
+  // Where the reader is: at the bottom (follow new messages) or up in history
+  // (keep their place, offer a pill). Same guard as DMConversation.
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [newWhileAway, setNewWhileAway] = useState(false);
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    isNearBottomRef.current = nearBottom;
-    setShowScrollButton(!nearBottom);
-    if (nearBottom) setNewWhileAway(false);
+  const handleAtBottomChange = useCallback((atBottom: boolean) => {
+    setShowScrollButton(!atBottom);
+    if (atBottom) setNewWhileAway(false);
   }, []);
   const scrollToBottom = useCallback(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    listRef.current?.scrollToBottom("smooth");
   }, []);
-  // Media and embeds settle their size after render: stay on the newest
-  // message while the reader is there.
-  useStickToBottom(scrollRef, contentRef, { active: hasMessages, nearBottomRef: isNearBottomRef });
 
   // Reply jump navigation state
   const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
   const [jumpBackEventId, setJumpBackEventId] = useState<string | null>(null);
 
   const scrollToMessage = useCallback((targetEventId: string, sourceEventId?: string) => {
-    const container = scrollRef.current;
-    if (!container) return;
-    const targetEl = container.querySelector(`[data-event-id="${targetEventId}"]`);
-    if (!targetEl) return;
+    // The target may be far outside the rendered window: the list goes there.
+    if (!listRef.current?.scrollToKey(targetEventId)) return;
 
     // Remember source for jump-back
     if (sourceEventId) {
       setJumpBackEventId(sourceEventId);
     }
 
-    targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
     setHighlightedEventId(targetEventId);
     setTimeout(() => setHighlightedEventId(null), 1500);
   }, []);
 
   const handleJumpBack = useCallback(() => {
     if (!jumpBackEventId) return;
-    const container = scrollRef.current;
-    if (!container) return;
-    const el = container.querySelector(`[data-event-id="${jumpBackEventId}"]`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!listRef.current?.scrollToKey(jumpBackEventId)) return;
     setHighlightedEventId(jumpBackEventId);
     setTimeout(() => setHighlightedEventId(null), 1500);
     setJumpBackEventId(null);
@@ -181,52 +177,22 @@ export function ChatView() {
   const unreadStartIndex = dividerTimestamp !== undefined
     ? messages.findIndex((m) => m.event.created_at > dividerTimestamp)
     : -1;
+  const dividerEventId = unreadStartIndex >= 0 ? messages[unreadStartIndex].event.id : null;
 
   // First paint of a channel: the unread divider when there is one, else the
-  // bottom. After that a new message follows the reader only while they are
-  // near the bottom; someone reading history keeps their place and gets the
-  // "new messages" pill instead (audit 2026-06-10 #52). An own send always
-  // jumps down.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const ownSend = pendingMessages.length > lastPendingCount.current;
-    const arrived = messages.length > lastMessageCount.current;
-    lastPendingCount.current = pendingMessages.length;
-    lastMessageCount.current = messages.length;
-
-    if (!hasInitialScrolled.current) {
-      if (!hasMessages) return;
-      if (dividerRef.current && unreadStartIndex > 0) {
-        hasScrolledToUnread.current = true;
-        dividerRef.current.scrollIntoView({ block: "center" });
-      } else {
-        el.scrollTop = el.scrollHeight;
-      }
-      hasInitialScrolled.current = true;
-      return;
-    }
-
-    // The divider fading (unreadStartIndex → -1) and deletions re-run this
-    // effect too; neither is a reason to move the reader or show the pill.
-    if (!ownSend && !arrived) return;
-    if (ownSend || isNearBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-      isNearBottomRef.current = true;
-      setShowScrollButton(false);
-      setNewWhileAway(false);
-    } else {
-      setNewWhileAway(true);
-    }
-  }, [messages.length, pendingMessages.length, unreadStartIndex, hasMessages]);
+  // bottom (the list reads `initialRow` when it mounts). After that a new
+  // message follows the reader only while they are at the bottom; someone
+  // reading history keeps their place and gets the "new messages" pill
+  // instead (audit 2026-06-10 #52). An own send always jumps down. History
+  // arriving above, edits, deletions and the divider fading move nothing.
+  const followAppend = useCallback(
+    ({ atBottom, last }: { atBottom: boolean; last: ChatRow }) => atBottom || last.kind === "pending",
+    [],
+  );
+  const handleMissedAppend = useCallback(() => setNewWhileAway(true), []);
 
   // Reset scroll tracking when channel changes
   useEffect(() => {
-    hasScrolledToUnread.current = false;
-    hasInitialScrolled.current = false;
-    isNearBottomRef.current = true;
-    lastPendingCount.current = 0;
-    lastMessageCount.current = 0;
     setShowScrollButton(false);
     setNewWhileAway(false);
   }, [activeChannelId]);
@@ -236,6 +202,95 @@ export function ChatView() {
       dispatch(clearUnreadDivider(activeChannelId));
     }
   }, [dispatch, activeChannelId]);
+  // The divider's row unmounts when scrolled away, so the list keeps its clock.
+  const dividerRemainingMs = useUnreadDividerFade(
+    hasMessages && dividerEventId !== null,
+    activeChannelId ?? "",
+    handleDividerFaded,
+  );
+
+  const renderRow = useCallback(
+    (row: ChatRow) => {
+      if (row.kind === "pending") {
+        const msg = row.msg;
+        return (
+          <div className="flex items-center gap-2 px-4 py-1.5 opacity-60">
+            <div className="min-w-0 flex-1 text-sm text-soft">
+              <ItemBoundary id={msg.tempId} label="chat-pending" noun="message">
+                <RichContent content={msg.content} event={pendingMediaContext} layout="message" />
+              </ItemBoundary>
+            </div>
+            {msg.status === "pending" && <Spinner size="sm" />}
+            {msg.status === "failed" && (
+              <div className="flex items-center gap-1">
+                <AlertCircle size={14} className="text-red-400" />
+                <button
+                  onClick={() => retryMessage(msg.tempId)}
+                  className="text-xs text-red-400 hover:text-red-300"
+                >
+                  <RefreshCw size={12} />
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      }
+      const { event, isEdited, displayContent } = row.view;
+      return (
+        <div
+          data-event-id={event.id}
+          className={highlightedEventId === event.id ? "animate-highlight-flash rounded" : ""}
+        >
+          {event.id === dividerEventId && <UnreadDivider fadeAfterMs={dividerRemainingMs()} />}
+          <ItemBoundary id={event.id} label="chat-message" noun="message" className="mx-4 my-1">
+            <ChatMessage
+              event={event}
+              displayContent={displayContent}
+              isEdited={isEdited}
+              isOwnMessage={event.pubkey === myPubkey}
+              canModDelete={canModDelete}
+              canEdit={canEdit(event)}
+              isMentioned={!!(myPubkey && event.pubkey !== myPubkey && event.tags.some((t) => t[0] === "p" && t[1] === myPubkey))}
+              onReply={
+                isLoggedIn
+                  ? (eventId, pubkey) => setReplyTo({ eventId, pubkey })
+                  : undefined
+              }
+              onMentionClick={openUserPopover}
+              onDeleteForMe={deleteMessageForMe}
+              onDeleteForEveryone={deleteMessageForEveryone}
+              onModDelete={(eventId) => {
+                setActionError(null);
+                modDeleteMessage(eventId).catch((err: unknown) =>
+                  setActionError(err instanceof Error ? err.message : "Couldn't delete that message."),
+                );
+              }}
+              onEdit={(ev) => setEditingMessage({ event: ev, displayContent })}
+              onJumpToMessage={(targetId) => scrollToMessage(targetId, event.id)}
+            />
+          </ItemBoundary>
+        </div>
+      );
+    },
+    [
+      pendingMediaContext,
+      retryMessage,
+      highlightedEventId,
+      dividerEventId,
+      dividerRemainingMs,
+      myPubkey,
+      canModDelete,
+      canEdit,
+      isLoggedIn,
+      setReplyTo,
+      openUserPopover,
+      deleteMessageForMe,
+      deleteMessageForEveryone,
+      modDeleteMessage,
+      setEditingMessage,
+      scrollToMessage,
+    ],
+  );
 
   return (
     <div ref={upload.dropZoneRef} className="relative flex flex-1 flex-col overflow-hidden">
@@ -251,76 +306,38 @@ export function ChatView() {
 
       {/* The composer lifts itself above the floating player, so the list
           only needs the extra bottom room when there is no composer. */}
-      <div ref={scrollRef} onScroll={handleScroll} className={`flex-1 overflow-y-auto py-2 ${isReadOnly ? scrollPaddingClass : ""}`}>
-        {messages.length === 0 && pendingMessages.length === 0 ? (
+      {!hasMessages ? (
+        <div className="flex-1 overflow-y-auto py-2">
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-muted">
               No messages yet. Start the conversation!
             </p>
           </div>
-        ) : (
-          <div ref={contentRef}>
-            {messages.map(({ event, isEdited, displayContent }, i) => (
-              <div
-                key={event.id}
-                data-event-id={event.id}
-                className={highlightedEventId === event.id ? "animate-highlight-flash rounded" : ""}
-              >
-                {i === unreadStartIndex && (
-                  <UnreadDivider ref={dividerRef} onFaded={handleDividerFaded} />
-                )}
-                <ChatMessage
-                  event={event}
-                  displayContent={displayContent}
-                  isEdited={isEdited}
-                  isOwnMessage={event.pubkey === myPubkey}
-                  canModDelete={canModDelete}
-                  canEdit={canEdit(event)}
-                  isMentioned={!!(myPubkey && event.pubkey !== myPubkey && event.tags.some((t) => t[0] === "p" && t[1] === myPubkey))}
-                  onReply={
-                    isLoggedIn
-                      ? (eventId, pubkey) => setReplyTo({ eventId, pubkey })
-                      : undefined
-                  }
-                  onMentionClick={openUserPopover}
-                  onDeleteForMe={deleteMessageForMe}
-                  onDeleteForEveryone={deleteMessageForEveryone}
-                  onModDelete={(eventId) => {
-                    setActionError(null);
-                    modDeleteMessage(eventId).catch((err: unknown) =>
-                      setActionError(err instanceof Error ? err.message : "Couldn't delete that message."),
-                    );
-                  }}
-                  onEdit={(ev) => setEditingMessage({ event: ev, displayContent })}
-                  onJumpToMessage={(targetId) => scrollToMessage(targetId, event.id)}
-                />
-              </div>
-            ))}
-            {pendingMessages.map((msg) => (
-              <div
-                key={msg.tempId}
-                className="flex items-center gap-2 px-4 py-1.5 opacity-60"
-              >
-                <div className="min-w-0 flex-1 text-sm text-soft">
-                  <RichContent content={msg.content} event={pendingMediaContext} layout="message" />
-                </div>
-                {msg.status === "pending" && <Spinner size="sm" />}
-                {msg.status === "failed" && (
-                  <div className="flex items-center gap-1">
-                    <AlertCircle size={14} className="text-red-400" />
-                    <button
-                      onClick={() => retryMessage(msg.tempId)}
-                      className="text-xs text-red-400 hover:text-red-300"
-                    >
-                      <RefreshCw size={12} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <VirtualMessageList
+          handleRef={listRef}
+          items={rows}
+          itemKey={chatRowKey}
+          renderItem={renderRow}
+          listKey={activeChannelId ?? activeSpaceId ?? "chat"}
+          className="flex-1"
+          testId="chat-message-list"
+          atBottomThreshold={80}
+          initialRow={
+            dividerEventId !== null && unreadStartIndex > 0
+              ? { key: dividerEventId, align: "center" }
+              : null
+          }
+          shouldFollow={followAppend}
+          onMissedAppend={handleMissedAppend}
+          onAtBottomChange={handleAtBottomChange}
+          heightScope="chat"
+          estimatedItemHeight={56}
+          paddingTop={8}
+          paddingBottom={isReadOnly && scrollPaddingPx ? scrollPaddingPx : 8}
+        />
+      )}
 
       {/* Back to the newest message; labelled when messages arrived while reading history */}
       {showScrollButton && !jumpBackEventId && (

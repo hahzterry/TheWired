@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from "react";
+import { useRetainedState } from "@/hooks/useRetainedState";
 import {
   BrainCircuit,
   AlertCircle,
@@ -23,6 +24,7 @@ import { artifactId } from "./artifacts/artifactSync";
 import { parseArtifactSegments } from "./artifacts/parseArtifacts";
 import { AIPublishMenu } from "./publish/AIPublishMenu";
 import { regenerateLastTurn } from "./conversationActions";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 /** A user-facing note for a non-clean stop reason, or null for clean stops
  *  (end_turn/stop/tool_use/…). The model's reply may be incomplete here. */
@@ -97,6 +99,7 @@ export const AIMessageBubble = memo(function AIMessageBubble({
         >
           {showReasoningPanel && (
             <ReasoningBlock
+              messageId={messageId}
               reasoning={reasoning!}
               thinking={thinking}
               reasoningMs={message.reasoningMs}
@@ -175,7 +178,22 @@ function AssistantContent({
   return (
     <>
       {segments.map((seg, i) => {
-        if (seg.kind === "text") return <AIMarkdown key={i} content={seg.text} />;
+        if (seg.kind === "text") {
+          // Model output is untrusted and arrives in pieces. Keyed on the text
+          // so a segment that fails mid-stream is retried as more arrives.
+          return (
+            <ErrorBoundary
+              key={i}
+              variant="inline"
+              scope="item"
+              label="ai-markdown"
+              noun="reply"
+              resetKeys={[seg.text]}
+            >
+              <AIMarkdown content={seg.text} />
+            </ErrorBoundary>
+          );
+        }
         const id = artifactId(messageId, artifactIndex++);
         return (
           <ArtifactChip
@@ -286,17 +304,20 @@ function TokenStats({ message }: { message: AIMessage }) {
 }
 
 function ReasoningBlock({
+  messageId,
   reasoning,
   thinking,
   reasoningMs,
 }: {
+  messageId: string;
   reasoning: string;
   thinking: boolean;
   reasoningMs?: number;
 }) {
   // Auto: expanded while actively thinking, collapsed once the answer begins.
-  // A user click pins the state thereafter.
-  const [override, setOverride] = useState<boolean | null>(null);
+  // A user click pins the state thereafter (kept while the message is outside
+  // the list's rendered window).
+  const [override, setOverride] = useRetainedState<boolean | null>(`ai:${messageId}:reasoning`, null);
   const open = override ?? thinking;
 
   const label = thinking

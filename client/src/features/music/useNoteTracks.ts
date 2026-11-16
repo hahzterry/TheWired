@@ -1,5 +1,10 @@
 import { useCallback, useRef, useState } from "react";
 import { MAX_NOTE_TRACKS, publishNoteTrack, type NoteTrackDraft } from "./noteTrack";
+import { isTagReaderLoadError } from "./tagReaderError";
+
+/** Shown when a picked file's tags were not read because the reader did not load. */
+export const NOTE_TRACK_TAGS_UNREAD =
+  "Couldn't read the track's title and length. Check your connection, then remove it and add it again, or reload the app if it keeps failing.";
 
 /** A track that didn't publish; the ones before it did and stay attached. */
 export class NoteTrackError extends Error {
@@ -62,7 +67,11 @@ export function useNoteTracks() {
             ),
           );
         })
-        .catch(() => {});
+        .catch((err: unknown) => {
+          // The draft keeps its filename title either way. A reader that did
+          // not load is worth saying; anything else about one file is not.
+          if (isTagReaderLoadError(err)) setNotice(NOTE_TRACK_TAGS_UNREAD);
+        });
     }
   }, []);
 

@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { EmbeddedNote } from "../../../components/content/EmbeddedNote";
 import { EmbedDepthContext } from "../../../components/content/embedDepth";
+import { ItemBoundary } from "../../../components/ui/ErrorBoundary";
 
 interface QuotedNoteProps {
   eventId: string;
@@ -19,13 +20,15 @@ interface QuotedNoteProps {
 export const QuotedNote = memo(function QuotedNote({ eventId, relayHint, pubkey }: QuotedNoteProps) {
   return (
     <EmbedDepthContext.Provider value={1}>
-      <EmbeddedNote
-        idRef={{
-          id: eventId,
-          relays: relayHint ? [relayHint] : undefined,
-          author: pubkey || undefined,
-        }}
-      />
+      <ItemBoundary id={eventId} label="embedded-note" noun="quoted note">
+        <EmbeddedNote
+          idRef={{
+            id: eventId,
+            relays: relayHint ? [relayHint] : undefined,
+            author: pubkey || undefined,
+          }}
+        />
+      </ItemBoundary>
     </EmbedDepthContext.Provider>
   );
 });
