@@ -87,15 +87,21 @@ should always be 0; a non-zero value means a label has become unbounded.
 | `nodejs_heap_size_total_bytes` | gauge | | V8 heap size. |
 | `nodejs_heap_size_used_bytes` | gauge | | V8 heap in use. |
 | `nodejs_external_memory_bytes` | gauge | | Memory held by native objects. |
-| `nodejs_eventloop_lag_mean_seconds` | gauge | | Mean event-loop delay since the previous scrape. |
-| `nodejs_eventloop_lag_p99_seconds` | gauge | | 99th percentile event-loop delay since the previous scrape. |
-| `nodejs_eventloop_lag_max_seconds` | gauge | | Largest event-loop delay since the previous scrape. |
+| `nodejs_eventloop_lag_mean_seconds` | gauge | | Mean event-loop delay over the last completed 10 s window. |
+| `nodejs_eventloop_lag_p99_seconds` | gauge | | 99th percentile event-loop delay over the last completed 10 s window. |
+| `nodejs_eventloop_lag_max_seconds` | gauge | | Largest event-loop delay over the last completed 10 s window. |
 | `nodejs_version_info` | gauge | `version` | Constant 1, labelled with the Node.js version. |
+
+Event-loop delay is measured in fixed 10 s windows that the process closes
+itself, and a scrape reads the last closed window. Scraping does not reset
+anything, so several scrapers (or a manual `curl`) all see the same values.
+It is measured only while the metrics listener is running.
 
 ### Dependencies
 
-`dependency` is `postgres`, `redis` or `meilisearch`. The gauges are refreshed
-by a probe every `METRICS_SAMPLE_INTERVAL_MS`, and by every `GET /health`.
+`dependency` is `postgres`, `redis` or `meilisearch`. A sampler probes each
+one every `METRICS_SAMPLE_INTERVAL_MS` and is the only thing that writes
+these metrics. It runs only when `METRICS_ADDR` is set.
 
 | Metric | Type | Labels | Meaning |
 |--------|------|--------|---------|
@@ -105,8 +111,14 @@ by a probe every `METRICS_SAMPLE_INTERVAL_MS`, and by every `GET /health`.
 | `backend_dependency_check_duration_seconds` | gauge | `dependency` | How long the last probe took. |
 | `backend_dependency_check_failures_total` | counter | `dependency` | Probes that failed or timed out. |
 
-`GET /health` reports the same three checks per dependency and answers 503 when
-any of them is down.
+`GET /health` runs the same three probes and answers 503 when any of them is
+down, but it only reports: calling it does not change these metrics, so
+nobody outside can move the gauges or inflate the failure counter.
+
+A probe that does not answer within its budget is reported as down, and no
+new probe of that dependency is started until the pending one settles. A
+dependency that has stopped answering therefore holds one pending probe, not
+one more every interval. The queue samples below work the same way.
 
 ### Relay ingestion: connections
 
@@ -168,7 +180,7 @@ Each job runs on at most one replica per tick, so with several replicas take
 | `backend_job_runs_total` | counter | `job`, `result` | Runs in this process: `success`, `failure`. A job that catches its own error still counts as a failure. |
 | `backend_job_last_success_timestamp_seconds` | gauge | `job` | Unix time the job last finished without error in this process. |
 | `backend_job_last_run_duration_seconds` | gauge | `job` | How long the last run took. |
-| `backend_job_lock_skips_total` | counter | `job` | Ticks skipped because another replica or pass held the job's lock. |
+| `backend_job_lock_skips_total` | counter | `job` | Scheduled ticks skipped because another replica or pass held the job's lock. The dispatcher's extra on-demand passes are not counted when they lose the lock. |
 
 ### Registry
 
