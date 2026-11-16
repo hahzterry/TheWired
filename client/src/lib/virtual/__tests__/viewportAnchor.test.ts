@@ -231,6 +231,106 @@ describe("ViewportAnchor", () => {
     expect(m.scroller.scrollTop).toBe(680);
   });
 
+  /**
+   * The virtualizer compensates for size changes above the viewport itself
+   * while it believes the list is being scrolled up, and the keeper's own
+   * upward correction looks exactly like that to it. Its scroll then lands on
+   * top of the keeper's. It goes through the element's `scrollBy`, and the
+   * keeper is told at that moment (`onVirtualizerScroll`).
+   */
+  /** The virtualizer scrolls the list by `delta` itself. */
+  function virtualizerScrollsBy(m: Model, keeper: ViewportAnchor, delta: number) {
+    m.scroller.scrollTop += delta;
+    keeper.onVirtualizerScroll();
+  }
+
+  it("puts the reader's row back at once when the virtualizer corrects on top of the keeper's correction", () => {
+    const m = model([200, 200, 200, 200, 200, 200]);
+    const keeper = settled(m, 500); // row 2, 100px scrolled into
+    m.heights[0] = 140; // a row above the viewport shrinks by 60
+    keeper.onResize();
+    expect(m.scroller.scrollTop).toBe(440);
+    expect(topOf(m, 2)).toBe(-100);
+
+    // The virtualizer takes the keeper's scroll for the reader going up and
+    // scrolls the list a further 210px, for a change that was already handled.
+    virtualizerScrollsBy(m, keeper, -210);
+    expect(topOf(m, 2)).toBe(-100); // back before anything could be painted
+    keeper.onScroll(); // one scroll event for both moves: nothing changed place
+    virtualizerScrollsBy(m, keeper, -30); // and once more
+    keeper.onScroll();
+    expect(topOf(m, 2)).toBe(-100);
+    expect(m.scroller.scrollTop).toBe(440);
+
+    // It is still the same remembered place: a later change is corrected too.
+    vi.advanceTimersByTime(5000);
+    m.heights[0] = 200;
+    keeper.onResize();
+    expect(topOf(m, 2)).toBe(-100);
+    expect(m.scroller.scrollTop).toBe(500);
+  });
+
+  it("leaves the virtualizer's correction alone when it is the one that put the row back", () => {
+    const m = model([200, 200, 200, 200, 200, 200]);
+    const keeper = settled(m, 500);
+    // A row above grows by 80 and the virtualizer compensates first.
+    m.heights[0] = 280;
+    virtualizerScrollsBy(m, keeper, 80);
+    expect(m.scroller.scrollTop).toBe(580);
+    keeper.onResize(); // then the keeper hears of the size change: nothing left to do
+    expect(m.scroller.scrollTop).toBe(580);
+    expect(topOf(m, 2)).toBe(-100);
+  });
+
+  it("a scroll event that finds the list where the keeper put it is not a new place, however many moves it stands for", () => {
+    const m = model([200, 200, 200, 200, 200, 200]);
+    const keeper = settled(m, 500);
+    m.heights[0] = 140;
+    keeper.onResize(); // 440
+    keeper.onScroll();
+    keeper.onScroll();
+    keeper.onScroll();
+    m.heights[1] = 140; // still holding row 2
+    keeper.onResize();
+    expect(m.scroller.scrollTop).toBe(380);
+    expect(topOf(m, 2)).toBe(-100);
+  });
+
+  it("still takes the reader's scroll right after a correction as the new place", () => {
+    const m = model([200, 200, 200, 200, 200, 200]);
+    const keeper = settled(m, 500);
+    m.heights[0] = 140;
+    keeper.onResize(); // 440
+    keeper.onScroll();
+    scrollTo(m, keeper, 300); // the reader moves
+    m.heights[0] = 200;
+    keeper.onResize(); // moving: not corrected
+    expect(m.scroller.scrollTop).toBe(300);
+    virtualizerScrollsBy(m, keeper, 60); // nor is a virtualizer scroll touched
+    expect(m.scroller.scrollTop).toBe(360);
+  });
+
+  it("does not answer the virtualizer's scroll during a jump made by the app", () => {
+    const m = model([200, 200, 200, 200, 200, 200]);
+    const keeper = settled(m, 500);
+    markProgrammaticScroll(m.scroller, 1000);
+    virtualizerScrollsBy(m, keeper, 300); // on its way to the target row
+    expect(m.scroller.scrollTop).toBe(800);
+  });
+
+  it("does not answer the scroll that makes room for rows added above until it has settled", () => {
+    const m = model([200, 200, 200, 200, 200, 200]);
+    const keeper = settled(m, 500);
+    keeper.expectShift();
+    m.padTop = 200; // the new rows, measured
+    virtualizerScrollsBy(m, keeper, 120); // scrolled by their estimate only
+    expect(m.scroller.scrollTop).toBe(620); // mid-shift: left alone
+    keeper.onScroll();
+    vi.advanceTimersByTime(60);
+    expect(topOf(m, 2)).toBe(-100);
+    expect(m.scroller.scrollTop).toBe(700);
+  });
+
   it("starts over when its row was unmounted, without jumping", () => {
     const m = model([200, 200, 200, 200, 200, 200]);
     const keeper = settled(m, 500);

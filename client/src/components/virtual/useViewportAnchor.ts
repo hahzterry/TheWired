@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { ViewportAnchor } from "@/lib/virtual/viewportAnchor";
+import { onVirtualizerScroll } from "@/lib/virtual/virtualizerScrolls";
 
 /**
  * Keep the reader's place in a virtualized list while it is at rest (see
@@ -21,6 +22,11 @@ export function useViewportAnchor(
     keeperRef.current = keeper;
     const onScroll = () => keeper.onScroll();
     scroller.addEventListener("scroll", onScroll, { passive: true });
+    // The virtualizer's own corrections (never its jumps, which use
+    // `scrollTo`): the keeper answers them as they happen.
+    const stopListening = onVirtualizerScroll(scroller, (delta, method) => {
+      if (method === "scrollBy" && delta !== 0) keeper.onVirtualizerScroll();
+    });
     let observer: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       observer = new ResizeObserver(() => keeper.onResize());
@@ -29,6 +35,7 @@ export function useViewportAnchor(
     }
     return () => {
       scroller.removeEventListener("scroll", onScroll);
+      stopListening();
       observer?.disconnect();
       keeper.dispose();
       if (keeperRef.current === keeper) keeperRef.current = null;

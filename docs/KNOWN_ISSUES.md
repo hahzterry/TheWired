@@ -58,7 +58,14 @@ prepending without moving the viewport, and opening on a given row.
   above it change height (media arriving late, AI bubbles dropping their
   action row during a stream). It never undoes a scroll: any scroll is the new
   place. The one scroll it holds through is the virtualizer making room for
-  rows added above, which the list announces.
+  rows added above, which the list announces. It also answers the virtualizer:
+  a correction that scrolls the list up looks to the virtualizer like the
+  reader scrolling up, and for a moment it then compensates for size changes
+  above the viewport itself, on top of the keeper (a reader scrolled up in an
+  AI conversation moved by up to 240 px when a reply started, on a production
+  bundle only; dev builds order the two differently). The keeper hears each
+  of those `scrollBy` calls as it is made and puts its row back before the
+  frame is painted.
 - **Engagement** follows the rendered range (`useEngagementRange`) instead of
   an observer per card or the first 100 notes, so notes far down a feed get
   their counts. Stored engagement is fetched once per note (a one-shot request

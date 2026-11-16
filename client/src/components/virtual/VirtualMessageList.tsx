@@ -18,6 +18,7 @@ import { isNearBottom, jumpBehavior, nextPinned, nextStuck } from "@/lib/virtual
 import { initialHeightEstimates, rememberItemHeight } from "@/lib/virtual/itemHeights";
 import { nextFirstItemIndex, tailAppended, type PrependState } from "@/lib/virtual/prependShift";
 import { markProgrammaticScroll } from "@/lib/virtual/viewportAnchor";
+import { onVirtualizerScroll } from "@/lib/virtual/virtualizerScrolls";
 import { useViewportAnchor } from "./useViewportAnchor";
 
 /** Extra pixels rendered above and below the viewport. */
@@ -26,32 +27,6 @@ const OVERSCAN = { top: 800, bottom: 800 };
 const JUMP_MS = 1200;
 /** Within this many px of the end is the very end. */
 const END_PX = 2;
-
-/**
- * Add to `delta` every pixel the virtualizer scrolls `scroller` itself. It
- * always goes through the element's `scrollBy` / `scrollTo`; wrapping those
- * two on this one element is how its scrolls are told from everyone else's.
- * (An animated `scrollTo` moves nothing synchronously and so adds nothing;
- * the list's own animated jumps set the pin themselves.)
- *
- * This leans on how react-virtuoso is built, not on its API. The dependency
- * is pinned to an exact version for that reason, and
- * `__tests__/virtualizerScrollContract.test.tsx` fails if a version scrolls
- * any other way. Update the library only together with that test passing.
- */
-function noteVirtualizerScrolls(scroller: HTMLElement, delta: { current: number }): void {
-  const marked = scroller as HTMLElement & { __virtualizerScrollsNoted?: boolean };
-  if (marked.__virtualizerScrollsNoted) return;
-  marked.__virtualizerScrollsNoted = true;
-  const wrap = (original: (...args: unknown[]) => void) =>
-    (...args: unknown[]) => {
-      const before = scroller.scrollTop;
-      original(...args);
-      delta.current += scroller.scrollTop - before;
-    };
-  scroller.scrollBy = wrap(scroller.scrollBy.bind(scroller) as (...args: unknown[]) => void) as typeof scroller.scrollBy;
-  scroller.scrollTo = wrap(scroller.scrollTo.bind(scroller) as (...args: unknown[]) => void) as typeof scroller.scrollTo;
-}
 
 export interface VirtualMessageListHandle {
   /** Go to the newest row. Animates only when it is close. */
@@ -241,6 +216,7 @@ function VirtualMessageListInner<T>({
   // event's total leaves what the reader did, even when both moved the list
   // within the same frame.
   const virtualizerDelta = useRef(0);
+  const stopNotingScrolls = useRef<(() => void) | null>(null);
 
   // The row keys and index of the last render React committed. Written only
   // in the commit phase (below); a render only reads it. React may render
@@ -265,7 +241,7 @@ function VirtualMessageListInner<T>({
   // any layout effect runs (an insertion effect does): the virtualizer reads
   // `followOutput` from its own layout effect, which runs before this
   // component's.
-  const change = useRef({ shifted: false, follow: false, missed: false });
+  const change = useRef({ follow: false, missed: false });
   // The caller's latest callbacks and options, for handlers that outlive a
   // render. Also committed here, not written while rendering.
   const latest = useRef({ onMissedAppend, onAtBottomChange, onScroll, onContentResize, stickToBottom });
@@ -279,12 +255,13 @@ function VirtualMessageListInner<T>({
     const follow =
       appended &&
       (shouldFollow ? shouldFollow({ atBottom: nearBottom.current, last: items[items.length - 1] }) : nearBottom.current);
-    change.current = {
-      shifted: prev !== null && firstItemIndex < prev.firstItemIndex,
-      follow,
-      missed: appended && !follow,
-    };
+    change.current = { follow, missed: appended && !follow };
     committed.current = { keys, firstItemIndex };
+    // Rows arrived above the viewport in this commit: the virtualizer is about
+    // to scroll by their height, which is not the reader going anywhere. Said
+    // here, ahead of the virtualizer's own effects, because that scroll can
+    // come straight away.
+    if (prev !== null && firstItemIndex < prev.firstItemIndex) expectShift();
   });
 
   // The virtualizer asks this when the row count grows; answering "auto" makes
@@ -351,11 +328,15 @@ function VirtualMessageListInner<T>({
     (el: HTMLElement | Window | null) => {
       const prev = scrollerRef.current;
       if (prev) prev.removeEventListener("scroll", handleScroll);
+      stopNotingScrolls.current?.();
+      stopNotingScrolls.current = null;
       const node = el instanceof HTMLElement ? el : null;
       scrollerRef.current = node;
       if (node) {
         node.addEventListener("scroll", handleScroll, { passive: true });
-        noteVirtualizerScrolls(node, virtualizerDelta);
+        stopNotingScrolls.current = onVirtualizerScroll(node, (delta) => {
+          virtualizerDelta.current += delta;
+        });
         // The list scrolls itself to its opening row.
         markProgrammaticScroll(node, JUMP_MS);
       }
@@ -371,7 +352,14 @@ function VirtualMessageListInner<T>({
     setMounted(!!el && !!scrollerRef.current);
     if (el) setElements((prev) => (prev.list === el ? prev : { ...prev, list: el }));
   }, []);
-  useEffect(() => () => scrollerRef.current?.removeEventListener("scroll", handleScroll), [handleScroll]);
+  useEffect(
+    () => () => {
+      scrollerRef.current?.removeEventListener("scroll", handleScroll);
+      stopNotingScrolls.current?.();
+      stopNotingScrolls.current = null;
+    },
+    [handleScroll],
+  );
 
   // Media and embeds settle their size after render: stay on the newest row
   // while the reader is there.
@@ -381,13 +369,6 @@ function VirtualMessageListInner<T>({
   // content above it changes height.
   const isPinned = useCallback(() => stuck.current, []);
   const expectShift = useViewportAnchor(elements.scroller, elements.list, isPinned);
-  // Rows arrived above the viewport in this commit: the virtualizer is about
-  // to scroll by their height, which is not the reader going anywhere.
-  useLayoutEffect(() => {
-    if (!change.current.shifted) return;
-    change.current.shifted = false;
-    expectShift();
-  });
 
   // The scroller itself changing size (the window, the composer growing a
   // reply banner) moves the end of the list without the content changing:

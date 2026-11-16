@@ -169,15 +169,18 @@ function VirtualFeedInner<T>({
   }
 
   // Committed with the render, before any layout effect: the latest props for
-  // handlers that outlive a render, and whether this commit added rows above.
+  // handlers that outlive a render, and the row keys.
   const latest = useRef({ items, keys, firstItemIndex, onRangeChange });
-  const shifted = useRef(false);
   useInsertionEffect(() => {
     latest.current = { items, keys, firstItemIndex, onRangeChange };
     const prev = committed.current;
     if (prev !== null && prev.keys === keys) return;
-    shifted.current = prev !== null && firstItemIndex < prev.firstItemIndex;
     committed.current = { keys, firstItemIndex };
+    // Rows arrived above the viewport in this commit: the virtualizer is about
+    // to scroll by their height, which is not the reader going anywhere. Said
+    // here, ahead of the virtualizer's own effects, because that scroll can
+    // come straight away.
+    if (prev !== null && firstItemIndex < prev.firstItemIndex) expectShift();
   });
 
   // Whether the top of the list is in view: looked at when the list scrolls
@@ -228,13 +231,6 @@ function VirtualFeedInner<T>({
     [],
   );
   const expectShift = useViewportAnchor(scrollParent, listEl);
-  // Rows arrived above the viewport in this commit: the virtualizer is about
-  // to scroll by their height, which is not the reader going anywhere.
-  useLayoutEffect(() => {
-    if (!shifted.current) return;
-    shifted.current = false;
-    expectShift();
-  });
 
   // Entrance animations are for the first paint only.
   const [intro, setIntro] = useState(true);

@@ -23,6 +23,17 @@
  *
  * It also stands down at the very top of a list, where new rows are meant to
  * push in, and while the list is pinned to its end.
+ *
+ * One more thing it has to handle is the virtualizer answering the keeper.
+ * A correction that scrolls the list up (a row above shrank) looks to the
+ * virtualizer like the reader scrolling up, and for a moment after that it
+ * compensates for size changes above the viewport itself, by scrolling the
+ * list through the element's `scrollBy`: sometimes for the very change the
+ * keeper has just handled, sometimes by an amount worked out from stale
+ * state. Either way the reader ends up somewhere else. So the keeper is told
+ * of every such scroll as it happens (`onVirtualizerScroll`) and puts its row
+ * back there and then, before anything is painted. If the virtualizer's
+ * scroll was the right one, the row is already in place and nothing happens.
  */
 
 /** How long after the last input the reader still counts as scrolling. */
@@ -75,8 +86,14 @@ export class ViewportAnchor {
   private readonly isPinned: () => boolean;
   private anchor: Anchor | null = null;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
-  /** A scroll event caused by our own adjustment is on its way. */
-  private adjusting = false;
+  /**
+   * Where the keeper last put the list. A scroll event that finds the list
+   * there is the keeper's own (or a virtualizer scroll it undid), not a new
+   * place, however many moves were folded into that one event.
+   */
+  private heldTop: number | null = null;
+  /** True while the keeper itself is scrolling the list. */
+  private restoring = false;
   /** Rows are being added above the viewport until this time. */
   private shiftUntil = 0;
   private shiftTimer: ReturnType<typeof setTimeout> | null = null;
@@ -91,9 +108,9 @@ export class ViewportAnchor {
 
   onScroll(): void {
     if (this.disposed) return;
-    if (this.adjusting) {
-      this.adjusting = false;
-      return;
+    if (this.heldTop !== null) {
+      if (Math.abs(this.scroller.scrollTop - this.heldTop) < 1) return;
+      this.heldTop = null;
     }
     if (this.anchor && Date.now() < this.shiftUntil) {
       // The virtualizer making room for rows added above: the reader's row is
@@ -137,6 +154,20 @@ export class ViewportAnchor {
     this.holdAfterShift();
   }
 
+  /**
+   * The virtualizer has just scrolled the list itself, through the element's
+   * `scrollBy` (we are still inside its call). While a place is remembered
+   * and nothing else owns the position, put the remembered row back at once.
+   */
+  onVirtualizerScroll(): void {
+    if (this.disposed || this.restoring || !this.anchor) return;
+    // A jump made by the app: the scroll event drops the place, as always.
+    if (programmaticRemaining(this.scroller) > 0) return;
+    // Making room for rows added above: put back once the shift has settled.
+    if (Date.now() < this.shiftUntil) return;
+    this.restore();
+  }
+
   private holdAfterShift(): void {
     if (this.shiftTimer !== null) clearTimeout(this.shiftTimer);
     this.shiftTimer = setTimeout(() => {
@@ -166,6 +197,7 @@ export class ViewportAnchor {
     this.settleTimer = null;
     this.shiftTimer = null;
     this.anchor = null;
+    this.heldTop = null;
   }
 
   private settleAfter(ms: number): void {
@@ -197,6 +229,7 @@ export class ViewportAnchor {
 
   private capture(): void {
     this.anchor = null;
+    this.heldTop = null;
     if (this.standsDown()) return;
     const edge = this.scroller.getBoundingClientRect().top;
     for (const row of this.list.children) {
@@ -208,10 +241,20 @@ export class ViewportAnchor {
     }
   }
 
-  /** Scroll by `delta`, and expect (only) the scroll event that causes. */
+  /**
+   * Scroll by `delta` and remember where that left the list. It goes through
+   * the element's `scrollBy`, like the virtualizer's own corrections, so that
+   * a list which tells its own scrolling from the reader's (the chat lists)
+   * does not take the keeper's correction for the reader moving.
+   */
   private scrollBy(delta: number): void {
     const before = this.scroller.scrollTop;
-    this.scroller.scrollTop = before + delta;
-    if (this.scroller.scrollTop !== before) this.adjusting = true;
+    this.restoring = true;
+    try {
+      this.scroller.scrollBy({ top: delta, behavior: "instant" });
+    } finally {
+      this.restoring = false;
+    }
+    if (this.scroller.scrollTop !== before) this.heldTop = this.scroller.scrollTop;
   }
 }
