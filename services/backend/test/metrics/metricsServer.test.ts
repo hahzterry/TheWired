@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import type { AddressInfo } from "node:net";
 import { createServer as createApiServer } from "../../src/server.js";
 import { parseMetricsAddr, startMetricsServer } from "../../src/metricsServer.js";
-import { httpRequestsTotal } from "../../src/lib/metrics/index.js";
+import { eventLoopMonitor, httpRequestsTotal } from "../../src/lib/metrics/index.js";
 
 describe("parseMetricsAddr", () => {
   it("is off when unset or blank", () => {
@@ -90,6 +90,14 @@ describe("metrics listener", () => {
     const handle = await startMetricsServer({ host: "127.0.0.1", port: 0 });
     stop = handle.stop;
     expect((handle.server.address() as AddressInfo).address).toBe("127.0.0.1");
+  });
+
+  it("measures event-loop delay only while the listener is up", async () => {
+    expect(eventLoopMonitor.running()).toBe(false);
+    const handle = await startMetricsServer({ host: "127.0.0.1", port: 0 });
+    expect(eventLoopMonitor.running()).toBe(true);
+    await handle.stop();
+    expect(eventLoopMonitor.running()).toBe(false);
   });
 
   it("fails to start on a port that is taken instead of silently exporting nothing", async () => {

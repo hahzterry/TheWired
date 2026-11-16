@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { METRICS_CONTENT_TYPE, registry } from "./lib/metrics/index.js";
+import { eventLoopMonitor, METRICS_CONTENT_TYPE, registry } from "./lib/metrics/index.js";
 
 /**
  * The internal metrics listener.
@@ -82,10 +82,13 @@ export async function startMetricsServer(addr: MetricsAddr): Promise<{ server: S
       resolve();
     });
   });
+  // Measured only while something can read it.
+  eventLoopMonitor.start();
   return {
     server,
     stop: () =>
       new Promise<void>((resolve) => {
+        eventLoopMonitor.stop();
         server.close(() => resolve());
         server.closeAllConnections?.();
       }),

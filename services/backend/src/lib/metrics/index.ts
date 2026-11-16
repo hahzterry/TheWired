@@ -14,7 +14,9 @@ export { METRICS_CONTENT_TYPE } from "./registry.js";
 
 export const registry = new Registry();
 
-registerProcessMetrics(registry);
+/** Event-loop delay measurement; started by the metrics listener, off until
+ *  then (see process.ts). */
+export const eventLoopMonitor = registerProcessMetrics(registry);
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
 
@@ -292,7 +294,7 @@ export const jobLastRunDuration = registry.gauge({
 
 export const jobLockSkips = registry.counter({
   name: "backend_job_lock_skips_total",
-  help: "Ticks of a periodic job skipped because another replica (or pass) held its lock.",
+  help: "Scheduled ticks of a periodic job skipped because another replica (or pass) held its lock.",
   labelNames: ["job"] as const,
 });
 
