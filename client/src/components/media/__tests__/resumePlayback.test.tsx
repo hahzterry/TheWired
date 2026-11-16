@@ -12,7 +12,28 @@ import { resetRetainedStateForTests } from "@/hooks/useRetainedState";
 import { SmartVideo } from "../SmartVideo";
 import { InlineAudio } from "../InlineAudio";
 
+// A plain file is assigned to the element at once; an HLS manifest is attached
+// later, when its library has arrived. `attachLate()` is that moment.
+const lateAttaches: (() => void)[] = [];
+const attachLate = () => lateAttaches.splice(0).forEach((attach) => attach());
+vi.mock("@/lib/media/hls", () => ({
+  attachVideoSource: (video: HTMLVideoElement, src: string, { isHls }: { isHls: boolean }) => {
+    if (!isHls) {
+      video.src = src;
+      return () => {};
+    }
+    let cancelled = false;
+    lateAttaches.push(() => {
+      if (!cancelled) video.src = src;
+    });
+    return () => {
+      cancelled = true;
+    };
+  },
+}));
+
 const VIDEO = "https://media.example/clip.mp4";
+const STREAM = "https://media.example/stream/index.m3u8";
 const AUDIO = "https://media.example/voice.mp3";
 const ALICE = "a".repeat(64);
 const BOB = "b".repeat(64);
@@ -41,6 +62,7 @@ function signedIn(pubkey: string) {
 let play: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
+  lateAttaches.length = 0;
   resetRetainedStateForTests();
   play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async () => {});
 });
@@ -127,6 +149,55 @@ describe("inline video that is unmounted and mounted again", () => {
     playTo(asLoaded(first.video), 42);
     first.unmount();
     expect(asLoaded(mount(store, `${VIDEO}?tk=new-grant`).video).currentTime).toBe(42);
+  });
+
+  it("comes back on its position when the source is attached late (a stream waiting for its player library)", () => {
+    const store = signedIn(ALICE);
+    const first = mount(store, STREAM);
+    attachLate();
+    playTo(asLoaded(first.video), 42);
+    first.unmount();
+
+    const second = mount(store, STREAM);
+    // Mounted, but nothing is attached yet: no source, no metadata.
+    expect(second.video.getAttribute("src")).toBeNull();
+    expect(second.video.currentTime).toBe(0);
+    attachLate();
+    expect(second.video.getAttribute("src")).toBe(STREAM);
+    asLoaded(second.video);
+    expect(second.video.currentTime).toBe(42);
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("an unmount before the late source arrived loses nothing and attaches nothing", () => {
+    const store = signedIn(ALICE);
+    const first = mount(store, STREAM);
+    attachLate();
+    playTo(asLoaded(first.video), 42);
+    first.unmount();
+
+    const flungPast = mount(store, STREAM); // scrolled past before the library arrived
+    flungPast.unmount();
+    attachLate();
+    expect(flungPast.video.getAttribute("src")).toBeNull();
+
+    const third = mount(store, STREAM);
+    attachLate();
+    expect(asLoaded(third.video).currentTime).toBe(42);
+  });
+
+  it("keeps its position when the element is reset for a new source (a re-minted grant, a fallback)", () => {
+    const store = signedIn(ALICE);
+    const first = mount(store);
+    playTo(asLoaded(first.video), 42);
+    // Assigning a new source resets the element: no duration, position 0,
+    // and a `timeupdate` for the jump to 0.
+    Object.defineProperty(first.video, "duration", { value: NaN, configurable: true });
+    first.video.currentTime = 0;
+    fireEvent.timeUpdate(first.video);
+    // The new source loads: back on the position.
+    asLoaded(first.video);
+    expect(first.video.currentTime).toBe(42);
   });
 
   it("keeps positions apart by media and by account", () => {
