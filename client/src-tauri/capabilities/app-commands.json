@@ -46,6 +46,7 @@
     "allow-llm-server-start",
     "allow-llm-server-stop",
     "allow-llm-server-status",
-    "allow-llm-server-connection"
+    "allow-llm-request",
+    "allow-llm-request-cancel"
   ]
 }

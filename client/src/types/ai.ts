@@ -215,8 +215,8 @@ export interface AIProviderConfig {
 
 // ── Managed local engine (desktop only) ─────────────────────────────────────
 // Everything here is display state mirrored from the native side. The engine's
-// per-launch access key is NOT part of any of these shapes: it is fetched over
-// a separate IPC call and kept only in `llmManager` memory.
+// per-launch access key and its port are NOT part of any of these shapes: they
+// never leave the native process (requests to the engine go over IPC).
 
 export type ManagedEnginePhase =
   | "stopped"
@@ -241,6 +241,10 @@ export type ManagedErrorCode =
   | "startup_failed"
   | "port_unavailable"
   | "crashed"
+  | "not_running"
+  | "model_mismatch"
+  | "not_allowed"
+  | "unexpected_response"
   | "io";
 
 export interface ManagedEngineError {
@@ -254,7 +258,6 @@ export interface ManagedEngineStatus {
   phase: ManagedEnginePhase;
   /** Catalogue id of the model the engine was started with. */
   modelId: string | null;
-  port: number | null;
   /** Automatic restarts since the engine was started. */
   restarts: number;
   error: ManagedEngineError | null;

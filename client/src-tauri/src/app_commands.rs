@@ -54,5 +54,6 @@ pub const APP_COMMANDS: &[&str] = &[
     "llm_server_start",
     "llm_server_stop",
     "llm_server_status",
-    "llm_server_connection",
+    "llm_request",
+    "llm_request_cancel",
 ];

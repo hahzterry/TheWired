@@ -296,7 +296,8 @@ pub fn run() {
             llm::llm_server_start,
             llm::llm_server_stop,
             llm::llm_server_status,
-            llm::llm_server_connection,
+            llm::llm_request,
+            llm::llm_request_cancel,
         ])
         .build(context)
         .expect("error while running tauri application")

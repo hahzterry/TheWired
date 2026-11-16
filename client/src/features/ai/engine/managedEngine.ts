@@ -8,9 +8,11 @@
  * calls and the model picker go through the same OpenAI-compatible adapter and
  * `ChatChunk` stream as every other tier.
  *
- * The engine's per-launch access key passes through here exactly once, from the
- * IPC reply straight into `llmManager.setManagedCredentials`. It is never held
- * in a module variable here and never dispatched.
+ * The webview never connects to the engine. Requests go over IPC
+ * (`llm_request`) and the native side makes the HTTP call, so the engine's
+ * per-launch key and its port never reach this side at all — not this module,
+ * not `llmManager`, not Redux — and no loopback HTTP permission is involved,
+ * in dev or in a packaged build.
  *
  * Web builds have no native side: `isManagedEngineAvailable()` is false, nothing
  * is invoked and the tier stays hidden.
@@ -33,14 +35,11 @@ import type {
   ManagedHardware,
   ManagedModel,
 } from "@/types/ai";
+import { nanoid } from "nanoid";
 import { saveAIPrefs } from "../aiPrefs";
 import type { ChatChunk, ChatOptions, EngineChatMessage, LLMProvider } from "./types";
-import {
-  getManagedTransport,
-  registerManagedProvider,
-  setManagedCredentials,
-  unregisterManagedProvider,
-} from "./llmManager";
+import { registerManagedProvider, unregisterManagedProvider } from "./llmManager";
+import { makeOpenAICompatProvider } from "./providers/openaiCompat";
 import { MANAGED_PROVIDER_ID } from "./tiers";
 
 /** Download id of the engine runtime itself (models use their catalogue id). */
@@ -75,6 +74,10 @@ const ERROR_CODES: readonly ManagedErrorCode[] = [
   "startup_failed",
   "port_unavailable",
   "crashed",
+  "not_running",
+  "model_mismatch",
+  "not_allowed",
+  "unexpected_response",
   "io",
 ];
 
@@ -106,7 +109,6 @@ export function toManagedError(e: unknown): ManagedEngineError {
 interface RawStatus {
   phase: ManagedEngineStatus["phase"];
   model_id: string | null;
-  port: number | null;
   restarts: number;
   error: unknown;
   engine_installed: boolean;
@@ -117,7 +119,6 @@ function mapStatus(raw: RawStatus): ManagedEngineStatus {
   return {
     phase: raw.phase,
     modelId: raw.model_id ?? null,
-    port: raw.port ?? null,
     restarts: raw.restarts ?? 0,
     error: raw.error ? toManagedError(raw.error) : null,
     engineInstalled: !!raw.engine_installed,
@@ -181,26 +182,159 @@ function mapModel(raw: RawModel): ManagedModel {
   };
 }
 
-interface RawConnection {
-  base_url: string;
-  api_key: string;
-  model_id: string;
-}
+type RawProxyEvent =
+  | { event: "head"; status: number }
+  | { event: "chunk"; text: string }
+  | { event: "end" };
 
 type RawDownloadEvent =
   | { event: "progress"; downloaded: number; total: number }
   | { event: "verifying" }
   | { event: "done" };
 
+// --- Transport: the engine over IPC ---------------------------------------------
+
+/**
+ * Placeholder origin for the adapter's URLs. Nothing is ever fetched from it:
+ * only the path is used, and the native side decides where the request goes.
+ */
+const ENGINE_BASE_URL = "http://built-in-engine.invalid/v1";
+
+function abortError(): Error {
+  const error = new Error("The request was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * `fetch` for the built-in engine: the same shape the adapter gets from the
+ * HTTP transport (status, streamed body), carried over IPC. The native side
+ * adds the address and the key; this side never has either.
+ */
+async function ipcEngineFetch(url: string, init?: RequestInit): Promise<Response> {
+  const signal = init?.signal ?? undefined;
+  if (signal?.aborted) throw abortError();
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+
+  const body = typeof init?.body === "string" ? init.body : null;
+  // The model this chat expects. The native side refuses the request if a
+  // different one is loaded, so an answer can never carry the wrong label.
+  let modelId: string | null = null;
+  if (body) {
+    try {
+      const model = (JSON.parse(body) as { model?: unknown }).model;
+      if (typeof model === "string") modelId = model;
+    } catch {
+      /* not JSON: the engine will reject it */
+    }
+  }
+
+  const requestId = nanoid();
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  let finished = false;
+  let resolveHead!: (status: number) => void;
+  let rejectHead!: (error: Error) => void;
+  const head = new Promise<number>((resolve, reject) => {
+    resolveHead = resolve;
+    rejectHead = reject;
+  });
+
+  const channel = new Channel<RawProxyEvent>();
+  channel.onmessage = (event) => {
+    if (finished) return;
+    if (event.event === "head") resolveHead(event.status);
+    else if (event.event === "chunk") controller.enqueue(encoder.encode(event.text));
+    else {
+      finished = true;
+      controller.close();
+    }
+  };
+
+  const onAbort = () => {
+    void invoke("llm_request_cancel", { requestId }).catch(() => {});
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  void invoke<void>("llm_request", {
+    requestId,
+    method: (init?.method ?? "GET").toUpperCase(),
+    path: new URL(url).pathname,
+    body,
+    modelId,
+    onEvent: channel,
+  })
+    .catch((e: unknown) => {
+      const error = signal?.aborted ? abortError() : new Error(toManagedError(e).message);
+      rejectHead(error);
+      if (!finished) {
+        finished = true;
+        controller.error(error);
+      }
+    })
+    .finally(() => signal?.removeEventListener("abort", onAbort));
+
+  const status = await head;
+  const readText = async () => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  };
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: "",
+    body: stream,
+    text: readText,
+    json: async () => JSON.parse(await readText()) as unknown,
+  } as unknown as Response;
+}
+
+/** The OpenAI-compatible client for the engine, carried over IPC. No key. */
+function buildTransport(): LLMProvider {
+  return makeOpenAICompatProvider(
+    {
+      id: MANAGED_PROVIDER_ID,
+      kind: "local-llama",
+      label: MANAGED_PROVIDER_LABEL,
+      baseUrl: ENGINE_BASE_URL,
+      keyRequired: false,
+    },
+    () => null,
+    ipcEngineFetch,
+  );
+}
+
 // --- Session ------------------------------------------------------------------
 
 /** Bumped by init and teardown; async continuations bail when superseded. */
 let session = 0;
 let unlisten: (() => void) | null = null;
-let startInFlight: Promise<void> | null = null;
+/** True once this page has brought the engine module up. Until then nothing
+ *  here has run, so there is nothing to tear down and no IPC to make. */
+let engaged = false;
+let startInFlight: { modelId: string; promise: Promise<void> } | null = null;
+/** Exists exactly while the engine reports `running`. */
+let transport: LLMProvider | null = null;
 
 function managed() {
   return store.getState().ai.managed;
+}
+
+/** The engine's client, or null when it is not running. */
+export function getManagedTransport(): LLMProvider | null {
+  return transport;
 }
 
 /**
@@ -209,6 +343,7 @@ function managed() {
  */
 export async function initManagedEngine(): Promise<void> {
   if (!isManagedEngineAvailable()) return;
+  engaged = true;
   const mine = ++session;
   detach();
   try {
@@ -218,7 +353,7 @@ export async function initManagedEngine(): Promise<void> {
 
     const { listen } = await import("@tauri-apps/api/event");
     const stop = await listen<RawStatus>(STATUS_EVENT, (event) => {
-      if (mine === session) void applyStatus(event.payload, mine);
+      if (mine === session) applyStatus(event.payload);
     });
     if (mine !== session) {
       stop();
@@ -228,7 +363,9 @@ export async function initManagedEngine(): Promise<void> {
 
     await refreshManagedModels();
     if (mine !== session) return;
-    await applyStatus(await ipc<RawStatus>("llm_server_status"), mine);
+    const status = await ipc<RawStatus>("llm_server_status");
+    if (mine !== session) return;
+    applyStatus(status);
   } catch (e) {
     if (mine === session) {
       store.dispatch(setManagedError({ id: ENGINE_TARGET, error: toManagedError(e) }));
@@ -242,57 +379,35 @@ function detach(): void {
 }
 
 /**
- * Logout, or the AI feature turning off: forget the engine's key, hide the
- * tier and stop the process (a disabled feature runs nothing).
+ * Logout, or the AI feature turning off: hide the tier and stop the process (a
+ * disabled feature runs nothing).
+ *
+ * A no-op unless this page actually brought the engine module up. Someone who
+ * has the AI feature off, or has never logged in with it on, makes no IPC call
+ * and runs none of this.
  */
 export function teardownManagedEngine(): void {
-  if (!isManagedEngineAvailable()) return;
+  if (!engaged) return;
+  engaged = false;
   session++;
   detach();
   startInFlight = null;
+  transport = null;
   unregisterManagedProvider();
   store.dispatch(resetManagedEngine());
   void ipc("llm_server_stop").catch(() => {});
 }
 
-/** Bumped per status applied, so a slow credential fetch for an older status
- *  can never overwrite a newer one (e.g. "running" landing after "stopped"). */
-let statusSeq = 0;
-
 /**
- * Apply one status report. Credentials are settled BEFORE the status becomes
- * visible, so anything that sees `running` in the store can already reach the
- * engine, and anything that sees another phase finds no key.
+ * Apply one status report. The transport is settled BEFORE the status becomes
+ * visible, so anything that sees `running` in the store can already use the
+ * engine, and anything that sees another phase finds none.
  */
-async function applyStatus(raw: RawStatus, mine: number): Promise<void> {
-  const seq = ++statusSeq;
+function applyStatus(raw: RawStatus): void {
   const status = mapStatus(raw);
-  await syncCredentials(status, mine, seq);
-  if (mine !== session || seq !== statusSeq) return;
+  transport = status.phase === "running" ? (transport ?? buildTransport()) : null;
   store.dispatch(setManagedStatus(status));
   syncProvider();
-}
-
-/** Running → fetch the address + key into `llmManager`; anything else → drop them. */
-async function syncCredentials(
-  status: ManagedEngineStatus,
-  mine: number,
-  seq: number,
-): Promise<void> {
-  if (status.phase !== "running") {
-    setManagedCredentials(null);
-    return;
-  }
-  let connection: RawConnection | null = null;
-  try {
-    connection = await ipc<RawConnection | null>("llm_server_connection");
-  } catch {
-    connection = null;
-  }
-  if (mine !== session || seq !== statusSeq) return;
-  setManagedCredentials(
-    connection ? { baseUrl: connection.base_url, apiKey: connection.api_key } : null,
-  );
 }
 
 /** The model a new chat on the built-in engine uses: last started, else loaded, else smallest. */
@@ -322,7 +437,7 @@ function syncProvider(): void {
     managedProvider,
     {
       label: MANAGED_PROVIDER_LABEL,
-      baseUrl: status.port ? `http://127.0.0.1:${status.port}/v1` : "http://127.0.0.1/v1",
+      baseUrl: ENGINE_BASE_URL,
       defaultModel: preferredModelId(installed),
     },
     infos,
@@ -352,7 +467,8 @@ async function refreshHardware(): Promise<void> {
 async function refreshStatus(): Promise<void> {
   const mine = session;
   try {
-    await applyStatus(await ipc<RawStatus>("llm_server_status"), mine);
+    const status = await ipc<RawStatus>("llm_server_status");
+    if (mine === session) applyStatus(status);
   } catch {
     /* keep the last status */
   }
@@ -479,7 +595,7 @@ async function startCore(modelId: string): Promise<void> {
     const raw = await ipc<RawStatus>("llm_server_start", { modelId });
     if (mine !== session) return;
     rememberModel(modelId);
-    await applyStatus(raw, mine);
+    applyStatus(raw);
   } catch (e) {
     const error = toManagedError(e);
     if (mine === session) {
@@ -496,14 +612,22 @@ async function startCore(modelId: string): Promise<void> {
   }
 }
 
-function startOnce(modelId: string): Promise<void> {
-  if (!startInFlight) {
-    const run = startCore(modelId).finally(() => {
-      if (startInFlight === run) startInFlight = null;
-    });
-    startInFlight = run;
+/**
+ * One start at a time. A second request for the SAME model joins the first;
+ * one for a DIFFERENT model waits for it to finish and then starts its own.
+ * It never returns another model's start as if it were the one asked for.
+ */
+async function startOnce(modelId: string): Promise<void> {
+  while (startInFlight && startInFlight.modelId !== modelId) {
+    await startInFlight.promise.catch(() => {});
   }
-  return startInFlight;
+  if (!startInFlight) {
+    const promise = startCore(modelId).finally(() => {
+      if (startInFlight?.promise === promise) startInFlight = null;
+    });
+    startInFlight = { modelId, promise };
+  }
+  return startInFlight.promise;
 }
 
 /** Settings "Start" button. Failures are shown from the slice, never thrown. */
@@ -521,40 +645,38 @@ export async function stopManagedEngine(): Promise<void> {
   if (!isManagedEngineAvailable()) return;
   const mine = session;
   try {
-    await applyStatus(await ipc<RawStatus>("llm_server_stop"), mine);
+    const status = await ipc<RawStatus>("llm_server_stop");
+    if (mine === session) applyStatus(status);
   } catch (e) {
     store.dispatch(setManagedError({ id: ENGINE_TARGET, error: toManagedError(e) }));
   }
 }
 
-/** Resolve once the engine reports `running` (it is starting or auto-restarting). */
-function waitUntilRunning(signal?: AbortSignal): Promise<void> {
+function isTransitioning(phase: string | undefined): boolean {
+  return phase === "starting" || phase === "restarting" || phase === "stopping";
+}
+
+/** Resolve once the engine is no longer starting, restarting or stopping. */
+function waitWhileTransitioning(signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const check = () => {
-      const phase = managed().status?.phase;
-      if (phase === "running") return finish(resolve);
-      if (phase === "failed" || phase === "stopped" || phase === "stopping" || !phase) {
-        return finish(() =>
-          reject(
-            managed().status?.error ?? {
-              code: "startup_failed",
-              message: "The built-in engine stopped before it was ready.",
-            },
-          ),
-        );
-      }
-    };
     const finish = (settle: () => void) => {
       clearTimeout(timer);
       unsubscribe();
       signal?.removeEventListener("abort", onAbort);
       settle();
     };
-    const onAbort = () => finish(() => reject({ code: "cancelled", message: "Cancelled." }));
+    const check = () => {
+      if (!isTransitioning(managed().status?.phase)) finish(resolve);
+    };
+    const onAbort = () =>
+      finish(() => reject({ code: "cancelled", message: "Cancelled." } satisfies ManagedEngineError));
     const timer = setTimeout(
       () =>
         finish(() =>
-          reject({ code: "startup_failed", message: "The built-in engine took too long to start." }),
+          reject({
+            code: "startup_failed",
+            message: "The built-in engine took too long to start.",
+          } satisfies ManagedEngineError),
         ),
       START_WAIT_MS,
     );
@@ -564,31 +686,59 @@ function waitUntilRunning(signal?: AbortSignal): Promise<void> {
   });
 }
 
+function runningModel(): string | null {
+  const status = managed().status;
+  return status?.phase === "running" && transport ? status.modelId : null;
+}
+
 /**
- * Make sure the engine is running `modelId` and return the OpenAI-compatible
- * client for it. Starts the engine when stopped, switches when another model is
- * loaded, and waits out a start or an automatic restart already in progress.
+ * Make sure the engine is running `modelId` and return its client.
+ *
+ * Starts the engine when stopped, switches when another model is loaded, and
+ * waits out a start or an automatic restart already in progress. Whatever it
+ * waited for, it checks WHICH model ended up loaded before returning: a start
+ * that was in flight for another model is never mistaken for this one. (The
+ * native side makes the same check on every request, as the backstop.)
  */
 export async function ensureManagedRunning(
   modelId: string,
   signal?: AbortSignal,
 ): Promise<LLMProvider> {
-  const status = managed().status;
-  if (status?.phase === "starting" || status?.phase === "restarting") {
-    await waitUntilRunning(signal);
-  }
-  const now = managed().status;
-  if (!(now?.phase === "running" && now.modelId === modelId && getManagedTransport())) {
+  // Bounded: two chats asking for different models could otherwise keep
+  // switching the engine out from under each other.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (runningModel() === modelId && transport) return transport;
+
+    if (startInFlight) {
+      const joined = startInFlight;
+      // Our own model: its outcome is ours. Another model: just wait it out.
+      if (joined.modelId === modelId) await joined.promise;
+      else await joined.promise.catch(() => {});
+      continue;
+    }
+    if (isTransitioning(managed().status?.phase)) {
+      await waitWhileTransitioning(signal);
+      const after = managed().status;
+      // An automatic restart that just gave up is not retried in the same
+      // breath; the next message will try a fresh start.
+      if (after?.phase === "failed") {
+        throw (
+          after.error ??
+          ({
+            code: "startup_failed",
+            message: "The built-in engine stopped before it was ready.",
+          } satisfies ManagedEngineError)
+        );
+      }
+      continue;
+    }
     await startOnce(modelId);
   }
-  const transport = getManagedTransport();
-  if (!transport) {
-    throw {
-      code: "startup_failed",
-      message: "The built-in engine is not running.",
-    } satisfies ManagedEngineError;
-  }
-  return transport;
+  if (runningModel() === modelId && transport) return transport;
+  throw {
+    code: "model_mismatch",
+    message: "The built-in engine is busy with another model. Try again in a moment.",
+  } satisfies ManagedEngineError;
 }
 
 function describeFailure(e: unknown): string {
@@ -606,14 +756,14 @@ export const managedProvider: LLMProvider = {
   kind: "local-llama",
 
   async *chat(messages: EngineChatMessage[], opts: ChatOptions): AsyncIterable<ChatChunk> {
-    let transport: LLMProvider;
+    let client: LLMProvider;
     try {
-      transport = await ensureManagedRunning(opts.model, opts.signal);
+      client = await ensureManagedRunning(opts.model, opts.signal);
     } catch (e) {
       yield { type: "error", message: describeFailure(e) };
       return;
     }
-    yield* transport.chat(messages, opts);
+    yield* client.chat(messages, opts);
   },
 
   async listModels(): Promise<AIModelInfo[]> {
@@ -623,7 +773,6 @@ export const managedProvider: LLMProvider = {
   },
 
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
-    const transport = getManagedTransport();
     if (!transport) return { ok: false, error: "The built-in engine is not running." };
     return transport.testConnection();
   },

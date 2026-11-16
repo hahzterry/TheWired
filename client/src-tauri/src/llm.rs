@@ -9,10 +9,12 @@
 //!
 //! Isolation: the server binds `127.0.0.1` on a port the OS picks per launch
 //! and requires a random key generated per launch. The key is handed to the
-//! child through its environment (never argv, never disk), kept in this
-//! process's memory, and given to the webview only through
-//! [`llm_server_connection`]. It is not part of [`EngineStatus`], which is what
-//! the UI stores, and it is not in any event.
+//! child through its environment (never argv, never disk) and otherwise never
+//! leaves this process: the webview does not talk to the engine's port at all.
+//! Its chat requests come in over IPC ([`llm_request`]) and this module makes
+//! the HTTP call, adds the key, and streams the answer back. So the webview
+//! needs no loopback HTTP permission, in dev or in a packaged build, and the
+//! key is in no status, event, or reply.
 
 pub mod catalog;
 pub mod download;
@@ -77,6 +79,14 @@ pub enum ErrorCode {
     PortUnavailable,
     /// The engine kept dying and automatic restarts were exhausted.
     Crashed,
+    /// A request arrived while the engine was not running.
+    NotRunning,
+    /// A request named a model other than the one that is loaded.
+    ModelMismatch,
+    /// A request for something the webview may not ask the engine for.
+    NotAllowed,
+    /// A download server answered with something that is not the pinned file.
+    UnexpectedResponse,
     Io,
 }
 
@@ -376,9 +386,8 @@ struct Inner {
     secret: Mutex<Option<Zeroizing<String>>>,
     /// In-flight downloads: id → cancel switch.
     downloads: Mutex<HashMap<String, watch::Sender<bool>>>,
-    /// Ports already granted to the webview's HTTP scope this session.
-    #[cfg_attr(dev, allow(dead_code))]
-    granted_ports: Mutex<HashSet<u16>>,
+    /// In-flight engine requests made for the webview: id → cancel switch.
+    requests: Mutex<HashMap<String, watch::Sender<bool>>>,
 }
 
 /// Managed Tauri state for the engine.
@@ -391,7 +400,7 @@ impl Default for LlmState {
             proc: Mutex::new(None),
             secret: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
-            granted_ports: Mutex::new(HashSet::new()),
+            requests: Mutex::new(HashMap::new()),
         }))
     }
 }
@@ -435,7 +444,6 @@ impl Inner {
         EngineStatus {
             phase: lc.phase(),
             model_id: lc.model_id().map(str::to_owned),
-            port: lc.port(),
             restarts: lc.restarts(),
             error: lc.error().cloned(),
             engine_installed: base.is_some_and(|b| engine::installed_binary(b).is_some()),
@@ -451,6 +459,58 @@ impl Inner {
         let (tx, rx) = watch::channel(false);
         downloads.insert(id.to_string(), tx);
         Ok(rx)
+    }
+
+    /// Where the running engine is and the key it wants. `model_id`, when
+    /// given, must be the model that is loaded: the server answers with
+    /// whatever it has loaded regardless of what a request names, so a caller
+    /// that raced a model switch would otherwise get the wrong model's answer
+    /// under the right model's label.
+    fn endpoint(&self, model_id: Option<&str>) -> Result<EngineEndpoint, LlmError> {
+        let (port, loaded) = {
+            let lc = lock(&self.lifecycle);
+            match (lc.phase(), lc.port(), lc.model_id()) {
+                (Phase::Running, Some(port), Some(model)) => (port, model.to_string()),
+                _ => return Err(not_running()),
+            }
+        };
+        if model_id.is_some_and(|wanted| wanted != loaded) {
+            return Err(LlmError::new(
+                ErrorCode::ModelMismatch,
+                "The engine is running a different model than the one this chat uses.",
+            ));
+        }
+        let key = lock(&self.secret).clone().ok_or_else(not_running)?;
+        Ok(EngineEndpoint { port, key })
+    }
+
+    fn register_request(&self, id: &str) -> Result<watch::Receiver<bool>, LlmError> {
+        if id.is_empty() || id.len() > 64 {
+            return Err(LlmError::new(ErrorCode::NotAllowed, "Invalid request id."));
+        }
+        let mut requests = lock(&self.requests);
+        if requests.contains_key(id) {
+            return Err(LlmError::new(ErrorCode::Busy, "That request is already in progress."));
+        }
+        let (tx, rx) = watch::channel(false);
+        requests.insert(id.to_string(), tx);
+        Ok(rx)
+    }
+}
+
+fn not_running() -> LlmError {
+    LlmError::new(ErrorCode::NotRunning, "The engine is not running.")
+}
+
+/// Removes an engine request's cancel switch when the request ends.
+struct RequestGuard<'a> {
+    inner: &'a Inner,
+    id: String,
+}
+
+impl Drop for RequestGuard<'_> {
+    fn drop(&mut self) {
+        lock(&self.inner.requests).remove(&self.id);
     }
 }
 
@@ -469,12 +529,12 @@ impl Drop for DownloadGuard<'_> {
 // ── status ─────────────────────────────────────────────────────────────────
 
 /// Everything the UI shows about the engine. Non-secret by construction: this
-/// is what lands in the Redux store and in [`STATUS_EVENT`].
+/// is what lands in the Redux store and in [`STATUS_EVENT`]. It carries neither
+/// the key nor the port: the webview never connects to the engine itself.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EngineStatus {
     pub phase: Phase,
     pub model_id: Option<String>,
-    pub port: Option<u16>,
     /// Automatic restarts since the engine was started.
     pub restarts: u32,
     pub error: Option<LlmError>,
@@ -482,54 +542,10 @@ pub struct EngineStatus {
     pub engine_build: &'static str,
 }
 
-/// How to reach the running engine. Returned only by
-/// [`llm_server_connection`]; the caller keeps it in memory.
-#[derive(serde::Serialize)]
-pub struct EngineConnection {
-    pub base_url: String,
-    pub api_key: String,
-    pub model_id: String,
-}
-
 fn emit_status(app: &AppHandle, inner: &Inner) {
     let base = base_dir(app).ok();
     let _ = app.emit(STATUS_EVENT, inner.status(base.as_deref()));
 }
-
-/// The one loopback URL pattern the webview's HTTP client is allowed to reach
-/// for an engine on `port`.
-#[cfg_attr(dev, allow(dead_code))]
-fn engine_http_scope(port: u16) -> serde_json::Value {
-    serde_json::json!({ "url": format!("http://{}:{port}/**", supervisor::BIND_HOST) })
-}
-
-/// Production builds serve the UI from an origin whose HTTP scope is HTTPS-only
-/// (`capabilities/localhost.json`), so loopback is unreachable by default. Grant
-/// exactly this engine's port, to the main window on the app origin, instead of
-/// opening every local port statically.
-#[cfg(not(dev))]
-fn grant_http_scope(app: &AppHandle, inner: &Inner, port: u16) {
-    if !lock(&inner.granted_ports).insert(port) {
-        return;
-    }
-    let capability = tauri::ipc::CapabilityBuilder::new(format!("llm-engine-{port}"))
-        .local(false)
-        .remote(format!("http://localhost:{}", crate::localhost::PORT))
-        .window("main")
-        .permission_scoped(
-            "http:default",
-            vec![engine_http_scope(port)],
-            Vec::<serde_json::Value>::new(),
-        );
-    if let Err(e) = app.add_capability(capability) {
-        log::error!("could not grant the AI engine's HTTP scope: {e}");
-    }
-}
-
-/// `tauri dev` runs on the local origin, whose capability already allows
-/// loopback HTTP.
-#[cfg(dev)]
-fn grant_http_scope(_app: &AppHandle, _inner: &Inner, _port: u16) {}
 
 // ── launching ──────────────────────────────────────────────────────────────
 
@@ -703,7 +719,6 @@ async fn supervise(inner: Arc<Inner>, app: AppHandle, generation: u64, plan: Lau
                         }
                         return;
                     }
-                    grant_http_scope(&app, &inner, port);
                     emit_status(&app, &inner);
                     break;
                 }
@@ -737,6 +752,9 @@ pub fn shutdown(app: &AppHandle) {
         proc.kill_now();
     }
     for cancel in lock(&inner.downloads).values() {
+        let _ = cancel.send(true);
+    }
+    for cancel in lock(&inner.requests).values() {
         let _ = cancel.send(true);
     }
     if let Ok(base) = base_dir(app) {
@@ -969,7 +987,6 @@ pub async fn llm_server_start(
                 }
                 return Err(cancelled());
             }
-            grant_http_scope(&app, &inner, port);
             emit_status(&app, &inner);
             tauri::async_runtime::spawn(supervise(inner.clone(), app.clone(), generation, plan));
             Ok(inner.status(Some(&base)))
@@ -997,26 +1014,198 @@ pub async fn llm_server_status(app: AppHandle, state: State<'_, LlmState>) -> Re
     Ok(state.0.status(Some(&base)))
 }
 
-/// The running engine's address and key, or `None` when it is not running. The
-/// webview keeps this in memory only (never in its store).
-#[tauri::command]
-pub async fn llm_server_connection(state: State<'_, LlmState>) -> Result<Option<EngineConnection>, LlmError> {
-    let inner = &state.0;
-    let (port, model_id) = {
-        let lc = lock(&inner.lifecycle);
-        match (lc.phase(), lc.port(), lc.model_id()) {
-            (Phase::Running, Some(port), Some(model)) => (port, model.to_string()),
-            _ => return Ok(None),
+// ── requests on the webview's behalf ───────────────────────────────────────
+
+/// The loaded engine's address and key. Never serialized, never leaves this
+/// process.
+struct EngineEndpoint {
+    port: u16,
+    key: Zeroizing<String>,
+}
+
+/// Largest request body accepted from the webview (a full context window of
+/// chat history plus tool schemas is well under this).
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The ONLY things the webview may ask the engine for. This is a fixed table,
+/// not a path prefix: there is no way to reach any other endpoint, port or
+/// host through [`llm_request`].
+fn allowed_route(method: &str, path: &str) -> Option<reqwest::Method> {
+    match (method, path) {
+        ("POST", "/v1/chat/completions") => Some(reqwest::Method::POST),
+        ("GET", "/v1/models") => Some(reqwest::Method::GET),
+        _ => None,
+    }
+}
+
+/// What the webview receives for one request, in order: the status line, the
+/// body as text pieces, then `End`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum ProxyEvent {
+    Head { status: u16 },
+    Chunk { text: String },
+    End,
+}
+
+/// Turns network chunks into valid UTF-8 text pieces. A chunk boundary can
+/// fall inside a multi-byte character; the unfinished tail is held back until
+/// the rest arrives, so no character is ever corrupted in transit.
+#[derive(Default)]
+struct Utf8Chunker {
+    pending: Vec<u8>,
+}
+
+impl Utf8Chunker {
+    fn push(&mut self, bytes: &[u8]) -> Option<String> {
+        self.pending.extend_from_slice(bytes);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    out.push_str(text);
+                    self.pending.clear();
+                    break;
+                }
+                Err(e) => {
+                    let valid = e.valid_up_to();
+                    out.push_str(&String::from_utf8_lossy(&self.pending[..valid]));
+                    match e.error_len() {
+                        // Bytes that can never be valid: replace and carry on.
+                        Some(bad) => {
+                            out.push(char::REPLACEMENT_CHARACTER);
+                            self.pending.drain(..valid + bad);
+                        }
+                        // An unfinished character at the end: wait for more.
+                        None => {
+                            self.pending.drain(..valid);
+                            break;
+                        }
+                    }
+                }
+            }
         }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Whatever is left when the stream ends (an unfinished character).
+    fn finish(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let rest = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        Some(rest)
+    }
+}
+
+fn request_client() -> Result<reqwest::Client, LlmError> {
+    reqwest::Client::builder()
+        // Never send loopback traffic (and the key) through a system proxy.
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        // Between chunks, not overall: a long answer may stream for minutes,
+        // and a large prompt can take a while before the first token.
+        .read_timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|e| LlmError::new(ErrorCode::Io, format!("http client: {e}")))
+}
+
+/// Resolves once `cancel` is `true` (or its sender is gone, which never is).
+async fn request_cancelled(cancel: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Make one request to the engine and stream the answer to `on_event`.
+async fn forward_request(
+    endpoint: &EngineEndpoint,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<String>,
+    cancel: &mut watch::Receiver<bool>,
+    on_event: &mut (dyn FnMut(ProxyEvent) + Send),
+) -> Result<(), LlmError> {
+    let unreachable = |e: reqwest::Error| {
+        LlmError::new(ErrorCode::Network, format!("The engine did not answer: {}", e.without_url()))
     };
-    let Some(api_key) = lock(&inner.secret).as_ref().map(|k| k.to_string()) else {
-        return Ok(None);
+    let client = request_client()?;
+    let url = format!("http://{}:{}{path}", supervisor::BIND_HOST, endpoint.port);
+    let mut request = client.request(method, url).bearer_auth(endpoint.key.as_str());
+    if let Some(body) = body {
+        request = request.header(reqwest::header::CONTENT_TYPE, "application/json").body(body);
+    }
+    let mut response = tokio::select! {
+        r = request.send() => r.map_err(unreachable)?,
+        _ = request_cancelled(cancel) => return Err(cancelled()),
     };
-    Ok(Some(EngineConnection {
-        base_url: format!("http://{}:{port}/v1", supervisor::BIND_HOST),
-        api_key,
-        model_id,
-    }))
+    on_event(ProxyEvent::Head { status: response.status().as_u16() });
+
+    let mut chunker = Utf8Chunker::default();
+    loop {
+        let chunk = tokio::select! {
+            c = response.chunk() => c.map_err(unreachable)?,
+            _ = request_cancelled(cancel) => return Err(cancelled()),
+        };
+        match chunk {
+            Some(bytes) => {
+                if let Some(text) = chunker.push(&bytes) {
+                    on_event(ProxyEvent::Chunk { text });
+                }
+            }
+            None => break,
+        }
+    }
+    if let Some(text) = chunker.finish() {
+        on_event(ProxyEvent::Chunk { text });
+    }
+    on_event(ProxyEvent::End);
+    Ok(())
+}
+
+/// Ask the running engine something on the webview's behalf and stream the
+/// answer back. The webview supplies only a method + path from a fixed table,
+/// a JSON body, and (for chat) the model it expects to be loaded; the address
+/// and the key are added here.
+#[tauri::command]
+pub async fn llm_request(
+    state: State<'_, LlmState>,
+    request_id: String,
+    method: String,
+    path: String,
+    body: Option<String>,
+    model_id: Option<String>,
+    on_event: Channel<ProxyEvent>,
+) -> Result<(), LlmError> {
+    let route = allowed_route(&method, &path).ok_or_else(|| {
+        LlmError::new(ErrorCode::NotAllowed, "That engine request is not allowed.")
+    })?;
+    if body.as_ref().is_some_and(|b| b.len() > MAX_REQUEST_BODY_BYTES) {
+        return Err(LlmError::new(ErrorCode::NotAllowed, "That request is too large."));
+    }
+    let inner = &state.0;
+    let endpoint = inner.endpoint(model_id.as_deref())?;
+    let mut cancel = inner.register_request(&request_id)?;
+    let _guard = RequestGuard { inner, id: request_id };
+    forward_request(&endpoint, route, &path, body, &mut cancel, &mut |event| {
+        let _ = on_event.send(event);
+    })
+    .await
+}
+
+/// Stop streaming an engine request (the user pressed Stop).
+#[tauri::command]
+pub async fn llm_request_cancel(state: State<'_, LlmState>, request_id: String) -> Result<(), LlmError> {
+    if let Some(cancel) = lock(&state.0.requests).get(&request_id) {
+        let _ = cancel.send(true);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1041,6 +1230,10 @@ mod tests {
             (ErrorCode::StartupFailed, "startup_failed"),
             (ErrorCode::PortUnavailable, "port_unavailable"),
             (ErrorCode::Crashed, "crashed"),
+            (ErrorCode::NotRunning, "not_running"),
+            (ErrorCode::ModelMismatch, "model_mismatch"),
+            (ErrorCode::NotAllowed, "not_allowed"),
+            (ErrorCode::UnexpectedResponse, "unexpected_response"),
             (ErrorCode::Io, "io"),
         ];
         for (code, name) in cases {
@@ -1064,8 +1257,8 @@ mod tests {
     #[test]
     fn the_status_the_ui_stores_carries_no_key() {
         // Whatever state the engine is in, the serialized status has exactly
-        // these fields. The key lives in `Inner.secret` and leaves only through
-        // `llm_server_connection`.
+        // these fields. The key lives in `Inner.secret` and never leaves this
+        // process.
         let state = LlmState::default();
         let key = supervisor::generate_api_key();
         *lock(&state.0.secret) = Some(Zeroizing::new(key.clone()));
@@ -1079,11 +1272,11 @@ mod tests {
         fields.sort();
         assert_eq!(
             fields,
-            ["engine_build", "engine_installed", "error", "model_id", "phase", "port", "restarts"]
+            ["engine_build", "engine_installed", "error", "model_id", "phase", "restarts"]
         );
         assert_eq!(json["phase"], "running");
-        assert_eq!(json["port"], 50123);
         assert!(!json.to_string().contains(&key));
+        assert!(!json.to_string().contains("50123"), "the port stays native too");
     }
 
     #[test]
@@ -1151,15 +1344,6 @@ mod tests {
     }
 
     #[test]
-    fn the_http_scope_is_exactly_one_loopback_port() {
-        let scope = engine_http_scope(50123);
-        assert_eq!(scope, serde_json::json!({ "url": "http://127.0.0.1:50123/**" }));
-        let url = scope["url"].as_str().unwrap();
-        assert!(!url.contains(":*"), "no port wildcard");
-        assert!(!url.contains("localhost") && !url.contains("0.0.0.0"));
-    }
-
-    #[test]
     fn only_our_own_engine_binary_is_ever_reaped() {
         let base = Path::new("/data/app/llm");
         let exe = base.join("engine/b1/llama-b1/llama-server");
@@ -1203,6 +1387,321 @@ mod tests {
             let _guard = DownloadGuard { inner, id: "m".to_string() };
         }
         assert!(inner.register_download("m").is_ok(), "released by the guard");
+    }
+
+    // ── requests on the webview's behalf ───────────────────────────────────
+
+    #[test]
+    fn only_two_engine_routes_exist_for_the_webview() {
+        assert_eq!(allowed_route("POST", "/v1/chat/completions"), Some(reqwest::Method::POST));
+        assert_eq!(allowed_route("GET", "/v1/models"), Some(reqwest::Method::GET));
+        for (method, path) in [
+            ("GET", "/v1/chat/completions"),
+            ("POST", "/v1/models"),
+            ("POST", "/v1/completions"),
+            ("POST", "/v1/embeddings"),
+            ("GET", "/health"),
+            ("GET", "/slots"),
+            ("POST", "/props"),
+            ("DELETE", "/v1/models"),
+            ("post", "/v1/chat/completions"),
+            ("POST", "/v1/chat/completions/"),
+            ("POST", "/v1/chat/completions?x=1"),
+            ("POST", "//evil.example/v1/chat/completions"),
+            ("POST", "@evil.example/v1/chat/completions"),
+            ("POST", "/v1/../v1/chat/completions"),
+            ("POST", "http://evil.example/v1/chat/completions"),
+            ("POST", ""),
+        ] {
+            assert_eq!(allowed_route(method, path), None, "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn the_engine_endpoint_exists_only_while_running_the_expected_model() {
+        let state = LlmState::default();
+        let inner = &state.0;
+        assert_eq!(inner.endpoint(None).err().unwrap().code, ErrorCode::NotRunning);
+
+        let generation = lock(&inner.lifecycle).begin_start("model-a").unwrap();
+        // Starting: no port yet, so nothing may be sent.
+        assert_eq!(inner.endpoint(None).err().unwrap().code, ErrorCode::NotRunning);
+        lock(&inner.lifecycle).mark_running(generation, 50123);
+        // Running but the key is not in place (never happens, but must fail closed).
+        assert_eq!(inner.endpoint(None).err().unwrap().code, ErrorCode::NotRunning);
+
+        *lock(&inner.secret) = Some(Zeroizing::new("k".repeat(64)));
+        let endpoint = inner.endpoint(Some("model-a")).unwrap();
+        assert_eq!(endpoint.port, 50123);
+        assert_eq!(endpoint.key.as_str(), "k".repeat(64));
+        assert!(inner.endpoint(None).is_ok());
+        // A chat that expects another model must not be answered by this one.
+        assert_eq!(inner.endpoint(Some("model-b")).err().unwrap().code, ErrorCode::ModelMismatch);
+
+        // Crashed and restarting: nothing may be sent until it is back.
+        lock(&inner.lifecycle).on_exit(generation, Instant::now(), None);
+        assert_eq!(inner.endpoint(Some("model-a")).err().unwrap().code, ErrorCode::NotRunning);
+    }
+
+    #[test]
+    fn engine_requests_are_exclusive_per_id_and_released_when_they_end() {
+        let state = LlmState::default();
+        let inner = &state.0;
+        let _rx = inner.register_request("r1").unwrap();
+        assert_eq!(inner.register_request("r1").unwrap_err().code, ErrorCode::Busy);
+        assert_eq!(inner.register_request("").unwrap_err().code, ErrorCode::NotAllowed);
+        assert_eq!(inner.register_request(&"x".repeat(65)).unwrap_err().code, ErrorCode::NotAllowed);
+        {
+            let _guard = RequestGuard { inner, id: "r1".to_string() };
+        }
+        assert!(inner.register_request("r1").is_ok());
+    }
+
+    #[test]
+    fn text_is_never_split_inside_a_character() {
+        let text = "héllo → 日本語 🎉";
+        let bytes = text.as_bytes();
+        // Every possible two-way split of the byte stream gives the same text.
+        for cut in 0..=bytes.len() {
+            let mut chunker = Utf8Chunker::default();
+            let mut out = String::new();
+            for piece in [&bytes[..cut], &bytes[cut..]] {
+                if let Some(t) = chunker.push(piece) {
+                    assert!(!t.contains(char::REPLACEMENT_CHARACTER), "cut {cut}");
+                    out.push_str(&t);
+                }
+            }
+            assert_eq!(chunker.finish(), None, "cut {cut}");
+            assert_eq!(out, text, "cut {cut}");
+        }
+        // One byte at a time.
+        let mut chunker = Utf8Chunker::default();
+        let out: String = bytes.iter().filter_map(|b| chunker.push(&[*b])).collect();
+        assert_eq!(out, text);
+
+        // Bytes that can never be valid are replaced, and the stream continues.
+        let mut chunker = Utf8Chunker::default();
+        assert_eq!(chunker.push(b"a\xffb").unwrap(), "a\u{fffd}b");
+        // A stream that ends mid-character flushes what it has.
+        let mut chunker = Utf8Chunker::default();
+        assert_eq!(chunker.push(&"é".as_bytes()[..1]), None);
+        assert_eq!(chunker.finish().unwrap(), "\u{fffd}");
+    }
+
+    /// A stand-in engine: checks the bearer key like the real one and streams a
+    /// scripted body. Records what it was asked.
+    fn fake_engine(
+        key: &'static str,
+        chunks: Vec<&'static [u8]>,
+    ) -> (u16, Arc<Mutex<Vec<(String, String, String)>>>) {
+        struct Scripted {
+            chunks: std::collections::VecDeque<&'static [u8]>,
+        }
+        impl std::io::Read for Scripted {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.chunks.pop_front() {
+                    None => Ok(0),
+                    Some(chunk) => {
+                        buf[..chunk.len()].copy_from_slice(chunk);
+                        Ok(chunk.len())
+                    }
+                }
+            }
+        }
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let auth = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("Authorization"))
+                    .map(|h| h.value.as_str().to_string())
+                    .unwrap_or_default();
+                let mut body = String::new();
+                let _ = request.as_reader().read_to_string(&mut body);
+                log.lock().unwrap().push((format!("{} {}", request.method(), request.url()), auth.clone(), body));
+                if auth != format!("Bearer {key}") {
+                    let _ = request.respond(
+                        tiny_http::Response::from_string(r#"{"error":{"message":"Invalid API Key"}}"#)
+                            .with_status_code(401),
+                    );
+                    continue;
+                }
+                let reader = Scripted { chunks: chunks.clone().into() };
+                // No length: chunked, like a streamed completion.
+                let _ = request.respond(tiny_http::Response::new(
+                    tiny_http::StatusCode(200),
+                    vec![],
+                    reader,
+                    None,
+                    None,
+                ));
+            }
+        });
+        (port, seen)
+    }
+
+    const TEST_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[tokio::test]
+    async fn a_forwarded_chat_carries_the_key_and_streams_the_answer_in_order() {
+        let (port, seen) = fake_engine(
+            TEST_KEY,
+            vec![b"data: {\"a\":1}\n\n", b"data: caf\xc3", b"\xa9\n\n", b"data: [DONE]\n\n"],
+        );
+        let endpoint = EngineEndpoint { port, key: Zeroizing::new(TEST_KEY.to_string()) };
+        let (_tx, mut cancel) = watch::channel(false);
+        let mut events = Vec::new();
+        forward_request(
+            &endpoint,
+            reqwest::Method::POST,
+            "/v1/chat/completions",
+            Some(r#"{"model":"m","stream":true}"#.to_string()),
+            &mut cancel,
+            &mut |e| events.push(e),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(events.first(), Some(&ProxyEvent::Head { status: 200 }));
+        assert_eq!(events.last(), Some(&ProxyEvent::End));
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                ProxyEvent::Chunk { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // The "é" split across two network chunks arrives whole.
+        assert_eq!(text, "data: {\"a\":1}\n\ndata: café\n\ndata: [DONE]\n\n");
+        // The key reached the engine, and only as the bearer token.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "POST /v1/chat/completions");
+        assert_eq!(seen[0].1, format!("Bearer {TEST_KEY}"));
+        assert_eq!(seen[0].2, r#"{"model":"m","stream":true}"#);
+        // ...and is in nothing the webview is sent.
+        assert!(!serde_json::to_string(&events).unwrap().contains(TEST_KEY));
+    }
+
+    #[tokio::test]
+    async fn an_engine_error_status_is_passed_through_not_hidden() {
+        let (port, _seen) = fake_engine(TEST_KEY, vec![]);
+        // A wrong key (cannot happen in the app; proves the status is relayed).
+        let endpoint = EngineEndpoint { port, key: Zeroizing::new("wrong".to_string()) };
+        let (_tx, mut cancel) = watch::channel(false);
+        let mut events = Vec::new();
+        forward_request(&endpoint, reqwest::Method::GET, "/v1/models", None, &mut cancel, &mut |e| events.push(e))
+            .await
+            .unwrap();
+        assert_eq!(events[0], ProxyEvent::Head { status: 401 });
+        assert!(matches!(&events[1], ProxyEvent::Chunk { text } if text.contains("Invalid API Key")));
+        assert_eq!(events.last(), Some(&ProxyEvent::End));
+    }
+
+    /// A stand-in engine that trickles an endless event stream, flushing each
+    /// event as a real server does while generating.
+    fn slow_stream_engine() -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                );
+                for _ in 0..500 {
+                    let event = b"data: 1\n\n";
+                    let sent = stream
+                        .write_all(format!("{:x}\r\n", event.len()).as_bytes())
+                        .and_then(|_| stream.write_all(event))
+                        .and_then(|_| stream.write_all(b"\r\n"))
+                        .and_then(|_| stream.flush());
+                    if sent.is_err() {
+                        break; // the client hung up
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_a_stream_in_flight() {
+        let port = slow_stream_engine();
+        let endpoint = EngineEndpoint { port, key: Zeroizing::new(TEST_KEY.to_string()) };
+        let (tx, mut cancel) = watch::channel(false);
+        let mut chunks = 0usize;
+        let started = Instant::now();
+        let result = forward_request(
+            &endpoint,
+            reqwest::Method::POST,
+            "/v1/chat/completions",
+            Some("{}".to_string()),
+            &mut cancel,
+            &mut |e| {
+                if matches!(e, ProxyEvent::Chunk { .. }) {
+                    chunks += 1;
+                    if chunks == 2 {
+                        let _ = tx.send(true);
+                    }
+                }
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
+        assert!(chunks >= 2 && chunks < 100, "the stream stopped early ({chunks} chunks)");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn an_engine_that_is_gone_is_a_clear_error() {
+        // A port nothing listens on (bound, then released).
+        let port = supervisor::pick_free_port().unwrap();
+        let endpoint = EngineEndpoint { port, key: Zeroizing::new(TEST_KEY.to_string()) };
+        let (_tx, mut cancel) = watch::channel(false);
+        let mut events = Vec::new();
+        let err = forward_request(&endpoint, reqwest::Method::GET, "/v1/models", None, &mut cancel, &mut |e| events.push(e))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Network);
+        assert!(events.is_empty(), "no status is invented for a request that never connected");
+        assert!(!err.message.contains(TEST_KEY));
+    }
+
+    #[test]
+    fn the_engine_has_no_build_specific_code_path() {
+        // The webview reaches the engine only through IPC, so nothing here may
+        // depend on whether this is a dev or a packaged build. (An earlier
+        // design granted loopback HTTP at runtime in packaged builds only, which
+        // no dev run could ever exercise.)
+        for (name, source) in [
+            ("llm.rs", include_str!("llm.rs")),
+            ("llm/engine.rs", include_str!("llm/engine.rs")),
+            ("llm/download.rs", include_str!("llm/download.rs")),
+            ("llm/supervisor.rs", include_str!("llm/supervisor.rs")),
+            ("llm/catalog.rs", include_str!("llm/catalog.rs")),
+        ] {
+            let needle_dev = ["cfg(", "dev)"].concat();
+            let needle_not_dev = ["cfg(not(", "dev))"].concat();
+            let needle_capability = ["add_", "capability"].concat();
+            assert!(!source.contains(&needle_dev), "{name} has dev-only code");
+            assert!(!source.contains(&needle_not_dev), "{name} has packaged-only code");
+            assert!(!source.contains(&needle_capability), "{name} grants a capability at runtime");
+        }
     }
 
     #[cfg(unix)]

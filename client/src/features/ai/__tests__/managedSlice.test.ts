@@ -26,7 +26,6 @@ const hardware: ManagedHardware = {
 const status: ManagedEngineStatus = {
   phase: "running",
   modelId: "qwen2.5-1.5b-instruct-q4",
-  port: 51234,
   restarts: 0,
   error: null,
   engineInstalled: true,
@@ -70,21 +69,20 @@ describe("aiSlice — managed engine state", () => {
     expect(managed.models).toEqual([model]);
   });
 
-  it("replaces the status wholesale so a stale port or error never lingers", () => {
+  it("replaces the status wholesale so a stale model or error never lingers", () => {
     const store = createTestStore();
     store.dispatch(
       setManagedStatus({
         ...status,
         phase: "failed",
-        port: null,
         error: { code: "crashed", message: "kept stopping" },
       }),
     );
-    store.dispatch(setManagedStatus({ ...status, phase: "stopped", port: null, modelId: null }));
+    store.dispatch(setManagedStatus({ ...status, phase: "stopped", modelId: null }));
     const s = selectManagedEngine(store.getState()).status!;
     expect(s.phase).toBe("stopped");
     expect(s.error).toBeNull();
-    expect(s.port).toBeNull();
+    expect(s.modelId).toBeNull();
   });
 
   it("tracks progress per download and clears it when the download ends", () => {
@@ -155,14 +153,15 @@ describe("aiSlice — managed engine state", () => {
     expect(selectManagedEngine(store.getState()).status).toBeNull();
   });
 
-  it("has no field that could hold the engine's access key", () => {
+  it("has no field that could hold the engine's access key or its address", () => {
     // The status shape is the contract: a key field here would put the secret
-    // into Redux (and devtools, and any state dump).
+    // into Redux (and devtools, and any state dump). The port is not here
+    // either: the webview never connects to the engine itself.
     const store = createTestStore();
     store.dispatch(setManagedStatus(status));
     const keys = Object.keys(selectManagedEngine(store.getState()).status!).sort();
     expect(keys).toEqual(
-      ["engineBuild", "engineInstalled", "error", "modelId", "phase", "port", "restarts"].sort(),
+      ["engineBuild", "engineInstalled", "error", "modelId", "phase", "restarts"].sort(),
     );
   });
 });

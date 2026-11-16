@@ -83,7 +83,6 @@ export async function loadProvidersForAccount(pubkey: string): Promise<void> {
   providers.clear();
   apiKeys.clear();
   configs.clear();
-  managedTransport = null;
 
   const raw = await getSecret(llmProvidersKey(pubkey));
   if (gen !== generation) return; // superseded while reading the blob
@@ -253,11 +252,8 @@ export function getDefaultProviderAndModel(): {
 
 // --- Built-in (managed) engine ------------------------------------------------
 // `managedEngine.ts` talks to the native side and decides WHEN the engine is
-// available; this module is the only place its per-launch access key is held.
-// The key sits in `apiKeys` next to the cloud keys: memory only, never Redux,
-// and (unlike cloud keys) never the keychain either.
-
-let managedTransport: LLMProvider | null = null;
+// available; here it is only listed as a provider. There is no key to hold for
+// it: the engine's access key never leaves the native process.
 
 /**
  * Show the built-in engine as a provider (model picker, default selection).
@@ -275,7 +271,7 @@ export function registerManagedProvider(
     ...config,
     id: MANAGED_PROVIDER_ID,
     kind: "local-llama",
-    // The engine's key is internal: the user is never asked for one.
+    // The user is never asked for a key for it.
     keyRequired: false,
   };
   configs.set(MANAGED_PROVIDER_ID, full);
@@ -290,41 +286,10 @@ export function registerManagedProvider(
 }
 
 export function unregisterManagedProvider(): void {
-  setManagedCredentials(null);
   if (!configs.has(MANAGED_PROVIDER_ID) && !providers.has(MANAGED_PROVIDER_ID)) return;
   configs.delete(MANAGED_PROVIDER_ID);
   providers.delete(MANAGED_PROVIDER_ID);
   store.dispatch(removeProviderConfig(MANAGED_PROVIDER_ID));
-}
-
-/**
- * Hand over (or drop) the running engine's address and per-launch key. The key
- * goes into the in-memory key map and nowhere else.
- */
-export function setManagedCredentials(
-  connection: { baseUrl: string; apiKey: string } | null,
-): void {
-  if (!connection || !activePubkey) {
-    apiKeys.delete(MANAGED_PROVIDER_ID);
-    managedTransport = null;
-    return;
-  }
-  apiKeys.set(MANAGED_PROVIDER_ID, connection.apiKey);
-  managedTransport = makeOpenAICompatProvider(
-    {
-      id: MANAGED_PROVIDER_ID,
-      kind: "local-llama",
-      label: "Built-in engine",
-      baseUrl: connection.baseUrl,
-      keyRequired: false,
-    },
-    () => apiKeys.get(MANAGED_PROVIDER_ID) ?? null,
-  );
-}
-
-/** The OpenAI-compatible client for the running engine, or null when stopped. */
-export function getManagedTransport(): LLMProvider | null {
-  return managedTransport;
 }
 
 /** Full teardown: logout, account switch, or the AI feature flag turning off.
@@ -336,7 +301,6 @@ export function resetLLMManager(): void {
   providers.clear();
   apiKeys.clear();
   configs.clear();
-  managedTransport = null;
   activePubkey = null;
   store.dispatch(setProviders([]));
   store.dispatch(clearProviderStatus());

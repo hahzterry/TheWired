@@ -67,6 +67,9 @@ describe("managedFormat", () => {
       "startup_failed",
       "port_unavailable",
       "crashed",
+      "unexpected_response",
+      "model_mismatch",
+      "not_running",
     ] as const;
     const titles = codes.map((code) => describeManagedError({ code, message: "m" }).title);
     expect(new Set(titles).size).toBe(codes.length);

@@ -95,6 +95,12 @@ export function describeManagedError(error: ManagedEngineError): {
       return { title: "The engine could not start", detail: error.message };
     case "crashed":
       return { title: "The engine keeps stopping", detail: error.message };
+    case "unexpected_response":
+      return { title: "That was not the file", detail: error.message };
+    case "model_mismatch":
+      return { title: "Another model is loaded", detail: error.message };
+    case "not_running":
+      return { title: "The engine is not running", detail: error.message };
     case "not_installed":
       return { title: "Not downloaded yet", detail: error.message };
     case "busy":

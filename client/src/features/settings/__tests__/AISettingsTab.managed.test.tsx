@@ -20,10 +20,8 @@ vi.mock("@/features/ai/engine/llmManager", () => ({
   removeProvider: vi.fn(),
   testProvider: vi.fn(),
   detectAndAddLocalEngines: vi.fn(async () => 0),
-  getManagedTransport: () => null,
   registerManagedProvider: vi.fn(),
   unregisterManagedProvider: vi.fn(),
-  setManagedCredentials: vi.fn(),
 }));
 vi.mock("@/features/ai/tools/webSearch", () => ({
   WEB_SEARCH_PROVIDERS: [{ id: "tavily", label: "Tavily", keyHint: "" }],
@@ -55,7 +53,6 @@ function seededStore() {
     setManagedStatus({
       phase: "running",
       modelId: "qwen2.5-1.5b-instruct-q4",
-      port: 51234,
       restarts: 0,
       error: null,
       engineInstalled: true,
@@ -84,7 +81,7 @@ function seededStore() {
       id: MANAGED_PROVIDER_ID,
       kind: "local-llama",
       label: "Built-in engine",
-      baseUrl: "http://127.0.0.1:51234/v1",
+      baseUrl: "http://built-in-engine.invalid/v1",
       keyRequired: false,
       defaultModel: "qwen2.5-1.5b-instruct-q4",
     }),
@@ -136,9 +133,9 @@ describe("AISettingsTab — built-in engine tier", () => {
     (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
     renderWithProviders(<AISettingsTab />, { store: seededStore() });
     // Exactly one provider card (Ollama): one Remove button, and the engine's
-    // loopback address is not shown as a provider endpoint.
+    // placeholder address is not shown as a provider endpoint.
     expect(screen.getAllByRole("button", { name: /Remove/ })).toHaveLength(1);
-    expect(screen.queryByText("http://127.0.0.1:51234/v1")).toBeNull();
+    expect(screen.queryByText("http://built-in-engine.invalid/v1")).toBeNull();
     expect(screen.queryByText("local-llama")).toBeNull();
   });
 });

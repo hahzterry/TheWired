@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { ChatChunk } from "../engine/types";
 
 // A fake native side: `invoke` is routed to `backend`, status events are pushed
-// through the captured `listen` callback, and HTTP goes to a scripted SSE body.
+// through the captured `listen` callback, and engine requests (`llm_request`)
+// answer with a scripted SSE body over the IPC channel. The webview's own HTTP
+// client is mocked only to prove it is never used for the built-in engine.
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   listeners: [] as ((event: { payload: unknown }) => void)[],
@@ -36,20 +38,7 @@ vi.mock("../engine/detectLocal", () => ({ detectLocalEngines: async () => [] }))
 vi.mock("../engine/httpFetch", () => ({
   engineFetch: async (url: string, init: RequestInit) => {
     h.fetches.push({ url, init });
-    const bytes = new TextEncoder().encode(h.sse.map((e) => `data: ${e}\n\n`).join(""));
-    return {
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      body: new ReadableStream({
-        start(c) {
-          c.enqueue(bytes);
-          c.close();
-        },
-      }),
-      text: async () => "",
-      json: async () => ({ data: [{ id: "qwen2.5-1.5b-instruct-q4" }] }),
-    } as unknown as Response;
+    return { ok: true, status: 200, statusText: "OK", body: null, text: async () => "", json: async () => ({ data: [] }) } as unknown as Response;
   },
   engineFetchWithTimeout: async () => ({ ok: false }) as unknown as Response,
 }));
@@ -59,7 +48,6 @@ import { resetManagedEngine, setPrefs } from "@/store/slices/aiSlice";
 import { DEFAULT_AI_PREFS } from "../aiPrefs";
 import {
   getDefaultProviderAndModel,
-  getManagedTransport,
   getProvider,
   loadProvidersForAccount,
   providerNeedsKey,
@@ -74,6 +62,7 @@ import {
   deleteManagedModel,
   downloadManagedModel,
   ensureManagedRunning,
+  getManagedTransport,
   initManagedEngine,
   installManagedRuntime,
   isManagedEngineAvailable,
@@ -84,20 +73,36 @@ import {
   toManagedError,
 } from "../engine/managedEngine";
 
-const KEY = "per-launch-secret-3f9a1c0de7b24c55";
-const KEY2 = "second-launch-secret-88aa77bb66cc";
 const MODEL = "qwen2.5-1.5b-instruct-q4";
 const BIG = "qwen3-8b-q4";
 const GIB = 1024 ** 3;
+
+type Channel = { onmessage: ((e: unknown) => void) | null };
+
+interface EngineRequest {
+  requestId: string;
+  method: string;
+  path: string;
+  body: string | null;
+  modelId: string | null;
+  /** Which model the fake engine had loaded when the request arrived. */
+  loadedModel: unknown;
+  argKeys: string[];
+}
 
 interface FakeBackend {
   hardware: Record<string, unknown>;
   status: Record<string, unknown>;
   models: Record<string, unknown>[];
-  connection: { base_url: string; api_key: string; model_id: string } | null;
   startError: unknown;
+  /** When set, `llm_server_start` waits for it before answering. */
+  startGate: Promise<void> | null;
   /** What the next download does with its progress channel. */
-  download: (channel: { onmessage: ((e: unknown) => void) | null }) => Promise<void>;
+  download: (channel: Channel) => Promise<void>;
+  /** Overrides how an engine request is answered. */
+  request: ((req: EngineRequest, channel: Channel) => Promise<void>) | null;
+  requests: EngineRequest[];
+  cancelled: string[];
 }
 
 let backend: FakeBackend;
@@ -124,7 +129,6 @@ function rawStatus(patch: Record<string, unknown> = {}) {
   return {
     phase: "stopped",
     model_id: null,
-    port: null,
     restarts: 0,
     error: null,
     engine_installed: true,
@@ -133,9 +137,8 @@ function rawStatus(patch: Record<string, unknown> = {}) {
   };
 }
 
-function running(port = 51234, key = KEY, model = MODEL) {
-  backend.status = rawStatus({ phase: "running", model_id: model, port });
-  backend.connection = { base_url: `http://127.0.0.1:${port}/v1`, api_key: key, model_id: model };
+function running(model = MODEL) {
+  backend.status = rawStatus({ phase: "running", model_id: model });
 }
 
 function emitStatus(): void {
@@ -154,6 +157,10 @@ function commands(): string[] {
   return h.invoke.mock.calls.map((c) => c[0] as string);
 }
 
+function starts(): unknown[] {
+  return h.invoke.mock.calls.filter((c) => c[0] === "llm_server_start").map((c) => c[1].modelId);
+}
+
 function managed() {
   return store.getState().ai.managed;
 }
@@ -161,6 +168,24 @@ function managed() {
 function desktop(on: boolean): void {
   if (on) (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
   else delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+}
+
+/** What the real native side does with an engine request, in miniature. */
+async function answerRequest(req: EngineRequest, channel: Channel): Promise<void> {
+  if (backend.status.phase !== "running") throw { code: "not_running", message: "The engine is not running." };
+  if (req.modelId && req.modelId !== backend.status.model_id) {
+    throw {
+      code: "model_mismatch",
+      message: "The engine is running a different model than the one this chat uses.",
+    };
+  }
+  channel.onmessage?.({ event: "head", status: 200 });
+  if (req.path === "/v1/models") {
+    channel.onmessage?.({ event: "chunk", text: JSON.stringify({ data: [{ id: backend.status.model_id }] }) });
+  } else {
+    for (const event of h.sse) channel.onmessage?.({ event: "chunk", text: `data: ${event}\n\n` });
+  }
+  channel.onmessage?.({ event: "end" });
 }
 
 beforeEach(async () => {
@@ -179,9 +204,12 @@ beforeEach(async () => {
     },
     status: rawStatus(),
     models: [rawModel(MODEL, { installed: true }), rawModel(BIG)],
-    connection: null,
     startError: null,
+    startGate: null,
     download: async () => {},
+    request: null,
+    requests: [],
+    cancelled: [],
   };
   h.invoke.mockReset();
   h.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
@@ -192,19 +220,37 @@ beforeEach(async () => {
         return backend.models;
       case "llm_server_status":
         return backend.status;
-      case "llm_server_connection":
-        return backend.connection;
-      case "llm_server_start":
+      case "llm_server_start": {
+        const gate = backend.startGate;
+        backend.startGate = null;
+        if (gate) await gate;
         if (backend.startError) throw backend.startError;
-        running(51234, KEY, args?.modelId as string);
+        running(args?.modelId as string);
         return backend.status;
+      }
       case "llm_server_stop":
         backend.status = rawStatus();
-        backend.connection = null;
         return backend.status;
       case "llm_model_download":
       case "llm_engine_ensure":
-        await backend.download(args?.onEvent as { onmessage: ((e: unknown) => void) | null });
+        await backend.download(args?.onEvent as Channel);
+        return null;
+      case "llm_request": {
+        const req: EngineRequest = {
+          requestId: args?.requestId as string,
+          method: args?.method as string,
+          path: args?.path as string,
+          body: (args?.body as string | null) ?? null,
+          modelId: (args?.modelId as string | null) ?? null,
+          loadedModel: backend.status.model_id,
+          argKeys: Object.keys(args ?? {}).sort(),
+        };
+        backend.requests.push(req);
+        await (backend.request ?? answerRequest)(req, args?.onEvent as Channel);
+        return null;
+      }
+      case "llm_request_cancel":
+        backend.cancelled.push(args?.requestId as string);
         return null;
       case "llm_download_cancel":
       case "llm_model_delete":
@@ -268,7 +314,6 @@ describe("init", () => {
     expect(managed().status).toEqual({
       phase: "stopped",
       modelId: null,
-      port: null,
       restarts: 0,
       error: null,
       engineInstalled: true,
@@ -324,87 +369,88 @@ describe("init", () => {
   });
 });
 
-describe("security contract: the per-launch key", () => {
-  it("never enters Redux, the keychain, or the stored provider list", async () => {
+describe("security contract: the engine's key and address stay native", () => {
+  it("the webview is told neither, and asks for neither", async () => {
     running();
     await initManagedEngine();
-    expect(getManagedTransport()).not.toBeNull();
-    expect(store.getState().ai.providerStatus[MANAGED_PROVIDER_ID].status).toBe("connected");
+    h.sse = [JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] }), "[DONE]"];
+    await collect(managedProvider.chat([{ role: "user", content: "hello" }], { model: MODEL }));
 
-    // 1. Nothing in the whole store contains the key.
-    expect(JSON.stringify(store.getState())).not.toContain(KEY);
-    // 2. The provider entry has no key-shaped field at all.
-    expect(Object.keys(store.getState().ai.providers[MANAGED_PROVIDER_ID]).sort()).toEqual(
+    // There is no command that returns a key or an address, and none is called.
+    expect(commands()).not.toContain("llm_server_connection");
+    // The status mirrored into Redux has exactly these fields: no key, no port.
+    expect(Object.keys(managed().status!).sort()).toEqual(
+      ["engineBuild", "engineInstalled", "error", "modelId", "phase", "restarts"].sort(),
+    );
+    // The provider entry is not a network address and has no key-shaped field.
+    const config = store.getState().ai.providers[MANAGED_PROVIDER_ID];
+    expect(Object.keys(config).sort()).toEqual(
       ["baseUrl", "defaultModel", "id", "keyRequired", "kind", "label"].sort(),
     );
-    // 3. Persisting the user's own providers neither stores the key nor the
-    //    built-in engine's entry.
+    expect(config.baseUrl).toBe("http://built-in-engine.invalid/v1");
+    const state = JSON.stringify(store.getState());
+    expect(state).not.toMatch(/api[_-]?key/i);
+    expect(state).not.toContain("127.0.0.1");
+  });
+
+  it("a chat goes over IPC with no credentials, never through the webview's HTTP client", async () => {
+    running();
+    await initManagedEngine();
+    h.sse = [JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] }), "[DONE]"];
+    await collect(managedProvider.chat([{ role: "user", content: "hello" }], { model: MODEL }));
+
+    expect(h.fetches).toHaveLength(0);
+    expect(backend.requests).toHaveLength(1);
+    const request = backend.requests[0];
+    // Exactly these arguments cross the boundary: no header bag, no URL, no key.
+    expect(request.argKeys).toEqual(["body", "method", "modelId", "onEvent", "path", "requestId"]);
+    expect(request.method).toBe("POST");
+    expect(request.path).toBe("/v1/chat/completions");
+    expect(request.modelId).toBe(MODEL);
+    expect(request.body).not.toMatch(/authorization|bearer/i);
+  });
+
+  it("is never a stored provider, and nothing about it reaches the keychain", async () => {
+    running();
+    await initManagedEngine();
     await upsertProvider(
       { kind: "openai-compat", label: "Ollama", baseUrl: "http://localhost:11434/v1", keyRequired: false },
       undefined,
     );
     expect(h.setSecret).toHaveBeenCalled();
     for (const [name, value] of h.setSecret.mock.calls) {
-      expect(value).not.toContain(KEY);
       expect(name).not.toContain(MANAGED_PROVIDER_ID);
       expect(value).not.toContain(MANAGED_PROVIDER_ID);
+      expect(value).not.toContain("built-in-engine");
     }
-    expect(JSON.stringify(store.getState())).not.toContain(KEY);
+    // The user is never asked for a key for it either.
+    expect(providerNeedsKey(MANAGED_PROVIDER_ID)).toBe(false);
   });
 
-  it("is sent only as the bearer token to the engine's own loopback address", async () => {
-    running();
-    await initManagedEngine();
-    h.sse = [JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] }), "[DONE]"];
-    await collect(managedProvider.chat([{ role: "user", content: "hello" }], { model: MODEL }));
-
-    expect(h.fetches).toHaveLength(1);
-    expect(h.fetches[0].url).toBe("http://127.0.0.1:51234/v1/chat/completions");
-    const headers = h.fetches[0].init.headers as Record<string, string>;
-    expect(headers.authorization).toBe(`Bearer ${KEY}`);
-    expect(h.fetches[0].init.body as string).not.toContain(KEY);
-  });
-
-  it("is dropped the moment the engine stops running, and replaced after a restart", async () => {
+  it("stops being usable the moment the engine is not running", async () => {
     running();
     await initManagedEngine();
     expect(getManagedTransport()).not.toBeNull();
 
     // The process died; the native side is restarting it.
     backend.status = rawStatus({ phase: "restarting", model_id: MODEL, restarts: 1 });
-    backend.connection = null;
     emitStatus();
-    await flush();
     expect(getManagedTransport()).toBeNull();
-    expect(managed().status).toMatchObject({ phase: "restarting", restarts: 1, port: null });
+    expect(managed().status).toMatchObject({ phase: "restarting", restarts: 1 });
     expect(store.getState().ai.providerStatus[MANAGED_PROVIDER_ID].status).toBe("unknown");
 
-    // Back up on a new port with a new key.
-    running(52000, KEY2);
-    emitStatus();
-    await flush();
-    h.sse = ["[DONE]"];
-    await collect(managedProvider.chat([{ role: "user", content: "x" }], { model: MODEL }));
-    const last = h.fetches[h.fetches.length - 1];
-    expect(last.url).toBe("http://127.0.0.1:52000/v1/chat/completions");
-    expect((last.init.headers as Record<string, string>).authorization).toBe(`Bearer ${KEY2}`);
-    expect(JSON.stringify(store.getState())).not.toContain(KEY2);
-  });
-
-  it("leaves memory on logout / feature-off teardown", async () => {
     running();
-    await initManagedEngine();
-    resetLLMManager();
-    expect(getManagedTransport()).toBeNull();
-    expect(getProvider(MANAGED_PROVIDER_ID)).toBeUndefined();
+    emitStatus();
+    expect(getManagedTransport()).not.toBeNull();
+    expect(store.getState().ai.providerStatus[MANAGED_PROVIDER_ID].status).toBe("connected");
   });
 
-  it("is not kept when no account is active", async () => {
+  it("is not offered when no account is active", async () => {
     resetLLMManager(); // logged out
     running();
     await initManagedEngine();
-    expect(getManagedTransport()).toBeNull();
     expect(store.getState().ai.providers[MANAGED_PROVIDER_ID]).toBeUndefined();
+    expect(getProvider(MANAGED_PROVIDER_ID)).toBeUndefined();
   });
 
   it("cannot be edited or removed through the generic provider API", async () => {
@@ -420,8 +466,10 @@ describe("security contract: the per-launch key", () => {
       }),
     ).rejects.toThrow();
     await removeProvider(MANAGED_PROVIDER_ID);
-    expect(store.getState().ai.providers[MANAGED_PROVIDER_ID].baseUrl).toBe("http://127.0.0.1:51234/v1");
-    expect(getManagedTransport()).not.toBeNull();
+    expect(store.getState().ai.providers[MANAGED_PROVIDER_ID].baseUrl).toBe(
+      "http://built-in-engine.invalid/v1",
+    );
+    expect(getProvider(MANAGED_PROVIDER_ID)).toBe(managedProvider);
   });
 });
 
@@ -460,10 +508,109 @@ describe("chat through the built-in engine", () => {
       { type: "tool_call", toolCalls: [{ id: "call_1", name: "get_profile", arguments: '{"pubkey":"abc"}' }] },
       { type: "done", finishReason: "tool_calls" },
     ]);
-    const body = JSON.parse(h.fetches[0].init.body as string);
+    const body = JSON.parse(backend.requests[0].body!);
     expect(body.model).toBe(MODEL);
     expect(body.stream).toBe(true);
     expect(body.tools[0].function.name).toBe("get_profile");
+  });
+
+  it("reassembles text that arrives split across IPC messages", async () => {
+    running();
+    await initManagedEngine();
+    const event = `data: ${JSON.stringify({ choices: [{ delta: { content: "café 日本" }, finish_reason: "stop" }] })}\n\n`;
+    backend.request = async (_req, channel) => {
+      channel.onmessage?.({ event: "head", status: 200 });
+      // One SSE event delivered in three pieces, cut mid-line.
+      channel.onmessage?.({ event: "chunk", text: event.slice(0, 20) });
+      channel.onmessage?.({ event: "chunk", text: event.slice(20, 41) });
+      channel.onmessage?.({ event: "chunk", text: event.slice(41) + "data: [DONE]\n\n" });
+      channel.onmessage?.({ event: "end" });
+    };
+    const chunks = await collect(managedProvider.chat([{ role: "user", content: "x" }], { model: MODEL }));
+    expect(chunks).toEqual([
+      { type: "text", delta: "café 日本" },
+      { type: "done", finishReason: "stop" },
+    ]);
+  });
+
+  it("passes an engine error status through as one clear error", async () => {
+    running();
+    await initManagedEngine();
+    backend.request = async (_req, channel) => {
+      channel.onmessage?.({ event: "head", status: 500 });
+      channel.onmessage?.({ event: "chunk", text: '{"error":{"message":"context size exceeded"}}' });
+      channel.onmessage?.({ event: "end" });
+    };
+    const chunks = await collect(managedProvider.chat([{ role: "user", content: "x" }], { model: MODEL }));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({ type: "error" });
+    expect((chunks[0] as { message: string }).message).toContain("500");
+    expect((chunks[0] as { message: string }).message).toContain("context size exceeded");
+  });
+
+  it("Stop cancels the request natively and ends the stream", async () => {
+    running();
+    await initManagedEngine();
+    let failRequest: (e: unknown) => void = () => {};
+    backend.request = (_req, channel) =>
+      new Promise<void>((_resolve, reject) => {
+        failRequest = reject;
+        channel.onmessage?.({ event: "head", status: 200 });
+        channel.onmessage?.({
+          event: "chunk",
+          text: `data: ${JSON.stringify({ choices: [{ delta: { content: "partial" } }] })}\n\n`,
+        });
+      });
+    const controller = new AbortController();
+    const seen: ChatChunk[] = [];
+    const reading = (async () => {
+      for await (const chunk of managedProvider.chat([{ role: "user", content: "x" }], {
+        model: MODEL,
+        signal: controller.signal,
+      })) {
+        seen.push(chunk);
+        if (chunk.type === "text") {
+          controller.abort();
+          // The native side stops the stream when told to.
+          await flush();
+          failRequest({ code: "cancelled", message: "Cancelled." });
+        }
+      }
+    })();
+    await reading;
+
+    expect(backend.cancelled).toEqual([backend.requests[0].requestId]);
+    expect(seen[0]).toEqual({ type: "text", delta: "partial" });
+    // Ends like any aborted provider stream: an error chunk, no "done".
+    expect(seen[seen.length - 1].type).toBe("error");
+    expect(seen.some((c) => c.type === "done")).toBe(false);
+  });
+
+  it("makes no request at all when the turn was already stopped", async () => {
+    running();
+    await initManagedEngine();
+    const controller = new AbortController();
+    controller.abort();
+    const chunks = await collect(
+      managedProvider.chat([{ role: "user", content: "x" }], { model: MODEL, signal: controller.signal }),
+    );
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].type).toBe("error");
+    expect(backend.requests).toHaveLength(0);
+  });
+
+  it("checks the connection over IPC too", async () => {
+    await initManagedEngine();
+    expect(await managedProvider.testConnection()).toEqual({
+      ok: false,
+      error: "The built-in engine is not running.",
+    });
+    running();
+    emitStatus();
+    expect(await managedProvider.testConnection()).toEqual({ ok: true });
+    const last = backend.requests[backend.requests.length - 1];
+    expect([last.method, last.path, last.body]).toEqual(["GET", "/v1/models", null]);
+    expect(h.fetches).toHaveLength(0);
   });
 
   it("starts a stopped engine on first use, then chats", async () => {
@@ -472,7 +619,7 @@ describe("chat through the built-in engine", () => {
     h.sse = [JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }), "[DONE]"];
     const chunks = await collect(managedProvider.chat([{ role: "user", content: "hi" }], { model: MODEL }));
 
-    expect(h.invoke).toHaveBeenCalledWith("llm_server_start", { modelId: MODEL });
+    expect(starts()).toEqual([MODEL]);
     expect(chunks).toEqual([
       { type: "text", delta: "ok" },
       { type: "done", finishReason: "stop" },
@@ -488,8 +635,9 @@ describe("chat through the built-in engine", () => {
     await initManagedEngine();
     h.sse = ["[DONE]"];
     await collect(managedProvider.chat([{ role: "user", content: "hi" }], { model: BIG }));
-    expect(h.invoke).toHaveBeenCalledWith("llm_server_start", { modelId: BIG });
+    expect(starts()).toEqual([BIG]);
     expect(managed().status?.modelId).toBe(BIG);
+    expect(backend.requests[0]).toMatchObject({ modelId: BIG, loadedModel: BIG });
   });
 
   it("does not restart an engine that is already running the requested model", async () => {
@@ -507,7 +655,7 @@ describe("chat through the built-in engine", () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toMatchObject({ type: "error" });
     expect((chunks[0] as { message: string }).message).toContain("bad model");
-    expect(h.fetches).toHaveLength(0);
+    expect(backend.requests).toHaveLength(0);
     expect(managed().errors[ENGINE_TARGET]?.code).toBe("startup_failed");
   });
 
@@ -515,14 +663,12 @@ describe("chat through the built-in engine", () => {
     running();
     await initManagedEngine();
     backend.status = rawStatus({ phase: "restarting", model_id: MODEL, restarts: 1 });
-    backend.connection = null;
     emitStatus();
-    await flush();
 
     const pending = ensureManagedRunning(MODEL);
     await flush();
     expect(commands()).not.toContain("llm_server_start");
-    running(53000, KEY2);
+    running();
     emitStatus();
     const transport = await pending;
     expect(transport).toBe(getManagedTransport());
@@ -533,9 +679,7 @@ describe("chat through the built-in engine", () => {
     running();
     await initManagedEngine();
     backend.status = rawStatus({ phase: "restarting", model_id: MODEL, restarts: 3 });
-    backend.connection = null;
     emitStatus();
-    await flush();
 
     const pending = ensureManagedRunning(MODEL);
     backend.status = rawStatus({
@@ -546,6 +690,104 @@ describe("chat through the built-in engine", () => {
     });
     emitStatus();
     await expect(pending).rejects.toMatchObject({ code: "crashed" });
+    // It does not override the supervisor's decision in the same breath.
+    expect(commands()).not.toContain("llm_server_start");
+  });
+});
+
+describe("two models, one engine", () => {
+  beforeEach(() => {
+    backend.models = [rawModel(MODEL, { installed: true }), rawModel(BIG, { installed: true })];
+  });
+
+  it("REGRESSION: a chat that joins another model's start is not answered by that model", async () => {
+    // Found in review: a chat sent while a different model was starting joined
+    // that start and was then answered by it, labelled with the model the user
+    // had picked.
+    await initManagedEngine();
+    let release = () => {};
+    backend.startGate = new Promise<void>((resolve) => (release = resolve));
+    const settingsStart = startManagedEngine(MODEL); // e.g. the Settings button
+    await flush();
+
+    h.sse = [JSON.stringify({ choices: [{ delta: { content: "from the big one" }, finish_reason: "stop" }] }), "[DONE]"];
+    const chat = collect(managedProvider.chat([{ role: "user", content: "hi" }], { model: BIG }));
+    await flush();
+    // It is waiting, and has NOT fired a second start into the first.
+    expect(starts()).toEqual([MODEL]);
+    expect(backend.requests).toHaveLength(0);
+
+    release();
+    await settingsStart;
+    const chunks = await chat;
+
+    // The first start finished with the wrong model for this chat, so the
+    // engine was switched before the request was made.
+    expect(starts()).toEqual([MODEL, BIG]);
+    expect(backend.requests).toHaveLength(1);
+    expect(backend.requests[0]).toMatchObject({ modelId: BIG, loadedModel: BIG });
+    expect(chunks[0]).toEqual({ type: "text", delta: "from the big one" });
+    expect(managed().status?.modelId).toBe(BIG);
+  });
+
+  it("two chats for the same model during one start share that start", async () => {
+    await initManagedEngine();
+    let release = () => {};
+    backend.startGate = new Promise<void>((resolve) => (release = resolve));
+    h.sse = ["[DONE]"];
+    const a = collect(managedProvider.chat([{ role: "user", content: "a" }], { model: MODEL }));
+    const b = collect(managedProvider.chat([{ role: "user", content: "b" }], { model: MODEL }));
+    await flush();
+    release();
+    await Promise.all([a, b]);
+    expect(starts()).toEqual([MODEL]);
+    expect(backend.requests.map((r) => r.loadedModel)).toEqual([MODEL, MODEL]);
+  });
+
+  it("a failed start for another model does not fail this chat", async () => {
+    await initManagedEngine();
+    let fail = () => {};
+    backend.startGate = new Promise<void>((_resolve, reject) => (fail = () => reject(new Error("unused"))));
+    // The gate rejects → the fake treats it as a thrown start.
+    const settingsStart = startManagedEngine(MODEL);
+    await flush();
+    h.sse = ["[DONE]"];
+    const chat = collect(managedProvider.chat([{ role: "user", content: "hi" }], { model: BIG }));
+    await flush();
+    fail();
+    expect(await settingsStart).toBe(false);
+    const chunks = await chat;
+    expect(starts()).toEqual([MODEL, BIG]);
+    expect(chunks[chunks.length - 1]).toEqual({ type: "done", finishReason: undefined });
+    expect(backend.requests[0]).toMatchObject({ modelId: BIG, loadedModel: BIG });
+  });
+
+  it("the native check is the backstop: a request for a model that is not loaded fails clearly", async () => {
+    running(MODEL);
+    await initManagedEngine();
+    // The engine is switched behind the webview's back, with no status event.
+    backend.status = rawStatus({ phase: "running", model_id: BIG });
+    const chunks = await collect(managedProvider.chat([{ role: "user", content: "hi" }], { model: MODEL }));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({ type: "error" });
+    expect((chunks[0] as { message: string }).message).toContain("different model");
+  });
+
+  it("gives up cleanly instead of switching back and forth forever", async () => {
+    await initManagedEngine();
+    // Every start "succeeds" but leaves the other model loaded.
+    h.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "llm_server_start") {
+        running(args?.modelId === MODEL ? BIG : MODEL);
+        return backend.status;
+      }
+      if (command === "llm_server_status") return backend.status;
+      if (command === "llm_models_list") return backend.models;
+      if (command === "llm_server_stop") return rawStatus();
+      throw new Error(`unexpected command ${command}`);
+    });
+    await expect(ensureManagedRunning(MODEL)).rejects.toMatchObject({ code: "model_mismatch" });
+    expect(starts()).toHaveLength(3);
   });
 });
 
@@ -710,7 +952,7 @@ describe("start / stop", () => {
   it("start reports success and connects the provider", async () => {
     await initManagedEngine();
     expect(await startManagedEngine(MODEL)).toBe(true);
-    expect(managed().status).toMatchObject({ phase: "running", modelId: MODEL, port: 51234 });
+    expect(managed().status).toMatchObject({ phase: "running", modelId: MODEL });
     expect(store.getState().ai.providerStatus[MANAGED_PROVIDER_ID].status).toBe("connected");
     expect(getManagedTransport()).not.toBeNull();
   });
@@ -740,7 +982,7 @@ describe("start / stop", () => {
     },
   );
 
-  it("stop drops the key and marks the provider not connected", async () => {
+  it("stop marks the provider not connected and drops the client", async () => {
     running();
     await initManagedEngine();
     await stopManagedEngine();
@@ -749,32 +991,7 @@ describe("start / stop", () => {
     expect(store.getState().ai.providerStatus[MANAGED_PROVIDER_ID].status).toBe("unknown");
   });
 
-  it("a slow key fetch for an old 'running' report cannot overwrite a newer 'stopped'", async () => {
-    await initManagedEngine();
-    // "running" arrives, but its connection lookup is slow...
-    let answer: (value: unknown) => void = () => {};
-    running();
-    const slowConnection = { ...backend.connection! };
-    h.invoke.mockImplementationOnce(
-      async () => new Promise((resolve) => (answer = resolve)), // llm_server_connection
-    );
-    emitStatus();
-    await flush();
-    // ...and meanwhile the engine stops for good.
-    backend.status = rawStatus();
-    backend.connection = null;
-    emitStatus();
-    await flush();
-    expect(managed().status?.phase).toBe("stopped");
-
-    answer(slowConnection);
-    await flush();
-    expect(managed().status?.phase).toBe("stopped");
-    expect(getManagedTransport()).toBeNull();
-    expect(JSON.stringify(store.getState())).not.toContain(KEY);
-  });
-
-  it("the store never shows 'running' before the engine is actually reachable", async () => {
+  it("the store never shows 'running' before the engine is actually usable", async () => {
     await initManagedEngine();
     const seen: boolean[] = [];
     const unsubscribe = store.subscribe(() => {
@@ -782,18 +999,28 @@ describe("start / stop", () => {
     });
     running();
     emitStatus();
-    await flush();
     unsubscribe();
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every(Boolean)).toBe(true);
   });
+});
 
-  it("teardown stops the process, hides the tier and ignores later events", async () => {
+describe("teardown", () => {
+  it("REGRESSION: makes no native call when the engine module was never brought up", async () => {
+    // Found in review: every logged-out mount and every user with the AI
+    // feature off ran this and sent `llm_server_stop`.
+    teardownManagedEngine();
+    teardownManagedEngine();
+    await flush();
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
+
+  it("stops the process, hides the tier and ignores later events, once", async () => {
     running();
     await initManagedEngine();
     teardownManagedEngine();
     await flush();
-    expect(commands()).toContain("llm_server_stop");
+    expect(commands().filter((c) => c === "llm_server_stop")).toHaveLength(1);
     expect(h.unlisten).toHaveBeenCalled();
     expect(managed().status).toBeNull();
     expect(getManagedTransport()).toBeNull();
@@ -805,6 +1032,22 @@ describe("start / stop", () => {
     await flush();
     expect(managed().status).toBeNull();
     expect(getManagedTransport()).toBeNull();
+
+    // A second teardown has nothing left to do.
+    teardownManagedEngine();
+    await flush();
+    expect(commands().filter((c) => c === "llm_server_stop")).toHaveLength(1);
+  });
+
+  it("an engine left running by an earlier page load is picked up, not stopped", async () => {
+    // The webview reloads while the engine runs: the logged-out mount tears
+    // down (a no-op now), then login brings the module up and finds it running.
+    running();
+    teardownManagedEngine();
+    await initManagedEngine();
+    expect(commands()).not.toContain("llm_server_stop");
+    expect(managed().status?.phase).toBe("running");
+    expect(getManagedTransport()).not.toBeNull();
   });
 });
 
