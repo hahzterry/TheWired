@@ -522,7 +522,7 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 | Pipeline seam | `client/src/lib/nostr/spaceE2eeHooks.ts` |
 | Non-secret Redux state | `client/src/store/slices/spaceE2eeSlice.ts` |
 | Plaintext guard | `client/src/lib/nostr/publish.ts` |
-| Pipeline branch | `client/src/lib/nostr/eventPipeline.ts` |
+| Pipeline branch | `client/src/lib/nostr/pipeline/ingest.ts` |
 
 D2 (transport) is confined to the grant functions in `spaceKeys.ts` and the grant subscription;
 D3 to two constants; D4 to `epochsToGrant` in `keyReconcile.ts`; D5 to `sealSpaceEvent`.

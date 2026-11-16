@@ -1,5 +1,5 @@
 import { store } from "@/store";
-import { getLivekitRoom } from "@/lib/webrtc/livekitClient";
+import { getLivekitRoom } from "@/lib/webrtc/livekit";
 import {
   startSession,
   endSession,

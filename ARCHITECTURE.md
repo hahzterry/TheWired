@@ -683,7 +683,7 @@ DMs use NIP-17 triple-layer encryption: **Gift Wrap (kind:1059) → Seal (kind:1
 **Key files:**
 - `lib/nostr/giftWrap.ts` -- Gift wrap creation and unwrapping
 - `lib/nostr/nip44.ts` -- NIP-44 encrypt/decrypt dispatcher (NIP-07 or Tauri)
-- `lib/nostr/eventPipeline.ts` -- `handleGiftWrap()` decrypts and routes to DM or friend handlers
+- `lib/nostr/pipeline/giftWrapHandler.ts` -- `handleGiftWrap()` decrypts and routes the rumor; `pipeline/friendWraps.ts` and `pipeline/callWraps.ts` hold the friend-request and call-signalling handlers
 - `store/slices/dmSlice.ts` -- Redux state: contacts, messages, unread counts, active conversation
 - `features/dm/dmPersistence.ts` -- IndexedDB persistence (200 msgs/conversation, 3000 processedWrapIds cap)
 - `features/dm/dmService.ts` -- Send DM with optimistic local dispatch
@@ -713,7 +713,7 @@ Private friend requests built on NIP-17 gift wraps with a distinguishing `type` 
 ### 4.7 Notification System
 
 ```
-Incoming Event → eventPipeline.ts
+Incoming Event → eventPipeline.ts (lib/nostr/pipeline/ingest.ts)
   ├─ evaluateNotification()    → checks prefs/mutes/DND → incrementUnread/incrementMention + toast
   ├─ evaluateDMNotification()  → DM-specific path (from handleGiftWrap)
   └─ evaluateFriendRequestNotification() → friend request path
@@ -1693,7 +1693,10 @@ aiConversationStore.ts (IndexedDB v2: aiConversations + aiMessages, per-account)
 |------|---------|
 | `client/src/lib/nostr/relayManager.ts` | Core multi-relay WebSocket manager. Singleton. |
 | `client/src/lib/nostr/subscriptionManager.ts` | REQ/CLOSE/EOSE lifecycle, filter construction, dedup integration. |
-| `client/src/lib/nostr/eventPipeline.ts` | Dedup → validate → verify → dispatch + feature routing (DMs, friends, music, notifications). |
+| `client/src/lib/nostr/eventPipeline.ts` | Entry point + default pipeline instance. Import the pipeline from here. |
+| `client/src/lib/nostr/pipeline/` | The pipeline's stages: `ingest.ts` (dedup → validate → verify → dispatch), `batching.ts`, `indexEvent.ts` (the kind switch), `deletionIndex.ts`, `modDeleteIndex.ts`, `spaceFeeds.ts`, `giftWrapHandler.ts` / `friendWraps.ts` / `callWraps.ts` (DMs, friends, calls), `createEventPipeline.ts`. |
+| `client/src/lib/nostr/loginFlow.ts` | Entry point for the login path (`getSigner`, `performLogin`, `tryRestoreSession`, `switchAccount`, `performCleanup`, `performLogout`). |
+| `client/src/lib/nostr/login/` | The login path: `performLogin.ts` (session bootstrap order), `signerSession.ts`, `restore.ts`, `accounts.ts`, `cleanup.ts`, `state.ts`, and one module per bootstrap step. |
 | `client/src/lib/nostr/signer.ts` + `nip07Signer.ts` + `tauriSigner.ts` | Signer abstraction; NIP-07 browser + Tauri keystore backends. |
 | `client/src/lib/nostr/giftWrap.ts` + `nip44.ts` | NIP-17 gift wrap crypto (used by DMs, friend requests, call invites). |
 | `client/src/lib/webrtc/livekitClient.ts` | The only `livekit-client` value-import site: room lifecycle, device switching, track lookups, room listeners. |

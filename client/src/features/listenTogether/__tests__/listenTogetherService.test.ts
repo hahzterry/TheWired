@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const publishData = vi.fn(async (_payload: Uint8Array, _opts: unknown) => {});
-vi.mock("@/lib/webrtc/livekitClient", () => ({
+vi.mock("@/lib/webrtc/livekit", () => ({
   getLivekitRoom: () => ({ localParticipant: { publishData } }),
 }));
 const seekTrackTo = vi.fn();

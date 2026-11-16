@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import Hls from "hls.js";
+import { attachVideoSource } from "@/lib/media/hls";
 
 interface VideoPlayerProps {
   src: string;
@@ -9,7 +9,6 @@ interface VideoPlayerProps {
 
 export function VideoPlayer({ src, poster, className }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -19,28 +18,8 @@ export function VideoPlayer({ src, poster, className }: VideoPlayerProps) {
       src.endsWith(".m3u8") ||
       src.includes("m3u8");
 
-    if (isHls && Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false,
-      });
-      hlsRef.current = hls;
-      hls.loadSource(src);
-      hls.attachMedia(video);
-    } else if (isHls && video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Native HLS support (Safari)
-      video.src = src;
-    } else {
-      // Direct MP4/WebM
-      video.src = src;
-    }
-
-    return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-    };
+    // hls.js where it is needed, the element itself for MP4/WebM and native HLS.
+    return attachVideoSource(video, src, { isHls });
   }, [src]);
 
   return (

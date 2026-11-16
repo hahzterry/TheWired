@@ -1,15 +1,23 @@
-import { useState, useCallback } from "react";
+import { Suspense, useState, useCallback } from "react";
 import { Users, Settings, Search, Lock } from "lucide-react";
 import { Button } from "../../components/ui/Button";
-import { SearchPanel } from "../search/SearchPanel";
 import { useSpace } from "./useSpace";
 import { useAppDispatch, useAppSelector } from "../../store/hooks";
 import { toggleRightPanel } from "../../store/slices/uiSlice";
 import { usePermissions } from "./usePermissions";
-import { SpaceSettingsModal } from "./settings/SpaceSettingsModal";
+import { SpaceSettingsModal } from "./lazyModals";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { lazyWithRetry } from "@/lib/lazyWithRetry";
+import { preloadable, preloadOnIntent } from "@/lib/lazyPreload";
 import { parseChannelIdPart } from "./spaceSelectors";
 import { selectIsEncryptedSpace } from "../../store/slices/spaceE2eeSlice";
 import type { MessageSearchResult } from "../search/useMessageSearch";
+
+// Message search loads when the search button is hovered, focused or pressed.
+const loadSearchPanel = preloadable(() =>
+  import("../search/SearchPanel").then((m) => ({ default: m.SearchPanel })),
+);
+const SearchPanel = lazyWithRetry(loadSearchPanel);
 
 export function ChannelHeader() {
   const { activeSpace, activeChannelId, resolveActiveChannel, getActiveChannelType, selectChannel } = useSpace();
@@ -51,6 +59,18 @@ export function ChannelHeader() {
   const channelName = channel?.label ?? `#${getActiveChannelType()}`;
   const canManage = can("MANAGE_SPACE") || (!!currentPubkey && activeSpace.adminPubkeys.includes(currentPubkey));
 
+  const searchButton = (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => setSearchOpen(true)}
+      title="Search messages"
+      {...preloadOnIntent(loadSearchPanel)}
+    >
+      <Search size={16} />
+    </Button>
+  );
+
   return (
     <div className="flex h-12 shrink-0 items-center border-b border-border px-5">
       <span className="text-[13px] font-semibold text-heading">
@@ -75,22 +95,21 @@ export function ChannelHeader() {
       )}
       <div className="ml-auto flex items-center gap-1">
         {searchOpen ? (
-          <SearchPanel
-            mode="space"
-            spaceId={activeSpace.id}
-            channels={spaceChannels}
-            onClose={() => setSearchOpen(false)}
-            onJumpToMessage={handleJumpToMessage}
-          />
+          // The button stays in place until the panel has loaded, so the
+          // header does not shift.
+          <ErrorBoundary variant="inline" scope="panel" label="channel-search" noun="search">
+            <Suspense fallback={searchButton}>
+              <SearchPanel
+                mode="space"
+                spaceId={activeSpace.id}
+                channels={spaceChannels}
+                onClose={() => setSearchOpen(false)}
+                onJumpToMessage={handleJumpToMessage}
+              />
+            </Suspense>
+          </ErrorBoundary>
         ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSearchOpen(true)}
-            title="Search messages"
-          >
-            <Search size={16} />
-          </Button>
+          searchButton
         )}
         {canManage && (
           <Button
