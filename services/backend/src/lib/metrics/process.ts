@@ -4,6 +4,11 @@ import type { Registry } from "./registry.js";
 /** How long one event-loop delay window is. */
 export const EVENT_LOOP_WINDOW_MS = 10_000;
 
+/** The delay histogram's sampling interval. Node records the time between
+ *  two firings of this timer, so every sample includes the interval itself;
+ *  it is subtracted to leave the delay. */
+const SAMPLE_RESOLUTION_MS = 20;
+
 export interface EventLoopMonitor {
   /** Begin measuring event-loop delay in fixed windows. No-op if running. */
   start(windowMs?: number): void;
@@ -105,19 +110,21 @@ export function registerProcessMetrics(registry: Registry): EventLoopMonitor {
   /** Publish the window that just ended and open the next one. */
   const closeWindow = () => {
     if (!loopDelay) return;
-    // The histogram reports nanoseconds, and NaN before its first sample.
-    const ns = (v: number) => (Number.isFinite(v) ? v / 1e9 : 0);
-    lagMean.set(ns(loopDelay.mean));
-    lagP99.set(ns(loopDelay.percentile(99)));
-    lagMax.set(ns(loopDelay.max));
+    // The histogram reports nanoseconds (NaN before its first sample), and
+    // each sample is the sampling interval plus the delay: an idle loop
+    // would otherwise read as a constant 20 ms.
+    const delay = (v: number) => (Number.isFinite(v) ? Math.max(0, v / 1e9 - SAMPLE_RESOLUTION_MS / 1000) : 0);
+    lagMean.set(delay(loopDelay.mean));
+    lagP99.set(delay(loopDelay.percentile(99)));
+    lagMax.set(delay(loopDelay.max));
     loopDelay.reset();
   };
 
   return {
     start(windowMs: number = EVENT_LOOP_WINDOW_MS) {
       if (loopDelay) return;
-      // 20 ms resolution; Node unrefs the histogram's own timer.
-      loopDelay = monitorEventLoopDelay({ resolution: 20 });
+      // Node unrefs the histogram's own timer.
+      loopDelay = monitorEventLoopDelay({ resolution: SAMPLE_RESOLUTION_MS });
       loopDelay.enable();
       lagMean.set(0);
       lagP99.set(0);

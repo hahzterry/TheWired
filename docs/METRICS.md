@@ -95,7 +95,9 @@ should always be 0; a non-zero value means a label has become unbounded.
 Event-loop delay is measured in fixed 10 s windows that the process closes
 itself, and a scrape reads the last closed window. Scraping does not reset
 anything, so several scrapers (or a manual `curl`) all see the same values.
-It is measured only while the metrics listener is running.
+The values are the delay itself, with the 20 ms sampling interval taken out,
+so an idle process reads close to 0. It is measured only while the metrics
+listener is running.
 
 ### Dependencies
 

@@ -43,7 +43,9 @@ describe("event-loop delay monitor", () => {
   it("publishes a window when the process closes it, not when a scrape happens", async () => {
     const registry = new Registry();
     monitor = registerProcessMetrics(registry);
-    monitor.start(250);
+    // A 1 s window leaves wide margins on both sides of each step below, so a
+    // slow machine cannot push a step into the wrong window.
+    monitor.start(1000);
     expect(monitor.running()).toBe(true);
 
     // Inside the first window: a 90 ms stall, then several scrapes.
@@ -56,8 +58,9 @@ describe("event-loop delay monitor", () => {
       expect(lag(registry.render(), "max")).toBe(0);
     }
 
-    // After the window closes, it shows the stall those scrapes did not erase.
-    await sleep(300);
+    // After the window closes (and well before the next one does), it shows
+    // the stall those scrapes did not erase.
+    await sleep(1050);
     const published = lag(registry.render(), "max")!;
     expect(published).toBeGreaterThan(0.05);
   });
@@ -65,10 +68,10 @@ describe("event-loop delay monitor", () => {
   it("repeated scrapes read the same value: a second scraper cannot shorten the window", async () => {
     const registry = new Registry();
     monitor = registerProcessMetrics(registry);
-    monitor.start(300);
+    monitor.start(1000);
     await sleep(20);
     block(80);
-    await sleep(330); // first window closed; the second runs until ~600 ms
+    await sleep(1080); // first window closed; the second runs until ~2000 ms
 
     const first = registry.render();
     const again = [registry.render(), registry.render(), registry.render()];
@@ -93,6 +96,19 @@ describe("event-loop delay monitor", () => {
     block(60);
     await sleep(120); // several would-be windows
     expect(lag(registry.render(), "max")).toBe(lag(before, "max"));
+  });
+
+  // Node's histogram records the gap between sampling-timer firings, so a
+  // raw sample is the 20 ms interval plus the delay. Reported values are the
+  // delay alone: an idle loop reads near zero, not a constant 20 ms.
+  it("reports delay, not the sampling interval: an idle window is near zero", async () => {
+    const registry = new Registry();
+    monitor = registerProcessMetrics(registry);
+    monitor.start(300);
+    await sleep(340); // one idle window
+    const out = registry.render();
+    expect(lag(out, "mean")).toBeLessThan(0.015);
+    expect(lag(out, "mean")).toBeGreaterThanOrEqual(0);
   });
 
   it("uses a 10 s window by default", () => {
