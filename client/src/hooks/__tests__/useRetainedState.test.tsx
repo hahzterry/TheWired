@@ -1,6 +1,16 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { act, fireEvent, renderHook, screen } from "@testing-library/react";
+import { Provider } from "react-redux";
 import { resetRetainedStateForTests, useRetainedState } from "../useRetainedState";
+import { createTestStore } from "@/__tests__/helpers/createTestStore";
+import { renderWithProviders } from "@/__tests__/helpers/renderWithProviders";
+import { identitySlice } from "@/store/slices/identitySlice";
+import { ReplyComposer } from "@/features/spaces/notes/ReplyComposer";
+
+const ALICE = "a".repeat(64);
+const BOB = "b".repeat(64);
+const login = (pubkey: string) => identitySlice.actions.login({ pubkey, signerType: "nip07" });
 
 beforeEach(() => resetRetainedStateForTests());
 
@@ -52,5 +62,71 @@ describe("useRetainedState", () => {
     act(() => first.result.current[1]("typed"));
     first.unmount();
     expect(renderHook(() => useRetainedState<string>(null, "")).result.current[0]).toBe("");
+  });
+
+  describe("per account", () => {
+    function withStore() {
+      const store = createTestStore();
+      const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>;
+      return { store, wrapper };
+    }
+
+    it("does not show one account's value to the next account on the same key", () => {
+      const { store, wrapper } = withStore();
+      act(() => void store.dispatch(login(ALICE)));
+      const { result } = renderHook(() => useRetainedState("note:1:reply-draft", ""), { wrapper });
+      act(() => result.current[1]("alice's unsent reply"));
+
+      // The account changes under a component that stays mounted.
+      act(() => void store.dispatch(login(BOB)));
+      expect(result.current[0]).toBe("");
+
+      // And under one that mounts afterwards.
+      const fresh = renderHook(() => useRetainedState("note:1:reply-draft", ""), { wrapper });
+      expect(fresh.result.current[0]).toBe("");
+    });
+
+    it("keeps each account's own value while the other is active", () => {
+      const { store, wrapper } = withStore();
+      act(() => void store.dispatch(login(ALICE)));
+      const { result } = renderHook(() => useRetainedState("note:1:reply-draft", ""), { wrapper });
+      act(() => result.current[1]("from alice"));
+      act(() => void store.dispatch(login(BOB)));
+      act(() => result.current[1]("from bob"));
+
+      act(() => void store.dispatch(login(ALICE)));
+      expect(result.current[0]).toBe("from alice");
+      act(() => void store.dispatch(login(BOB)));
+      expect(result.current[0]).toBe("from bob");
+    });
+
+    it("shows nothing of an account after it logs out", () => {
+      const { store, wrapper } = withStore();
+      act(() => void store.dispatch(login(ALICE)));
+      const { result } = renderHook(() => useRetainedState("note:1:thread", false), { wrapper });
+      act(() => result.current[1](true));
+      act(() => void store.dispatch(identitySlice.actions.logout()));
+      expect(result.current[0]).toBe(false);
+    });
+
+    it("a reply draft typed by one account is not in the composer after switching accounts", () => {
+      const composer = (
+        <ReplyComposer targetPubkey={"c".repeat(64)} onSend={() => {}} onCancel={() => {}} draftKey="note:1:reply-draft" />
+      );
+      const { store, unmount } = renderWithProviders(composer, {
+        preloadedState: { identity: { ...identitySlice.getInitialState(), pubkey: ALICE, signerType: "nip07" } },
+      });
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "alice's unsent reply" } });
+      expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("alice's unsent reply");
+
+      // Switch while the composer is open.
+      act(() => void store.dispatch(login(BOB)));
+      expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("");
+
+      // The card scrolls away and comes back under the new account.
+      unmount();
+      renderWithProviders(composer, { store });
+      expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("");
+    });
   });
 });
