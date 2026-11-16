@@ -10,6 +10,7 @@
 package metrics
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -109,7 +110,13 @@ func (r *Registry) Reset() {
 }
 
 // Write renders every metric in the text exposition format.
-func (r *Registry) Write(w io.Writer) {
+//
+// The exposition is built in memory first and sent to w afterwards. Each
+// metric holds its own mutex while it is rendered, and that same mutex is
+// taken on the request path for every increment: rendering straight into a
+// network writer would let a scraper that stops reading hold it until the
+// write deadline, stalling every request that touches the metric.
+func (r *Registry) Write(w io.Writer) (int, error) {
 	r.mu.Lock()
 	collectors := append([]func(){}, r.collectors...)
 	metrics := append([]metric{}, r.metrics...)
@@ -117,9 +124,12 @@ func (r *Registry) Write(w io.Writer) {
 	for _, c := range collectors {
 		c()
 	}
+	var buf bytes.Buffer
 	for _, m := range metrics {
-		m.write(w)
+		m.write(&buf)
 	}
+	// No lock is held from here on.
+	return w.Write(buf.Bytes())
 }
 
 // ── shared series bookkeeping ───────────────────────────────────────────────

@@ -3,11 +3,14 @@ package metrics
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func render(r *Registry) string {
@@ -197,3 +200,90 @@ func BenchmarkHandlerInstrumented(b *testing.B) {
 		h.ServeHTTP(httptest.NewRecorder(), req)
 	}
 }
+
+// stalledWriter is a scraper that has stopped reading: Write blocks until
+// release is closed.
+type stalledWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *stalledWriter) Write(p []byte) (int, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return len(p), nil
+}
+
+// A scrape that is stuck writing to its socket must not hold any metric's
+// mutex: increments on the request path have to keep completing.
+func TestWriteDoesNotHoldMetricLocksWhileWriting(t *testing.T) {
+	r := NewRegistry()
+	c := r.NewCounter("demo_requests_total", "x", "route")
+	g := r.NewGauge("demo_gauge", "x")
+	h := r.NewHistogram("demo_seconds", "x", []float64{1}, "route")
+	c.Inc("api")
+	g.Set(1)
+	h.Observe(0.5, "api")
+
+	w := &stalledWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	scrapeDone := make(chan struct{})
+	go func() {
+		r.Write(w)
+		close(scrapeDone)
+	}()
+
+	select {
+	case <-w.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the scrape never reached the writer")
+	}
+
+	// The scrape is now blocked inside w.Write. Every kind of update, and a
+	// read, must still go through.
+	updated := make(chan struct{})
+	go func() {
+		c.Inc("api")
+		c.Inc("blob") // a new series, which also takes the lock
+		g.Set(2)
+		h.Observe(0.25, "api")
+		_ = c.Value("api")
+		_ = r.Dropped()
+		close(updated)
+	}()
+	select {
+	case <-updated:
+	case <-time.After(2 * time.Second):
+		close(w.release)
+		t.Fatal("an increment blocked behind a scrape that was stuck writing")
+	}
+
+	select {
+	case <-scrapeDone:
+		t.Fatal("the scrape finished while its writer was still stalled")
+	default:
+	}
+	close(w.release)
+	<-scrapeDone
+
+	if got := c.Value("api"); got != 2 {
+		t.Fatalf("counter = %v, want 2", got)
+	}
+	// The stalled scrape saw a consistent snapshot from before the updates.
+	if out := render(r); !strings.Contains(out, `demo_requests_total{route="api"} 2`) || !strings.Contains(out, "demo_gauge 2\n") {
+		t.Fatalf("next scrape does not show the updates:\n%s", out)
+	}
+}
+
+// The handler sends the exposition in one write after rendering.
+func TestWriteReportsWriterError(t *testing.T) {
+	r := NewRegistry()
+	r.NewCounter("demo_total", "x").Inc()
+	if _, err := r.Write(failingWriter{}); err == nil {
+		t.Fatal("a writer error must be returned")
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
