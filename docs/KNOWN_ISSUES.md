@@ -61,9 +61,17 @@ prepending without moving the viewport, and opening on a given row.
   rows added above, which the list announces.
 - **Engagement** follows the rendered range (`useEngagementRange`) instead of
   an observer per card or the first 100 notes, so notes far down a feed get
-  their counts.
+  their counts. Stored engagement is fetched once per note (a one-shot request
+  that closes on EOSE); one live subscription covers the notes rendered right
+  now and is replaced as that set changes, so a note stays live for as long as
+  it is on screen. Its un-react leg is re-issued as reaction ids become known.
 - **Card state survives unmounting** (`useRetainedState`): reply and quote
-  drafts, open composers, expanded threads, hidden media.
+  drafts, open composers, expanded threads, hidden media. Kept per account:
+  the next account to look at the same note does not find it.
+- **Inline video and audio** stop when their card leaves the rendered window
+  (the element is gone) and come back paused at the position they were left
+  at (`useResumePlayback`, in `SmartVideo` and `InlineAudio`). The music
+  player is a single element outside the lists and is not affected.
 - Every row keeps its `ItemBoundary` and its stable key.
 
 **Measured** (headless Chrome, 1400×900, before = the commit this branched
@@ -121,6 +129,14 @@ production bundle.
   is lost when it scrolls far away; the state readers set on purpose goes
   through `useRetainedState`. New per-row state that must survive needs the
   same.
+- An inline video or audio no longer keeps playing once its card is far
+  outside the viewport, and a video sent to picture-in-picture or fullscreen
+  from the browser's own controls closes when that happens. Before, the
+  element stayed mounted and kept playing out of sight.
+- The chat lists tell the virtualizer's scrolls from the reader's by wrapping
+  `scrollBy` / `scrollTo` on the scroller. That relies on how `react-virtuoso`
+  is built, so the dependency is pinned to an exact version and
+  `virtualizerScrollContract.test.tsx` fails if a version scrolls another way.
 - A smooth scroll only animates to a row that is rendered or close to it. A
   jump to a far message or a far "scroll to bottom" goes straight there.
 - A feed opened at the very top lets new rows push in, as before. Further
