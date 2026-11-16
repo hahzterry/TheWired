@@ -275,7 +275,7 @@ Tests run automatically on push and pull request via GitHub Actions (`.github/wo
 
 All jobs run in parallel. Backend and relay tests get a fresh PostgreSQL 16 container per run. The `core` package tests and the full-stack Playwright E2E specs are not in CI yet; the accessibility spec is, because it runs without a backend.
 
-The bundle budget fails a PR when a chunk, the initial JS payload or the JS/CSS totals grow past their line. If the growth is intended, raise the line in `client/bundle-budget.json` in the same change (`pnpm size:client --update` rewrites it from the current build). The accessibility gates and their baseline are described in [`docs/A11Y_BASELINE.md`](docs/A11Y_BASELINE.md).
+The bundle budget (`client/bundle-budget.json`) has a tight line for the startup payload (`initial:js`: the entry script plus its modulepreloads), totals for JS and CSS, a line for each deliberately large lazy chunk (the media SDK, HLS), and a per-file ceiling for every other lazy chunk. A PR fails when a line is exceeded, for example when a static import pulls a lazy library back into startup, or when a line no longer matches anything in the build. If a change is intended, edit the budget in the same PR; `pnpm size:client --update` re-records the existing lines from the current build. The accessibility gates and their baseline are described in [`docs/A11Y_BASELINE.md`](docs/A11Y_BASELINE.md).
 
 Other workflows: `build-images.yml` (Docker images, built only after Tests pass on `main`), `release.yml` (multi-platform Tauri builds + signed updates on `v*` tags), `linux-smoke-test.yml` (manual AppImage smoke test).
 

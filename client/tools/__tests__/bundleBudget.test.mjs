@@ -1,19 +1,20 @@
-// @vitest-environment node
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  HEADROOM,
   assetType,
   checkBudget,
   collectAssets,
   formatBytes,
   measure,
+  otherLazyChunks,
   parseInitialFiles,
-  proposeBudget,
   renderMarkdown,
+  rerecordBudget,
   stripHash,
   withHeadroom,
 } from "../bundleBudget.mjs";
@@ -102,91 +103,164 @@ describe("collectAssets + measure", () => {
   });
 });
 
+/** Asset fixtures: `initial` chunks are the startup payload, the rest are lazy. */
+const asset = (file, raw, { gzip = Math.round(raw / 3), initial = false } = {}) => ({
+  file,
+  name: stripHash(file),
+  type: assetType(file),
+  raw,
+  gzip,
+  initial,
+});
+
+const BUILD = [
+  asset("index-aaaaaaaa.js", 900, { initial: true }),
+  asset("react-bbbbbbbb.js", 300, { initial: true }),
+  asset("livekitClient-cccccccc.js", 600),
+  asset("hls-dddddddd.js", 500),
+  asset("safeUrl-eeeeeeee.js", 330), // shared chunk, named after an arbitrary module
+  asset("SettingsPage-ffffffff.js", 100),
+  asset("index-gggggggg.css", 150),
+];
+
+const BUDGET = {
+  limits: {
+    "initial:js": { raw: 1200, gzip: 400 },
+    "total:js": { raw: 2730, gzip: 910 },
+    "chunk:livekitClient.js": { raw: 600, gzip: 200 },
+    "chunk:hls.js": { raw: 500, gzip: 167 },
+  },
+  otherChunkLimit: { raw: 330, gzip: 110 },
+};
+
+const statusOf = (result, key) => result.rows.find((row) => row.key === key)?.status;
+
 describe("checkBudget", () => {
-  const measurements = {
-    "total:js": { raw: 1000, gzip: 400, files: 2 },
-    "chunk:index.js": { raw: 800, gzip: 300, files: 1 },
-    "chunk:lazy.js": { raw: 200, gzip: 100, files: 1 },
-  };
-
-  it("passes when everything is within its line", () => {
-    const result = checkBudget(measurements, {
-      defaultChunkLimit: { raw: 500, gzip: 200 },
-      limits: { "total:js": { raw: 1000, gzip: 400 }, "chunk:index.js": { raw: 900, gzip: 350 } },
-    });
+  it("passes when every line and the lazy ceiling hold", () => {
+    const result = checkBudget(BUILD, BUDGET);
     expect(result.ok).toBe(true);
-    expect(result.rows.map((r) => r.status)).toEqual(["ok", "ok"]);
+    expect(result.rows.map((row) => row.status)).toEqual(["ok", "ok", "ok", "ok", "ok"]);
   });
 
-  it("fails on a raw overage and names the metric", () => {
-    const result = checkBudget(measurements, {
-      limits: { "chunk:index.js": { raw: 799, gzip: 350 } },
-    });
+  it("fails when code moves into the startup payload, whatever the chunks are called", () => {
+    // The media SDK is statically imported: its chunk becomes a modulepreload.
+    const regressed = BUILD.map((a) => (a.name === "livekitClient.js" ? { ...a, initial: true } : a));
+    const result = checkBudget(regressed, BUDGET);
     expect(result.ok).toBe(false);
-    expect(result.rows[0]).toMatchObject({ key: "chunk:index.js", status: "over", over: ["raw"] });
+    expect(result.rows.find((row) => row.key === "initial:js")).toMatchObject({ status: "over", over: ["raw", "gzip"] });
   });
 
-  it("fails on a gzip-only overage", () => {
-    const result = checkBudget(measurements, {
-      limits: { "chunk:index.js": { raw: 900, gzip: 299 } },
-    });
-    expect(result.rows[0].over).toEqual(["gzip"]);
+  it("fails when the SDK is inlined into the entry: startup grows and the named line matches nothing", () => {
+    const regressed = BUILD.filter((a) => a.name !== "livekitClient.js").map((a) =>
+      a.file === "index-aaaaaaaa.js" ? asset(a.file, 1500, { initial: true }) : a,
+    );
+    const result = checkBudget(regressed, BUDGET);
+    expect(statusOf(result, "initial:js")).toBe("over");
+    expect(statusOf(result, "chunk:livekitClient.js")).toBe("missing");
     expect(result.ok).toBe(false);
   });
 
-  it("holds unlisted chunks to the default limit (catches a new large chunk)", () => {
-    const result = checkBudget(measurements, {
-      defaultChunkLimit: { raw: 150, gzip: 150 },
-      limits: { "chunk:index.js": { raw: 900, gzip: 350 } },
-    });
+  it("fails on a raw-only and on a gzip-only overage and names the metric", () => {
+    const raw = checkBudget(BUILD, { limits: { "chunk:hls.js": { raw: 499, gzip: 999 } } });
+    expect(raw.rows[0]).toMatchObject({ status: "over", over: ["raw"] });
+    const gzip = checkBudget(BUILD, { limits: { "chunk:hls.js": { raw: 999, gzip: 166 } } });
+    expect(gzip.rows[0]).toMatchObject({ status: "over", over: ["gzip"] });
+    expect(raw.ok || gzip.ok).toBe(false);
+  });
+
+  it("a line that matches nothing fails loudly instead of passing", () => {
+    const result = checkBudget(BUILD, { limits: { "chunk:store.js": { raw: 10_000, gzip: 10_000 } } });
     expect(result.ok).toBe(false);
-    const over = result.rows.find((r) => r.status === "over");
-    expect(over).toMatchObject({ key: "chunk:lazy.js", unlisted: true, over: ["raw"] });
+    expect(result.rows[0]).toMatchObject({ key: "chunk:store.js", status: "missing", actual: null });
   });
 
-  it("does not apply the default limit to totals or listed chunks", () => {
-    const result = checkBudget(measurements, {
-      defaultChunkLimit: { raw: 500, gzip: 200 },
-      limits: { "chunk:index.js": { raw: 900, gzip: 350 } },
+  it("holds unlisted lazy chunks to the per-file ceiling and names the offender", () => {
+    const grown = [...BUILD, asset("NewFeature-hhhhhhhh.js", 400)];
+    const result = checkBudget(grown, { ...BUDGET, limits: { ...BUDGET.limits, "total:js": { raw: 9999, gzip: 9999 } } });
+    expect(result.ok).toBe(false);
+    expect(result.rows.find((row) => row.key === "otherChunkLimit")).toMatchObject({
+      status: "over",
+      offenders: ["NewFeature-hhhhhhhh.js"],
     });
-    expect(result.ok).toBe(true);
   });
 
-  it("reports a line that matches nothing as stale without failing", () => {
-    const result = checkBudget(measurements, {
-      limits: { "chunk:gone.js": { raw: 1, gzip: 1 } },
-    });
+  it("a shared chunk renamed by an unrelated import change neither fails nor drops a line", () => {
+    // Same bytes, new auto-generated name: nothing in the budget refers to it.
+    const renamed = BUILD.map((a) => (a.name === "safeUrl.js" ? asset("dateUtils-eeeeeeee.js", 330) : a));
+    const result = checkBudget(renamed, BUDGET);
     expect(result.ok).toBe(true);
-    expect(result.rows[0]).toMatchObject({ key: "chunk:gone.js", status: "stale", actual: null });
+    expect(result.rows.map((row) => row.key)).toEqual(checkBudget(BUILD, BUDGET).rows.map((row) => row.key));
+  });
+
+  it("the ceiling is per file: two chunks that share an auto-generated name are not summed", () => {
+    const twins = [...BUILD, asset("utils-iiiiiiii.js", 200), asset("utils-jjjjjjjj.js", 200)];
+    const result = checkBudget(twins, { otherChunkLimit: { raw: 330, gzip: 110 }, limits: BUDGET.limits });
+    expect(statusOf(result, "otherChunkLimit")).toBe("ok");
+  });
+
+  it("does not hold startup chunks or named lazy chunks to the ceiling", () => {
+    // index (900), react (300, initial), livekitClient (600) and hls (500) are all above 330.
+    expect(statusOf(checkBudget(BUILD, BUDGET), "otherChunkLimit")).toBe("ok");
+    expect(otherLazyChunks(BUILD, BUDGET.limits).map((a) => a.name)).toEqual(["safeUrl.js", "SettingsPage.js"]);
   });
 });
 
-describe("proposeBudget", () => {
-  it("lists totals plus only the chunks above the default limit, with headroom", () => {
-    const budget = proposeBudget(
-      {
-        "total:js": { raw: 100_000, gzip: 40_000, files: 2 },
-        "initial:js": { raw: 90_000, gzip: 35_000, files: 1 },
-        "chunk:index.js": { raw: 90_000, gzip: 35_000, files: 1 },
-        "chunk:small.js": { raw: 10_000, gzip: 5_000, files: 1 },
-      },
-      { headroom: 0.03, defaultChunkLimit: { raw: 50_000, gzip: 20_000 } },
-    );
-    expect(Object.keys(budget.limits)).toEqual(["total:js", "initial:js", "chunk:index.js"]);
-    expect(budget.limits["chunk:index.js"].raw).toBe(withHeadroom(90_000, 0.03));
-    expect(budget.limits["chunk:index.js"].raw).toBeGreaterThan(90_000);
-    // The proposed budget always passes for the build it came from.
-    expect(
-      checkBudget(
-        { "chunk:index.js": { raw: 90_000, gzip: 35_000 }, "chunk:small.js": { raw: 10_000, gzip: 5_000 } },
-        budget,
-      ).rows.filter((r) => r.status === "over"),
-    ).toEqual([]);
+describe("rerecordBudget", () => {
+  it("re-records the existing lines with headroom, tightest on the startup payload", () => {
+    const next = rerecordBudget(BUILD, { limits: { "initial:js": {}, "total:js": {}, "chunk:hls.js": {} }, otherChunkLimit: {} });
+    expect(Object.keys(next.limits)).toEqual(["initial:js", "total:js", "chunk:hls.js"]);
+    expect(next.limits["initial:js"].raw).toBe(withHeadroom(1200, HEADROOM.initial));
+    expect(next.limits["total:js"].raw).toBe(withHeadroom(2730, HEADROOM.line));
+    expect(HEADROOM.initial).toBeLessThan(HEADROOM.line);
+    // livekitClient has no line here, so it sets the ceiling.
+    expect(next.otherChunkLimit.raw).toBe(withHeadroom(600, HEADROOM.otherChunk));
+    expect(checkBudget(BUILD, next).ok).toBe(true);
+  });
+
+  it("never invents per-chunk lines", () => {
+    const next = rerecordBudget(BUILD, { limits: { "total:js": {} } });
+    expect(Object.keys(next.limits)).toEqual(["total:js"]);
+    expect(next.otherChunkLimit).toBeUndefined();
+  });
+
+  it("refuses to record a line that matches nothing", () => {
+    expect(() => rerecordBudget(BUILD, { limits: { "chunk:store.js": {} } })).toThrow(/chunk:store\.js/);
   });
 
   it("rounds headroom up to a whole kilobyte", () => {
     expect(withHeadroom(1000, 0.03)).toBe(2048);
     expect(withHeadroom(1024, 0)).toBe(1024);
+  });
+});
+
+describe("the committed budget", () => {
+  const clientDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const budget = JSON.parse(readFileSync(path.join(clientDir, "bundle-budget.json"), "utf8"));
+
+  function sourceFiles(dir) {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return entry.name === "__tests__" ? [] : sourceFiles(full);
+      return /\.tsx?$/.test(entry.name) ? [full] : [];
+    });
+  }
+
+  it("has a tight startup line, totals and a ceiling for unlisted lazy chunks", () => {
+    expect(Object.keys(budget.limits)).toEqual(expect.arrayContaining(["initial:js", "total:js", "total:css"]));
+    expect(budget.otherChunkLimit.raw).toBeGreaterThan(0);
+    // Startup is a fraction of the app; a limit near the total would guard nothing.
+    expect(budget.limits["initial:js"].raw).toBeLessThan(budget.limits["total:js"].raw / 2);
+  });
+
+  it("names only chunks we name ourselves: every chunk line is the target of an import() in src", () => {
+    const sources = sourceFiles(path.join(clientDir, "src")).map((file) => readFileSync(file, "utf8"));
+    const chunkLines = Object.keys(budget.limits).filter((key) => key.startsWith("chunk:"));
+    expect(chunkLines.length).toBeGreaterThan(0);
+    for (const key of chunkLines) {
+      const name = key.slice("chunk:".length).replace(/\.js$/, "");
+      const dynamicImport = new RegExp(`import\\(\\s*["'](?:[^"']*/)?${name}(?:\\.js)?["']\\s*\\)`);
+      expect(sources.some((source) => dynamicImport.test(source)), `${key}: no import("…${name}") in src`).toBe(true);
+    }
   });
 });
 
@@ -197,16 +271,17 @@ describe("rendering", () => {
     expect(formatBytes(2_858_858)).toBe("2.86 MB");
   });
 
-  it("marks over-budget and stale lines in the markdown summary", () => {
-    const assets = [{ file: "index-aaaaaaaa.js", raw: 2000, gzip: 1000, initial: true }];
-    const result = checkBudget(
-      { "chunk:index.js": { raw: 2000, gzip: 1000, files: 1 } },
-      { limits: { "chunk:index.js": { raw: 1000, gzip: 2000 }, "chunk:gone.js": { raw: 1, gzip: 1 } } },
-    );
+  it("marks over-budget and missing lines in the markdown summary", () => {
+    const assets = [asset("index-aaaaaaaa.js", 2000, { gzip: 1000, initial: true }), asset("Big-bbbbbbbb.js", 900, { gzip: 300 })];
+    const result = checkBudget(assets, {
+      limits: { "initial:js": { raw: 1000, gzip: 2000 }, "chunk:gone.js": { raw: 1, gzip: 1 } },
+      otherChunkLimit: { raw: 500, gzip: 500 },
+    });
     const md = renderMarkdown({ assets, result });
-    expect(md).toContain("**Over budget.**");
-    expect(md).toContain("| `chunk:index.js` | 2.0 kB (200.0%) | 1.0 kB | 1.0 kB (50.0%) | 2.0 kB | **over** (raw) |");
-    expect(md).toContain("| `chunk:gone.js` | - |");
+    expect(md).toContain("**Budget check failed.**");
+    expect(md).toContain("| `initial:js` | 2.0 kB (200.0%) | 1.0 kB | 1.0 kB (50.0%) | 2.0 kB | **over** (raw) |");
+    expect(md).toContain("| `chunk:gone.js` | - | 0.0 kB | - | 0.0 kB | **missing**: nothing in the build matches |");
+    expect(md).toContain("| largest other lazy chunk | 0.9 kB (180.0%) | 0.5 kB | 0.3 kB (60.0%) | 0.5 kB | **over** (raw): `Big-bbbbbbbb.js` |");
     expect(md).toContain("| `index-aaaaaaaa.js` | 2.0 kB | 1.0 kB | yes |");
   });
 });
@@ -240,7 +315,12 @@ describe("bundle-size.mjs CLI", () => {
     });
   }
 
-  const files = { "index-bw0IEu3F.js": 5000, "store-CqauBg3W.js": 1000 };
+  // index + store are the startup payload (see INDEX_HTML); lazy is not.
+  const files = { "index-bw0IEu3F.js": 5000, "store-CqauBg3W.js": 1000, "lazy-AbCdEfGh.js": 3000 };
+  const passing = {
+    limits: { "initial:js": { raw: 6000, gzip: 6000 }, "chunk:lazy.js": { raw: 3000, gzip: 3000 } },
+    otherChunkLimit: { raw: 100, gzip: 100 },
+  };
 
   it("exits 2 with a hint when there is no build output", () => {
     const result = run(makeClient({ budget: { limits: {} } }));
@@ -249,7 +329,7 @@ describe("bundle-size.mjs CLI", () => {
   });
 
   it("exits 0 and writes the job summary when within budget", () => {
-    const dir = makeClient({ files, budget: { limits: { "chunk:index.js": { raw: 5000, gzip: 5000 } } } });
+    const dir = makeClient({ files, budget: passing });
     const summary = path.join(dir, "summary.md");
     const result = run(dir, [], { GITHUB_STEP_SUMMARY: summary });
     expect(result.status).toBe(0);
@@ -258,23 +338,46 @@ describe("bundle-size.mjs CLI", () => {
     expect(readFileSync(summary, "utf8")).toContain("## Client bundle size");
   });
 
-  it("exits 1 and names the line when a chunk grows past its budget", () => {
-    const dir = makeClient({ files, budget: { limits: { "chunk:index.js": { raw: 4999, gzip: 5000 } } } });
+  it("exits 1 and names the line when the startup payload grows past its budget", () => {
+    const dir = makeClient({ files, budget: { limits: { "initial:js": { raw: 5999, gzip: 6000 } } } });
     const result = run(dir, [], { GITHUB_ACTIONS: "true" });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("::error title=Bundle budget::chunk:index.js is over its raw budget");
+    expect(result.stderr).toContain("::error title=Bundle budget::initial:js is over its raw budget");
   });
 
-  it("--update rewrites the budget so the same build passes", () => {
+  it("exits 1 when a line matches nothing in the build", () => {
+    const dir = makeClient({ files, budget: { limits: { "chunk:store-old.js": { raw: 9999, gzip: 9999 } } } });
+    const result = run(dir);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("missing  chunk:store-old.js");
+    expect(result.stderr).toContain("chunk:store-old.js matches nothing in the build");
+  });
+
+  it("exits 1 and names the file when an unlisted lazy chunk is over the ceiling", () => {
+    const dir = makeClient({ files, budget: { limits: {}, otherChunkLimit: { raw: 2999, gzip: 9999 } } });
+    const result = run(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("lazy chunk over the raw ceiling for unlisted chunks: lazy-AbCdEfGh.js");
+  });
+
+  it("--update re-records the existing lines so the same build passes, and adds none", () => {
     const dir = makeClient({
       files,
-      budget: { defaultChunkLimit: { raw: 2000, gzip: 2000 }, limits: { "chunk:index.js": { raw: 1, gzip: 1 } } },
+      budget: { limits: { "initial:js": { raw: 1, gzip: 1 } }, otherChunkLimit: { raw: 1, gzip: 1 } },
     });
     expect(run(dir).status).toBe(1);
     expect(run(dir, ["--update"]).status).toBe(0);
     const budget = JSON.parse(readFileSync(path.join(dir, "bundle-budget.json"), "utf8"));
-    expect(budget.limits["chunk:index.js"].raw).toBeGreaterThanOrEqual(5000);
-    expect(budget.limits["chunk:store.js"]).toBeUndefined(); // under the default limit
+    expect(Object.keys(budget.limits)).toEqual(["initial:js"]);
+    expect(budget.limits["initial:js"].raw).toBeGreaterThanOrEqual(6000);
+    expect(budget.otherChunkLimit.raw).toBeGreaterThanOrEqual(3000);
     expect(run(dir).status).toBe(0);
+  });
+
+  it("--update refuses a line that matches nothing", () => {
+    const dir = makeClient({ files, budget: { limits: { "chunk:gone.js": { raw: 1, gzip: 1 } } } });
+    const result = run(dir, ["--update"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('"chunk:gone.js" matches nothing');
   });
 });

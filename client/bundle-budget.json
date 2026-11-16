@@ -1,41 +1,29 @@
 {
-  "description": "Size budget for the client production build, in bytes (raw and gzip -9). Checked by `pnpm --filter @thewired/client size` after a build. `initial:js` is the entry chunk plus every modulepreload; `chunk:<name>` is every emitted chunk with that name once the content hash is stripped. Chunks without a line must stay under defaultChunkLimit. Limits sit about 3% above the measured build: raise a line in the same change that needs it, lower it after trimming (`size --update` rewrites the file from the current build).",
-  "defaultChunkLimit": {
-    "raw": 262144,
-    "gzip": 98304
-  },
+  "description": "Size budget for the client production build, in bytes (raw and gzip -9). Checked by `pnpm --filter @thewired/client size` after a build. `initial:js` is the startup payload: the entry script plus every modulepreload in index.html; it is held tight so that code moving back into startup fails the check. `chunk:<name>` lines are only for lazy chunks whose name we choose (the file name of a module passed to import()). Every other lazy chunk must stay under otherChunkLimit. A line that matches nothing in the build fails. `size --update` re-records the existing lines from the current build.",
   "limits": {
+    "initial:js": {
+      "raw": 1634304,
+      "gzip": 492544
+    },
     "total:js": {
-      "raw": 6310912,
-      "gzip": 1794048
+      "raw": 6475776,
+      "gzip": 1880064
     },
     "total:css": {
-      "raw": 154624,
+      "raw": 155648,
       "gzip": 23552
     },
-    "initial:js": {
-      "raw": 4337664,
-      "gzip": 1240064
+    "chunk:livekitClient.js": {
+      "raw": 611328,
+      "gzip": 156672
     },
-    "chunk:index.js": {
-      "raw": 2945024,
-      "gzip": 824320
-    },
-    "chunk:store.js": {
-      "raw": 955392,
-      "gzip": 257024
-    },
-    "chunk:RichArticleEditor.js": {
-      "raw": 530432,
-      "gzip": 177152
-    },
-    "chunk:native.js": {
-      "raw": 446464,
-      "gzip": 83968
-    },
-    "chunk:ChartArtifact.js": {
-      "raw": 427008,
-      "gzip": 112640
+    "chunk:hls.js": {
+      "raw": 612352,
+      "gzip": 187392
     }
+  },
+  "otherChunkLimit": {
+    "raw": 541696,
+    "gzip": 180224
   }
 }
