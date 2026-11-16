@@ -278,6 +278,10 @@ function AppRoutes() {
             path="invite/:code"
             element={<InviteRouteWrapper />}
           />
+          <Route
+            path="invite/:code/:spaceId"
+            element={<InviteRouteWrapper />}
+          />
         </Route>
       </Route>
     </Routes>
@@ -297,7 +301,7 @@ function ProfileRouteWrapper() {
 }
 
 function InviteRouteWrapper() {
-  const { code } = useParams<{ code: string }>();
+  const { code, spaceId } = useParams<{ code: string; spaceId?: string }>();
   const navigate = useNavigate();
   if (!code) return null;
   return (
@@ -306,7 +310,7 @@ function InviteRouteWrapper() {
       <JoinSpaceModal
         open
         onClose={() => navigate("/")}
-        initialCode={code}
+        initialCode={spaceId ? `/invite/${code}/${spaceId}` : code}
       />
     </>
   );

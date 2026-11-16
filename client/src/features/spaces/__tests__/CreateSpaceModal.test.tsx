@@ -71,3 +71,68 @@ describe("CreateSpaceModal (platform)", () => {
     expect(sentId(1)).not.toBe(sentId(0));
   });
 });
+
+describe("CreateSpaceModal (encrypted platform space)", () => {
+  // An encrypted space's id commits to its key root (docs/E2EE_SPACES.md §5.4).
+  const COMMITTED = /^e2e1-[0-9a-f]{32}$/;
+
+  beforeEach(async () => {
+    const { setFeatureEnabled, FEATURE_E2EE_SPACES } = await import("@/store/slices/featuresSlice");
+    const { setActivePubkey } = await import("@/lib/db/userStateStore");
+    const { relayManager } = await import("@/lib/nostr/relayManager");
+    setActivePubkey(ME);
+    store.dispatch(setFeatureEnabled({ feature: FEATURE_E2EE_SPACES, enabled: true }));
+    vi.spyOn(relayManager, "publishWithConfirmation").mockResolvedValue([]);
+    vi.spyOn(relayManager, "connect").mockImplementation(() => undefined as never);
+  });
+
+  const encryptedBox = () => screen.getByRole("checkbox", { name: /end-to-end encrypted/i });
+
+  it("creates it under an id that commits to this account as key root", async () => {
+    mockRegister.mockResolvedValue({ data: {} });
+    const { onCreate, create } = renderModal();
+    fireEvent.click(encryptedBox());
+    create();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    const id = sentId(0);
+    expect(id).toMatch(COMMITTED);
+    const { committedSpaceId } = await import("@ishtarservices/core");
+    const record = store.getState().spaceE2ee.spaces[id];
+    expect(record.root).toBe(ME);
+    expect(committedSpaceId(ME, record.rootSalt!)).toBe(id);
+  });
+
+  it("keeps the id (and its key) on a retry, and drops both when encryption is switched off", async () => {
+    mockRegister.mockRejectedValueOnce(new Error("timeout")).mockRejectedValueOnce(new Error("timeout")).mockResolvedValue({ data: {} });
+    const { onCreate, create } = renderModal();
+    fireEvent.click(encryptedBox());
+    create();
+    await screen.findByRole("alert");
+    // The failed attempt undid its key; the retry prepares one for the same id.
+    create();
+    await screen.findByRole("alert");
+    expect(sentId(1)).toBe(sentId(0));
+    expect(sentId(0)).toMatch(COMMITTED);
+
+    fireEvent.click(encryptedBox()); // now plain
+    create();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    expect(sentId(2)).not.toMatch(COMMITTED);
+    expect(store.getState().spaceE2ee.spaces[sentId(0)]).toBeUndefined();
+  });
+
+  it("starts over with a new committed id when the id is already taken", async () => {
+    mockRegister
+      .mockRejectedValueOnce(new ApiRequestError(409, "SPACE_EXISTS", "Space already exists"))
+      .mockResolvedValue({ data: {} });
+    const { onCreate, create } = renderModal();
+    fireEvent.click(encryptedBox());
+    create();
+    await screen.findByRole("alert");
+    create();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    expect(sentId(0)).toMatch(COMMITTED);
+    expect(sentId(1)).toMatch(COMMITTED);
+    expect(sentId(1)).not.toBe(sentId(0));
+  });
+});

@@ -1,4 +1,5 @@
 import { useReducer, useCallback, useState, useRef, useEffect } from "react";
+import { invitePath } from "./inviteLink";
 import { X, Copy, Check, Send, Search } from "lucide-react";
 import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
@@ -210,7 +211,7 @@ function InviteGenerateModalInner({
     ? ""
     : native
       ? state.code
-      : publicWebUrl(`/invite/${state.code}`);
+      : publicWebUrl(invitePath(state.code, spaceId));
 
   const handleCopy = useCallback(async () => {
     if (!inviteLink) return;

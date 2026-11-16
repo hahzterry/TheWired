@@ -47,13 +47,13 @@ export type ContentSegment =
   /** An extensionless Blossom URL with no type hint: rendered after a HEAD probe. */
   | ({ type: "blob"; url: string } & MediaSource & MediaHints)
   | { type: "embed"; embed: EmbedMatch }
-  | { type: "invite"; code: string }
+  | { type: "invite"; code: string; spaceId?: string }
   | { type: "hashtag"; value: string }
   | { type: "custom-emoji"; shortcode: string; url: string };
 
-const INVITE_RE = /\/invite\/([A-Za-z0-9_-]+)/;
+const INVITE_RE = /\/invite\/([A-Za-z0-9_-]+)(?:\/([A-Za-z0-9_-]+))?/;
 /** Matches a full invite URL (localhost or any domain) embedded in text */
-const INVITE_URL_RE = /https?:\/\/[^\s]+\/invite\/([A-Za-z0-9_-]+)/g;
+const INVITE_URL_RE = /https?:\/\/[^\s]+\/invite\/([A-Za-z0-9_-]+)(?:\/([A-Za-z0-9_-]+))?/g;
 
 /** Type guard: pointer is a ProfilePointer (has pubkey, no id) */
 function isProfilePointer(p: ProfilePointer | EventPointer | AddressPointer): p is ProfilePointer {
@@ -168,7 +168,7 @@ function extractInviteLinks(segments: ContentSegment[]): ContentSegment[] {
       if (match.index > lastIndex) {
         result.push({ type: "text", text: seg.text.slice(lastIndex, match.index) });
       }
-      result.push({ type: "invite", code: match[1] });
+      result.push(match[2] ? { type: "invite", code: match[1], spaceId: match[2] } : { type: "invite", code: match[1] });
       lastIndex = match.index + match[0].length;
     }
     // Push remaining text
@@ -268,7 +268,11 @@ export function parseContent(
         } else {
           const inviteMatch = url.match(INVITE_RE);
           if (inviteMatch) {
-            segments.push({ type: "invite", code: inviteMatch[1] });
+            segments.push(
+              inviteMatch[2]
+                ? { type: "invite", code: inviteMatch[1], spaceId: inviteMatch[2] }
+                : { type: "invite", code: inviteMatch[1] },
+            );
           } else {
             const embed = matchEmbed(url);
             if (embed) {

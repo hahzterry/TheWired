@@ -12,7 +12,8 @@ import { store, type RootState } from "@/store";
 import { EVENT_KINDS, type NostrEvent, type NostrFilter } from "@/types/nostr";
 import { subscriptionManager } from "@/lib/nostr/subscriptionManager";
 import { registerSpaceE2eeHooks } from "@/lib/nostr/spaceE2eeHooks";
-import { encryptedSpaceEntry, isSpaceE2eeLoadedFor } from "@/store/slices/spaceE2eeSlice";
+import { isSpaceE2eeLoadedFor } from "@/store/slices/spaceE2eeSlice";
+import { isEncryptedSpaceId } from "./spaceIdFormat";
 import { processIncomingEvent } from "@/lib/nostr/eventPipeline";
 import { relayManager } from "@/lib/nostr/relayManager";
 import { fetchAllPaged, type PagedReqTransport } from "./pagedReq";
@@ -261,7 +262,9 @@ function sync(): void {
   );
   syncKeyFetches(joinedByHost, state.identity.pubkey!);
 
-  const encryptedSpaces = state.spaces.list.filter((s) => encryptedSpaceEntry(state.spaceE2ee.spaces, s.id));
+  // Every space whose id is a committed one is encrypted, whether or not a
+  // key for it has arrived yet.
+  const encryptedSpaces = state.spaces.list.filter((s) => isEncryptedSpaceId(s.id));
   // Live only (a recent `since`), so an empty answer is the normal one.
   syncHostSubs(
     bgSealedSubs,

@@ -7,7 +7,7 @@ import { incrementEventCount } from "../../../store/slices/relaysSlice";
 import { evaluateNotification } from "../notificationEvaluator";
 import { createLogger, shortKey, shortRelay } from "../../debug/logger";
 import { SPACE_E2EE_PLAINTEXT_KINDS } from "@ishtarservices/shared-types";
-import { encryptedSpaceEntry } from "../../../store/slices/spaceE2eeSlice";
+import { namesEncryptedSpace } from "../../../features/spaces/e2ee/spaceIdFormat";
 import { getSpaceE2eeHooks } from "../spaceE2eeHooks";
 import type { PipelineContext } from "./types";
 import type { Batching } from "./batching";
@@ -146,12 +146,8 @@ export function createIngest(
     // come from a client that doesn't know the space is encrypted, or from
     // someone injecting unencrypted messages among the sealed ones. What stays
     // in the clear there (deletions, group management, layout) passes.
-    if (!sealed && !SPACE_E2EE_PLAINTEXT_KINDS.includes(event.kind)) {
-      const encrypted = getState().spaceE2ee.spaces;
-      for (const tag of event.tags) {
-        if (tag[0] === "h" && encryptedSpaceEntry(encrypted, tag[1])) return;
-      }
-    }
+    // Decided from the id: only a committed id can be an encrypted space.
+    if (!sealed && !SPACE_E2EE_PLAINTEXT_KINDS.includes(event.kind) && namesEncryptedSpace(event.tags)) return;
 
     // Step 3b: Reject re-delivered deleted notes/reposts/polls
     if (

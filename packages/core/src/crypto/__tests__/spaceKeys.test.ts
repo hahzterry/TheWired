@@ -13,8 +13,12 @@ import {
   buildSpaceKeyGrants,
   buildSpaceRumor,
   epochIdOf,
+  committedSpaceId,
   generateEpochKey,
+  generateSpaceIdSalt,
+  isEncryptedSpaceId,
   judgeEpochGrant,
+  spaceIdCommitsTo,
   openSealedSpaceEvent,
   openSpaceKeyGrant,
   openSpaceKeyGrantWithKey,
@@ -36,6 +40,10 @@ function tamper(payload: string): string {
 }
 
 const SPACE = "space-under-test";
+/** The salt the codec tests commit every grant's space id with. */
+const SALT = "00112233445566778899aabbccddeeff";
+/** The committed space id of the space whose key root is `root`. */
+const spaceOf = (root: string) => committedSpaceId(root, SALT);
 
 function sign(unsigned: unknown, who: TestIdentity): NostrEvent {
   return finalizeEvent(unsigned as Parameters<typeof finalizeEvent>[0], who.sk) as unknown as NostrEvent;
@@ -72,13 +80,15 @@ function grantFor(
   recipients: string[],
   over: Partial<Parameters<typeof buildSpaceKeyGrants>[0]> = {},
 ): NostrEvent[] {
+  const root = over.root ?? granter.pubkey;
   return buildSpaceKeyGrants({
     granter: granter.pubkey,
-    spaceId: SPACE,
+    spaceId: over.spaceId ?? spaceOf(root),
+    rootSalt: SALT,
     epochKey: key,
     seq: 0,
     prev: null,
-    root: granter.pubkey,
+    root,
     managers: [granter.pubkey],
     history: "epoch",
     at: 1_763_000_000,
@@ -241,9 +251,11 @@ describe("key grants", () => {
     expect(grant.kind).toBe(SPACE_E2EE_KINDS.KEY_GRANT);
     expect(JSON.stringify(grant)).not.toContain(bytesToHex(key));
     expect(readGrantHeader(grant)).toMatchObject({
-      spaceId: SPACE,
+      spaceId: spaceOf(alice.pubkey),
       epochId: epochIdOf(key),
       recipients: [alice.pubkey, bob.pubkey],
+      root: alice.pubkey,
+      rootSalt: SALT,
     });
 
     for (const who of [alice, bob]) {
@@ -251,11 +263,12 @@ describe("key grants", () => {
       expect(bytesToHex(opened.key)).toBe(bytesToHex(key));
       expect(opened.payload).toEqual({
         v: 1,
-        space: SPACE,
+        space: spaceOf(alice.pubkey),
         epoch: epochIdOf(key),
         seq: 0,
         prev: null,
         root: alice.pubkey,
+        rootSalt: SALT,
         managers: [alice.pubkey],
         history: "epoch",
         at: 1_763_000_000,
@@ -308,8 +321,40 @@ describe("key grants", () => {
 
   it("rejects a grant replayed into another space", async () => {
     const [grant] = grantFor(alice, key, [bob.pubkey]);
-    const moved = { ...grant, tags: grant.tags.map((t) => (t[0] === "h" ? ["h", "another-space"] : t)) };
-    expect(await codeOfAsync(() => openSpaceKeyGrant(moved, bob.pubkey, bob.signer.nip44Decrypt))).toBe("decrypt");
+    // Into a plain space: not a committed id, so no grant can live there.
+    const plain = { ...grant, tags: grant.tags.map((t) => (t[0] === "h" ? ["h", "another-space"] : t)) };
+    expect(readGrantHeader(plain)).toBeNull();
+    expect(await codeOfAsync(() => openSpaceKeyGrant(plain, bob.pubkey, bob.signer.nip44Decrypt))).toBe("malformed");
+    // Into another committed space: the root tag doesn't open that id.
+    const other = committedSpaceId(alice.pubkey, generateSpaceIdSalt());
+    const moved = { ...grant, tags: grant.tags.map((t) => (t[0] === "h" ? ["h", other] : t)) };
+    expect(readGrantHeader(moved)).toBeNull();
+  });
+
+  it("rejects a root tag that does not open the space id, and a payload that disagrees with it", async () => {
+    const [grant] = grantFor(alice, key, [bob.pubkey]);
+    // Carol claims the root of Alice's space.
+    const forgedRoot = { ...grant, tags: grant.tags.map((t) => (t[0] === "root" ? ["root", carol.pubkey, SALT] : t)) };
+    expect(readGrantHeader(forgedRoot)).toBeNull();
+    const forgedSalt = { ...grant, tags: grant.tags.map((t) => (t[0] === "root" ? ["root", alice.pubkey, "ff".repeat(16)] : t)) };
+    expect(readGrantHeader(forgedSalt)).toBeNull();
+    expect(readGrantHeader({ ...grant, tags: grant.tags.filter((t) => t[0] !== "root") })).toBeNull();
+    expect(readGrantHeader({ ...grant, tags: [...grant.tags, ["root", alice.pubkey, SALT]] })).toBeNull();
+
+    // A payload naming another root under a tag that opens the id: refused.
+    const carolsSpace = committedSpaceId(carol.pubkey, SALT);
+    const [carols] = grantFor(carol, key, [bob.pubkey]);
+    const swapped = {
+      ...carols,
+      tags: [...grant.tags.map((t) => (t[0] === "p" || t[0] === "eph" ? carols.tags.find((c) => c[0] === t[0])! : t))],
+    };
+    expect(carolsSpace).not.toBe(spaceOf(alice.pubkey));
+    expect(await codeOfAsync(() => openSpaceKeyGrant(swapped, bob.pubkey, bob.signer.nip44Decrypt))).toBe("decrypt");
+  });
+
+  it("refuses to build a grant for a space whose id does not commit to the root", () => {
+    expect(codeOf(() => grantFor(alice, key, [bob.pubkey], { spaceId: "plain-space" }))).toBe("space");
+    expect(codeOf(() => grantFor(alice, key, [bob.pubkey], { spaceId: spaceOf(carol.pubkey) }))).toBe("space");
   });
 
   it("rejects a tampered payload", async () => {
@@ -355,6 +400,49 @@ describe("key grants", () => {
     const [grant] = grantFor(alice, key, [carol.pubkey], { seq: 4, prev: "ab".repeat(8), history: "full" });
     expect(openSpaceKeyGrantWithKey(grant, key)).toMatchObject({ seq: 4, prev: "ab".repeat(8), history: "full" });
     expect(codeOf(() => openSpaceKeyGrantWithKey(grant, generateEpochKey()))).toBe("epoch");
+  });
+});
+
+/** Computed independently (Python hashlib) from the encoding in the doc. */
+const PINNED_ID = "e2e1-cd5ef6c244f640d7635a4a96c441b1c0";
+
+describe("committed space ids", () => {
+  const ROOT = "a".repeat(64);
+  const SALT_A = "00".repeat(16);
+
+  it("pins the encoding", () => {
+    // "e2e1-" + hex(SHA-256("thewired-space-id-v1" || 0x00 || root || salt))[0..32]
+    const id = committedSpaceId(ROOT, SALT_A);
+    expect(id).toMatch(/^e2e1-[0-9a-f]{32}$/);
+    expect(id).toHaveLength(37);
+    expect(id).toBe(PINNED_ID);
+    expect(isEncryptedSpaceId(id)).toBe(true);
+  });
+
+  it("binds the root and the salt", () => {
+    const id = committedSpaceId(ROOT, SALT_A);
+    expect(committedSpaceId("b".repeat(64), SALT_A)).not.toBe(id);
+    expect(committedSpaceId(ROOT, "01".repeat(16))).not.toBe(id);
+    expect(spaceIdCommitsTo(id, ROOT, SALT_A)).toBe(true);
+    expect(spaceIdCommitsTo(id, "b".repeat(64), SALT_A)).toBe(false);
+    expect(spaceIdCommitsTo("abcdef123456", ROOT, SALT_A)).toBe(false);
+  });
+
+  it("makes a different id for every creation by the same root", () => {
+    const ids = new Set(Array.from({ length: 200 }, () => committedSpaceId(ROOT, generateSpaceIdSalt())));
+    expect(ids.size).toBe(200);
+  });
+
+  it("recognizes the format and nothing else", () => {
+    for (const plain of ["abcdef123456", "e2e1-" + "a".repeat(31), "e2e1-" + "A".repeat(32), "e2e2-" + "a".repeat(32), "", "e2e1-" + "a".repeat(33)]) {
+      expect(isEncryptedSpaceId(plain)).toBe(false);
+    }
+    expect(isEncryptedSpaceId(null)).toBe(false);
+  });
+
+  it("refuses bad inputs", () => {
+    expect(codeOf(() => committedSpaceId("nothex", SALT_A))).toBe("malformed");
+    expect(codeOf(() => committedSpaceId(ROOT, "short"))).toBe("malformed");
   });
 });
 
@@ -487,6 +575,7 @@ describe("contract fixtures (packages/shared-types/fixtures/space-e2ee-v1.json)"
       expect(bytesToHex(spaceContentKey(key, fx.space))).toBe(epoch.contentKey);
       expect(bytesToHex(spaceGrantKey(key, fx.space))).toBe(epoch.grantKey);
     }
+    expect(committedSpaceId(fx.identities.alice.pubkey, fx.rootSalt)).toBe(fx.space);
     // Hard-coded so a change to the salt or the info strings fails here.
     expect(fx.epoch0.epochId).toBe("200013a76bca3727");
     expect(fx.epoch1.epochId).toBe("6d3b6765bc8dbceb");

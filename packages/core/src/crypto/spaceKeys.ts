@@ -18,6 +18,10 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/utils";
 import {
+  SPACE_E2EE_ID_DOMAIN,
+  SPACE_E2EE_ID_PREFIX,
+  SPACE_E2EE_ID_RE,
+  SPACE_E2EE_ID_SALT_BYTES,
   SPACE_E2EE_KINDS,
   SPACE_E2EE_SALT,
   SPACE_E2EE_TAGS,
@@ -67,6 +71,43 @@ export class SpaceE2eeError extends Error {
     super(message);
     this.name = "SpaceE2eeError";
     this.code = code;
+  }
+}
+
+// ── Committed space ids (docs/E2EE_SPACES.md §5.4) ───────────────────────────
+
+const SALT_HEX_RE = new RegExp(`^[0-9a-f]{${SPACE_E2EE_ID_SALT_BYTES * 2}}$`);
+
+/** Is `id` a committed space id (the only kind of id an encrypted space has)? */
+export function isEncryptedSpaceId(id: string | null | undefined): boolean {
+  return typeof id === "string" && SPACE_E2EE_ID_RE.test(id);
+}
+
+/** A fresh salt for a new encrypted space, hex. */
+export function generateSpaceIdSalt(): string {
+  return bytesToHex(randomBytes(SPACE_E2EE_ID_SALT_BYTES));
+}
+
+/** The committed space id for a key root and salt. Throws on bad input. */
+export function committedSpaceId(root: string, saltHex: string): string {
+  if (!HEX64_RE.test(root)) throw new SpaceE2eeError("malformed", "root must be a pubkey");
+  if (!SALT_HEX_RE.test(saltHex)) throw new SpaceE2eeError("malformed", "space id salt is invalid");
+  const domain = utf8ToBytes(SPACE_E2EE_ID_DOMAIN);
+  const input = new Uint8Array(domain.length + 1 + 32 + SPACE_E2EE_ID_SALT_BYTES);
+  input.set(domain, 0);
+  input[domain.length] = 0;
+  input.set(hexToBytes(root), domain.length + 1);
+  input.set(hexToBytes(saltHex), domain.length + 1 + 32);
+  return SPACE_E2EE_ID_PREFIX + bytesToHex(sha256(input)).slice(0, 32);
+}
+
+/** Does `root` (with `saltHex`) open the commitment in `spaceId`? */
+export function spaceIdCommitsTo(spaceId: string, root: string, saltHex: string): boolean {
+  if (!isEncryptedSpaceId(spaceId)) return false;
+  try {
+    return committedSpaceId(root, saltHex) === spaceId;
+  } catch {
+    return false;
   }
 }
 
@@ -285,6 +326,8 @@ export interface BuildGrantsArgs {
   prev: string | null;
   /** The space's key root (docs/E2EE_SPACES.md §5.4). */
   root: string;
+  /** The salt that, with `root`, hashes to `spaceId`. */
+  rootSalt: string;
   managers: string[];
   history: SpaceHistoryPolicy;
   /** When the epoch was created (unix seconds); carried on late grants. */
@@ -303,6 +346,7 @@ export function grantPayload(args: Omit<BuildGrantsArgs, "granter" | "recipients
     seq: args.seq,
     prev: args.prev,
     root: args.root,
+    rootSalt: args.rootSalt,
     // The root is always a manager.
     managers: [...new Set([args.root, ...args.managers])],
     history: args.history,
@@ -318,6 +362,11 @@ export function grantPayload(args: Omit<BuildGrantsArgs, "granter" | "recipients
 export function buildSpaceKeyGrants(args: BuildGrantsArgs): UnsignedEvent[] {
   if (!HEX64_RE.test(args.granter)) throw new SpaceE2eeError("malformed", "granter must be a pubkey");
   if (!HEX64_RE.test(args.root)) throw new SpaceE2eeError("malformed", "root must be a pubkey");
+  // Grants exist only in committed spaces, and only for the root the id
+  // commits to.
+  if (!spaceIdCommitsTo(args.spaceId, args.root, args.rootSalt)) {
+    throw new SpaceE2eeError("space", "the space id does not commit to this root");
+  }
   if (!Number.isInteger(args.seq) || args.seq < 0 || (args.seq === 0) !== (args.prev === null)) {
     throw new SpaceE2eeError("malformed", "the first epoch has seq 0 and no prev; later ones have both");
   }
@@ -340,6 +389,7 @@ export function buildSpaceKeyGrants(args: BuildGrantsArgs): UnsignedEvent[] {
       ["h", args.spaceId],
       [SPACE_E2EE_TAGS.EPOCH, payload.epoch],
       [SPACE_E2EE_TAGS.EPHEMERAL, getPublicKey(ephemeral)],
+      [SPACE_E2EE_TAGS.ROOT, args.root, args.rootSalt],
     ];
     for (const pk of chunk) tags.push(["p", pk, nip44EncryptWithKey(ephemeral, pk, keyHex)]);
     ephemeral.fill(0);
@@ -361,6 +411,9 @@ export interface GrantHeader {
   ephemeralPubkey: string;
   /** Every pubkey this grant event hands the key to. */
   recipients: string[];
+  /** The key root and salt the grant claims; `spaceId` commits to them. */
+  root: string;
+  rootSalt: string;
 }
 
 /** The public fields of a grant, or null when it is not well-formed. */
@@ -371,6 +424,13 @@ export function readGrantHeader(event: Pick<NostrEvent, "kind" | "tags">): Grant
   const ephemeralPubkey = single(event.tags, SPACE_E2EE_TAGS.EPHEMERAL);
   if (!spaceId || !epochId || !EPOCH_ID_RE.test(epochId)) return null;
   if (!ephemeralPubkey || !HEX64_RE.test(ephemeralPubkey)) return null;
+  // Only committed spaces have keys, and the public root tag must open the
+  // commitment: checked here, before anyone is asked to decrypt anything.
+  const rootTags = event.tags.filter((t) => t[0] === SPACE_E2EE_TAGS.ROOT);
+  if (rootTags.length !== 1) return null;
+  const [, root, rootSalt] = rootTags[0];
+  if (typeof root !== "string" || typeof rootSalt !== "string") return null;
+  if (!spaceIdCommitsTo(spaceId, root, rootSalt)) return null;
   const recipients: string[] = [];
   for (const t of event.tags) {
     if (t[0] !== "p") continue;
@@ -378,7 +438,7 @@ export function readGrantHeader(event: Pick<NostrEvent, "kind" | "tags">): Grant
     if (!recipients.includes(t[1])) recipients.push(t[1]);
   }
   if (recipients.length === 0 || recipients.length > SPACE_KEY_GRANT_MAX_RECIPIENTS) return null;
-  return { spaceId, epochId, ephemeralPubkey, recipients };
+  return { spaceId, epochId, ephemeralPubkey, recipients, root, rootSalt };
 }
 
 function parseGrantPayload(plaintext: string, header: GrantHeader): SpaceKeyGrantPayload {
@@ -415,6 +475,11 @@ function parseGrantPayload(plaintext: string, header: GrantHeader): SpaceKeyGran
   if (!p.managers.includes(p.root)) {
     throw new SpaceE2eeError("malformed", "grant managers must include the root");
   }
+  // The authenticated payload must name the same root and salt as the public
+  // tag, which the header already checked against the space id.
+  if (p.root !== header.root || p.rootSalt !== header.rootSalt) {
+    throw new SpaceE2eeError("space", "grant root does not match the space id");
+  }
   if (p.history !== "epoch" && p.history !== "full") {
     throw new SpaceE2eeError("malformed", "grant history policy is invalid");
   }
@@ -428,6 +493,7 @@ function parseGrantPayload(plaintext: string, header: GrantHeader): SpaceKeyGran
     seq: p.seq,
     prev: p.prev as string | null,
     root: p.root,
+    rootSalt: header.rootSalt,
     managers: [...new Set(p.managers as string[])],
     history: p.history,
     at: p.at,

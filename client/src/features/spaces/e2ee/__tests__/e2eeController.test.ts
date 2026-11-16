@@ -29,7 +29,7 @@ vi.mock("@/lib/nostr/nip44", () => ({
 }));
 vi.mock("@/lib/nostr/publishOutbox", () => ({ publishOutbox: { record: vi.fn() } }));
 
-import { readGrantHeader } from "@ishtarservices/core";
+import { committedSpaceId, readGrantHeader } from "@ishtarservices/core";
 import { store, resetAll } from "@/store";
 import { login } from "@/store/slices/identitySlice";
 import { addSpace, setActiveSpace, updateSpaceMembers } from "@/store/slices/spacesSlice";
@@ -43,9 +43,10 @@ import { _resetKeyReconcile } from "../keyReconcile";
 import { prepareFirstEpoch, publishFirstEpoch, sendEpochOf } from "../spaceKeyring";
 
 const HOST = "wss://space.example";
-const SPACE = "managed01";
+const SALT = "abcdefabcdefabcdefabcdefabcdefab";
 const meSk = generateSecretKey();
 const me = getPublicKey(meSk);
+const SPACE = committedSpaceId(me, SALT);
 const bob = getPublicKey(generateSecretKey());
 
 const space: Space = {
@@ -111,7 +112,7 @@ beforeEach(async () => {
   setActivePubkey(me);
   store.dispatch(login({ pubkey: me, signerType: "nip07" }));
   store.dispatch(setFeatureEnabled({ feature: FEATURE_E2EE_SPACES, enabled: true }));
-  await prepareFirstEpoch(space, "epoch");
+  await prepareFirstEpoch(space, "epoch", SALT);
   store.dispatch(addSpace(space));
   await publishFirstEpoch(space);
   await new Promise((res) => setTimeout(res, 30));

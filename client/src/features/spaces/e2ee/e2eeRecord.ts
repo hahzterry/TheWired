@@ -12,7 +12,6 @@ import {
   hydrateSpaceE2ee,
   isSpaceE2eeLoadedFor,
   resetSpaceE2ee,
-  spaceE2eeRecordUnavailable,
   type EncryptedSpaceState,
 } from "@/store/slices/spaceE2eeSlice";
 import { getActivePubkey, getUserState, saveUserState } from "@/lib/db/userStateStore";
@@ -41,7 +40,9 @@ export function sanitizeSpaceE2eeRecord(raw: unknown): Record<string, EncryptedS
         if (Array.isArray(list)) holders[epochId] = list.filter((pk) => typeof pk === "string" && HEX64_RE.test(pk));
       }
     }
-    out[spaceId] = { root: typeof v.root === "string" && HEX64_RE.test(v.root) ? v.root : null, epochs, holders };
+    const root = typeof v.root === "string" && HEX64_RE.test(v.root) ? v.root : null;
+    const rootSalt = root && typeof v.rootSalt === "string" && /^[0-9a-f]{32}$/.test(v.rootSalt) ? v.rootSalt : null;
+    out[spaceId] = { root, rootSalt, epochs, holders };
   }
   return out;
 }
@@ -55,10 +56,10 @@ export function _setRecordReadTimeoutForTest(ms: number = RECORD_READ_TIMEOUT_MS
   readTimeoutMs = ms;
 }
 
-/** What the user is told while the record cannot be read. */
+/** Why the keys of encrypted spaces could not be loaded. */
 export const RECORD_UNAVAILABLE_MESSAGE =
-  "This app's local storage isn't answering, so it can't check which of your spaces are end-to-end encrypted. " +
-  "Close other tabs or windows of The Wired, or reload, then try again.";
+  "This app's local storage isn't answering, so the keys of your encrypted spaces can't be loaded. " +
+  "Close other tabs or windows of The Wired, or reload.";
 
 /** The record could not be read within the wait (local storage not
  *  answering: an IndexedDB open blocked by another tab, a stuck disk). */
@@ -130,7 +131,6 @@ export function ensureSpaceE2eeRecord(): Promise<void> {
 
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      if (store.getState().identity.pubkey === account) store.dispatch(spaceE2eeRecordUnavailable(account));
       reject(new SpaceE2eeRecordUnavailableError());
     }, Math.max(0, readTimeoutMs - (now - read.startedAt)));
     read.promise.then(
@@ -141,7 +141,6 @@ export function ensureSpaceE2eeRecord(): Promise<void> {
       (err: unknown) => {
         clearTimeout(timer);
         if (err instanceof Error && err.message !== "account storage is not ready") {
-          if (store.getState().identity.pubkey === account) store.dispatch(spaceE2eeRecordUnavailable(account));
           reject(new SpaceE2eeRecordUnavailableError());
           return;
         }

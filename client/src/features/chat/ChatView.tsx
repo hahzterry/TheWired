@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
-import { selectIsEncryptedSpace, selectHasSpaceKey, selectSpaceE2eeLoaded, selectSpaceE2eeRecordUnavailable } from "../../store/slices/spaceE2eeSlice";
-import { RECORD_UNAVAILABLE_MESSAGE } from "../spaces/e2ee/e2eeRecord";
+import { selectIsEncryptedSpace, selectHasSpaceKey } from "../../store/slices/spaceE2eeSlice";
 import { selectFeatureEnabled, FEATURE_E2EE_SPACES } from "../../store/slices/featuresSlice";
 import { ChatMessage } from "./ChatMessage";
 import { ChatReply } from "./ChatReply";
@@ -64,13 +63,6 @@ export function ChatView() {
   const encrypted = useAppSelector(selectIsEncryptedSpace(activeSpaceId));
   const hasSpaceKey = useAppSelector(selectHasSpaceKey(activeSpaceId));
   const e2eeEnabled = useAppSelector(selectFeatureEnabled(FEATURE_E2EE_SPACES));
-  // Until this account's record of encrypted spaces has loaded nobody can say
-  // this space is NOT encrypted: the composer waits (it is a moment, from
-  // IndexedDB, and never waits on the keychain).
-  const e2eeRecordLoaded = useAppSelector(selectSpaceE2eeLoaded);
-  // …and if local storage hasn't answered in time, say so instead of leaving
-  // a silently disabled input.
-  const e2eeRecordUnavailable = useAppSelector(selectSpaceE2eeRecordUnavailable);
   const sealedNotice = !encrypted
     ? null
     : !e2eeEnabled
@@ -416,19 +408,19 @@ export function ChatView() {
         </div>
       ) : (
         <>
-        {(sealedNotice || e2eeRecordUnavailable) && (
+        {sealedNotice && (
           <div
             role="status"
             className="flex items-center justify-center gap-2 border-t border-border px-4 py-2 text-muted"
           >
             <Lock size={14} />
-            <span className="text-xs">{sealedNotice ?? RECORD_UNAVAILABLE_MESSAGE}</span>
+            <span className="text-xs">{sealedNotice}</span>
           </div>
         )}
         <ChatInput
           onSend={(content, mentions, attachments, emojiTags) => sendMessage(content, mentions, attachments, emojiTags)}
           onCreatePoll={encrypted ? undefined : sendPoll}
-          disabled={!canSend || sealedNotice !== null || !e2eeRecordLoaded}
+          disabled={!canSend || sealedNotice !== null}
           memberPubkeys={memberPubkeys}
           spaceId={activeSpaceId}
           attachments={upload.attachments}

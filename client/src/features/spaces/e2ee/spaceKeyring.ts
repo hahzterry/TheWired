@@ -16,6 +16,9 @@ import {
   openSpaceKeyGrantWithKey,
   pickSendEpoch,
   readGrantHeader,
+  spaceIdCommitsTo,
+  committedSpaceId,
+  generateSpaceIdSalt,
   type GrantVerdict,
   type OpenedGrant,
 } from "@ishtarservices/core";
@@ -209,38 +212,31 @@ function findSpace(spaceId: string): Space | undefined {
 /**
  * Could `signer` be allowed to issue a key for this space at all? Decided from
  * the grant's public header alone, BEFORE the account signer is asked to
- * decrypt anything, so a member spamming grants costs no signer round trips.
- * The real decision is `judgeEpochGrant` on the decrypted payload.
- *  - With a pinned root: the root, or a manager of any accepted epoch.
- *  - First key (trust on first use, docs/E2EE_SPACES.md §5.4 and open
- *    decision D12): only the space's creator when the creator is known; one of
- *    its listed admins only when it is not (an imported group). Either way the
- *    payload must then name the signer as its root (`firstKeyAcceptable`).
- *    These lists come from the relay or the backend, so the first key is only
- *    as trustworthy as they are; the pinned root is shown in the space's info
- *    panel so a wrong one can be noticed.
+ * decrypt anything, so grant spam costs no signer round trips. The real
+ * decision is `judgeEpochGrant` on the decrypted payload.
+ *
+ * The header's root has already been checked against the space id (the id
+ * commits to its key root, docs/E2EE_SPACES.md §5.4), so nothing here comes
+ * from the server:
+ *  - first key: only the root the id commits to;
+ *  - after that: the pinned root, or a manager of an accepted epoch.
  */
 export function signerMayIssue(
   state: Pick<EncryptedSpaceState, "root" | "epochs"> | undefined,
-  space: Pick<Space, "creatorPubkey" | "adminPubkeys">,
+  header: { root: string },
   signer: string,
 ): boolean {
-  if (state?.root) return signer === state.root || state.epochs.some((e) => e.managers.includes(signer));
-  if (space.creatorPubkey) return signer === space.creatorPubkey;
-  return space.adminPubkeys.includes(signer);
-}
-
-/** A first key is accepted only from the signer its payload names as the
- *  space's key root: no admin can pin someone else, or itself as a mere
- *  "manager" of a root it does not control. */
-export function firstKeyAcceptable(payload: { root: string }, signer: string): boolean {
-  return payload.root === signer;
+  if (state?.root) {
+    if (header.root !== state.root) return false;
+    return signer === state.root || state.epochs.some((e) => e.managers.includes(signer));
+  }
+  return signer === header.root;
 }
 
 async function adoptEpoch(
   account: string,
   spaceId: string,
-  root: string,
+  anchor: { root: string; rootSalt: string },
   info: SpaceEpochInfo,
   key: Uint8Array,
   gen: number,
@@ -254,7 +250,7 @@ async function adoptEpoch(
     keys.set(spaceId, epochs);
   }
   epochs.set(info.id, key);
-  store.dispatch(epochAccepted({ spaceId, root, epoch: info }));
+  store.dispatch(epochAccepted({ spaceId, root: anchor.root, rootSalt: anchor.rootSalt, epoch: info }));
   persist(account, gen);
   for (const listener of epochListeners) listener(spaceId, info.id);
   return true;
@@ -340,9 +336,10 @@ async function processGrant(
   const signer = event.pubkey;
 
   let state = stateOf(spaceId);
-  if (!signerMayIssue(state, space, signer)) {
+  if (state?.root && header.root !== state.root) return "unauthorized"; // another root: never
+  if (!signerMayIssue(state, header, signer)) {
     // Not now. It may become acceptable once an epoch naming this signer a
-    // manager arrives, or once the space's admin list has loaded.
+    // manager arrives.
     defer(spaceId, event, preOpened);
     return "unauthorized";
   }
@@ -391,16 +388,15 @@ async function processGrant(
   const { payload } = opened;
 
   state = stateOf(spaceId);
-  let root: string;
+  // The payload's root and salt equal the header's, which open the space id.
+  const anchor = { root: payload.root, rootSalt: payload.rootSalt };
   let verdict: GrantVerdict;
   if (state?.root) {
-    root = state.root;
-    verdict = judgeEpochGrant(payload, signer, root, state.epochs);
+    verdict = judgeEpochGrant(payload, signer, state.root, state.epochs);
   } else {
-    // First key: pin the root the payload names, and only when the signer IS
-    // that root (the signer was vouched for by `signerMayIssue`).
-    root = payload.root;
-    verdict = firstKeyAcceptable(payload, signer) ? "accept" : "reject";
+    // First key: only from the root the space id commits to. No creator or
+    // admin list from a server is consulted.
+    verdict = signer === payload.root ? "accept" : "reject";
   }
   if (verdict === "defer") {
     defer(spaceId, event, opened);
@@ -417,7 +413,7 @@ async function processGrant(
     at: payload.at,
     grantedBy: signer,
   };
-  if (!(await adoptEpoch(account, spaceId, root, info, opened.key, gen))) return "retry";
+  if (!(await adoptEpoch(account, spaceId, anchor, info, opened.key, gen))) return "retry";
   store.dispatch(addEpochHolders({ spaceId, epochId, holders: header.recipients }));
   persist(account, gen);
   return "accepted";
@@ -447,7 +443,12 @@ export function handleKeyGrant(event: NostrEvent, onOutcome?: (outcome: GrantOut
   const account = myPubkey();
   if (!account || !isSpaceE2eeEnabled()) return false;
   const header = readGrantHeader(event);
-  if (!header) return true; // malformed: final
+  if (!header) {
+    // Malformed, or its root doesn't open the space id (or the space isn't
+    // an encrypted one): final.
+    onOutcome?.("invalid");
+    return true;
+  }
   if (!findSpace(header.spaceId)) return false;
 
   const gen = generation;
@@ -519,9 +520,12 @@ async function publishGrants(
   const targets = resolveRelaySet(space);
   for (const url of targets) relayManager.connect(url, "read+write");
   const host = normalizeRelayUrl(space.hostRelay);
+  const rootSalt = stateOf(space.id)?.rootSalt;
+  if (!rootSalt) throw new GrantNotStoredError("This space's key root isn't known on this device.");
   const grants = buildSpaceKeyGrants({
     granter,
     spaceId: space.id,
+    rootSalt,
     epochKey: key,
     seq: info.seq,
     prev: info.prev,
@@ -564,9 +568,14 @@ async function publishGrants(
  * key manager: the manager list is never filled from the server's role list
  * (docs/E2EE_SPACES.md §5.4).
  */
-export async function prepareFirstEpoch(space: Space, history: SpaceHistoryPolicy): Promise<void> {
+export async function prepareFirstEpoch(space: Space, history: SpaceHistoryPolicy, rootSalt: string): Promise<void> {
   const account = myPubkey();
   if (!account) throw new Error("Not logged in");
+  // The id must commit to this account as the key root: that is what lets
+  // every member check the root with no server input.
+  if (!spaceIdCommitsTo(space.id, account, rootSalt)) {
+    throw new Error("This space's id isn't an encrypted-space id for this account.");
+  }
   await ensureSpaceE2eeHydrated();
   if (sendEpochOf(space.id)) return;
   const gen = generation;
@@ -580,9 +589,16 @@ export async function prepareFirstEpoch(space: Space, history: SpaceHistoryPolic
     at: Math.floor(Date.now() / 1000),
     grantedBy: account,
   };
-  if (!(await adoptEpoch(account, space.id, account, info, key, gen))) {
+  if (!(await adoptEpoch(account, space.id, { root: account, rootSalt }, info, key, gen))) {
     throw new Error("The account changed while the space was being set up.");
   }
+}
+
+/** A fresh committed id for a new encrypted space whose key root is `root`
+ *  (docs/E2EE_SPACES.md §5.4), and the salt that opens it. */
+export function newEncryptedSpaceId(root: string): { id: string; rootSalt: string } {
+  const rootSalt = generateSpaceIdSalt();
+  return { id: committedSpaceId(root, rootSalt), rootSalt };
 }
 
 /**
@@ -642,7 +658,9 @@ async function completeRotation(spaceId: string, pending: PendingRotation): Prom
   if (!isActive(account, gen)) return;
   pendingRotations.delete(spaceId);
   // Only now does the new epoch become the one this device seals with.
-  await adoptEpoch(account, spaceId, pending.root, pending.info, pending.key, gen);
+  const rootSalt = stateOf(spaceId)?.rootSalt;
+  if (!rootSalt) throw new Error("This space's key root isn't known on this device.");
+  await adoptEpoch(account, spaceId, { root: pending.root, rootSalt }, pending.info, pending.key, gen);
 }
 
 /**

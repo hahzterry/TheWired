@@ -20,14 +20,13 @@ import { resolveRelaySet } from "../relaySet";
 import { buildRemoveUser } from "../../../lib/nostr/eventBuilder";
 import { signAndPublish } from "../../../lib/nostr/publish";
 import * as moderationApi from "../../../lib/api/moderation";
-import { store } from "../../../store";
-import { encryptedSpaceEntry } from "../../../store/slices/spaceE2eeSlice";
+import { isEncryptedSpaceId } from "../e2ee/spaceIdFormat";
 
 /** In an encrypted space a removal must be followed by a new key for those who
  *  remain (docs/E2EE_SPACES.md §5.3). A no-op for every other space; the key
  *  code loads only for an encrypted one. */
 function rotateAfterRemoval(spaceId: string, pubkey: string): void {
-  if (!encryptedSpaceEntry(store.getState().spaceE2ee.spaces, spaceId)) return;
+  if (!isEncryptedSpaceId(spaceId)) return;
   void import("../e2ee/keyReconcile").then((m) => m.reconcileSpaceKeys(spaceId, { exclude: [pubkey] }));
 }
 

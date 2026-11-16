@@ -3,7 +3,6 @@ import { store, resetAll } from "@/store";
 import { login } from "@/store/slices/identitySlice";
 import { addSpace, setChannels } from "@/store/slices/spacesSlice";
 import { addEvent, indexChatMessage } from "@/store/slices/eventsSlice";
-import { hydrateSpaceE2ee } from "@/store/slices/spaceE2eeSlice";
 import type { NostrEvent } from "@/types/nostr";
 import type { Space } from "@/types/space";
 import { buildChannelContext, buildNoteContext, buildSpaceContext, buildThreadContext } from "../context/aiContext";
@@ -14,7 +13,8 @@ import { getActiveTools, runTool } from "../tools/registry";
 // not through the auto-run read tools, not through "Ask AI" context.
 
 const ME = "a".repeat(64);
-const SEALED = "sealedspace";
+// An encrypted space: its id commits to its key root (here, "a"*64).
+const SEALED = "e2e1-" + "0123456789abcdef".repeat(2);
 const PLAIN = "plainspace";
 const CTX = { conversationId: "c1", messageId: "m1", toolCallId: "t1" };
 
@@ -52,7 +52,6 @@ beforeEach(() => {
     store.dispatch(addSpace(space(id)));
     store.dispatch(setChannels({ spaceId: id, channels: [{ id: "chat", spaceId: id, type: "chat", label: "chat" }] } as never));
   }
-  store.dispatch(hydrateSpaceE2ee({ account: ME, spaces: { [SEALED]: { root: ME, epochs: [], holders: {} } } }));
   const secret = chat(1, SEALED, "the secret plan");
   const open = chat(2, PLAIN, "the public plan");
   for (const e of [secret, open]) {

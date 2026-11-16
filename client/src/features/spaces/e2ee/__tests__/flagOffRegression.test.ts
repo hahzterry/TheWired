@@ -36,7 +36,7 @@ vi.mock("@/lib/nostr/giftWrap", () => ({
 }));
 vi.mock("@/lib/nostr/publishOutbox", () => ({ publishOutbox: { record: vi.fn() } }));
 
-import { buildSpaceKeyGrants, buildSpaceRumor, epochIdOf, generateEpochKey, sealSpaceEvent } from "@ishtarservices/core";
+import { buildSpaceKeyGrants, buildSpaceRumor, committedSpaceId, epochIdOf, generateEpochKey, sealSpaceEvent } from "@ishtarservices/core";
 import { store, resetAll } from "@/store";
 import { login } from "@/store/slices/identitySlice";
 import { addSpace, setActiveSpace } from "@/store/slices/spacesSlice";
@@ -59,6 +59,10 @@ const meSk = generateSecretKey();
 const me = getPublicKey(meSk);
 const aliceSk = generateSecretKey();
 const alice = getPublicKey(aliceSk);
+
+/** An encrypted space: its id commits to Alice as key root. */
+const ENC_SALT = "0123456789abcdef0123456789abcdef";
+const ENC = committedSpaceId(alice, ENC_SALT);
 
 function space(over: Partial<Space> = {}): Space {
   return {
@@ -86,11 +90,18 @@ function chat(): NostrEvent[] {
   return (state.events.chatMessages[`${SPACE}:${CHANNEL}`] ?? []).map((id) => state.events.entities[id]!);
 }
 
+function chatEnc(): NostrEvent[] {
+  flushEventPipeline();
+  const state = store.getState();
+  return (state.events.chatMessages[`${ENC}:${CHANNEL}`] ?? []).map((id) => state.events.entities[id]!);
+}
+
 const key = generateEpochKey();
 function grant(): NostrEvent {
   const [unsigned] = buildSpaceKeyGrants({
     granter: alice,
-    spaceId: SPACE,
+    spaceId: ENC,
+    rootSalt: ENC_SALT,
     epochKey: key,
     seq: 0,
     prev: null,
@@ -103,8 +114,8 @@ function grant(): NostrEvent {
   return finalizeEvent(unsigned as never, aliceSk) as unknown as NostrEvent;
 }
 function sealed(content: string): NostrEvent {
-  const rumor = buildSpaceRumor(alice, SPACE, 9, [["channel", CHANNEL]], content);
-  return finalizeEvent(sealSpaceEvent(rumor, SPACE, key) as never, aliceSk) as unknown as NostrEvent;
+  const rumor = buildSpaceRumor(alice, ENC, 9, [["channel", CHANNEL]], content);
+  return finalizeEvent(sealSpaceEvent(rumor, ENC, key) as never, aliceSk) as unknown as NostrEvent;
 }
 function plain(content: string): NostrEvent {
   return finalizeEvent(buildChatMessage(alice, SPACE, content, undefined, CHANNEL) as never, aliceSk) as unknown as NostrEvent;
@@ -152,8 +163,12 @@ afterEach(async () => {
 });
 
 describe("feature off", () => {
-  it("opens no subscription of its own", async () => {
-    store.dispatch(setActiveSpace(SPACE));
+  beforeEach(() => {
+    store.dispatch(addSpace(space({ id: ENC, creatorPubkey: alice })));
+  });
+
+  it("opens no subscription of its own, even in an encrypted space", async () => {
+    store.dispatch(setActiveSpace(ENC));
     await settle();
     expect(subscribe).not.toHaveBeenCalled();
   });
@@ -162,9 +177,9 @@ describe("feature off", () => {
     await processIncomingEvent(grant(), HOST);
     await processIncomingEvent(sealed("hidden"), HOST);
     await settle();
-    expect(store.getState().spaceE2ee.spaces[SPACE]).toBeUndefined();
+    expect(store.getState().spaceE2ee.spaces[ENC]).toBeUndefined();
     expect(h.keychain.size).toBe(0);
-    expect(chat()).toHaveLength(0);
+    expect(chatEnc()).toHaveLength(0);
     expect(store.getState().events.ids).toHaveLength(0);
   });
 
@@ -178,8 +193,8 @@ describe("feature off", () => {
     await processIncomingEvent(s, HOST);
     await processIncomingEvent(g, HOST);
     await settle();
-    expect(sendEpochOf(SPACE)?.info.id).toBe(epochIdOf(key));
-    expect(chat().map((e) => e.content)).toEqual(["readable once the feature is on"]);
+    expect(sendEpochOf(ENC)?.info.id).toBe(epochIdOf(key));
+    expect(chatEnc().map((e) => e.content)).toEqual(["readable once the feature is on"]);
   });
 });
 
@@ -300,12 +315,17 @@ describe("feature on: subscriptions", () => {
   });
 
   it("stops re-asking once a grant for the space has arrived", async () => {
+    store.dispatch(addSpace(space({ id: ENC, creatorPubkey: alice })));
+    await settle();
+    const grantSub = [...subscribe.mock.calls]
+      .reverse()
+      .find((c: unknown[]) => (c[0] as { filters: Array<{ kinds: number[] }> }).filters[0].kinds[0] === 4291)!;
     await processIncomingEvent(grant(), HOST);
     await settle();
     const before = subscribe.mock.calls.length;
     vi.useFakeTimers();
     try {
-      (subscribe.mock.calls[0][0] as { onEOSE: () => void }).onEOSE();
+      (grantSub[0] as { onEOSE: () => void }).onEOSE();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(subscribe.mock.calls.length).toBe(before);
     } finally {
@@ -314,7 +334,7 @@ describe("feature on: subscriptions", () => {
   });
 
   it("does not re-ask the live-only background subscription", async () => {
-    await processIncomingEvent(grant(), HOST);
+    store.dispatch(addSpace(space({ id: ENC, creatorPubkey: alice })));
     await settle();
     const bg = subscribe.mock.calls.find(
       (c: unknown[]) => typeof (c[0] as { filters: Array<{ since?: number }> }).filters[0].since === "number",
@@ -322,9 +342,9 @@ describe("feature on: subscriptions", () => {
     expect((bg[0] as { onEOSE?: unknown }).onEOSE).toBeUndefined();
   });
 
-  it("adds sealed-event subscriptions once a space is known to be encrypted, and never asks for plaintext kinds", async () => {
-    store.dispatch(setActiveSpace(SPACE));
-    await processIncomingEvent(grant(), HOST);
+  it("adds sealed-event subscriptions as soon as an encrypted space is joined, and never asks for plaintext kinds", async () => {
+    store.dispatch(addSpace(space({ id: ENC, creatorPubkey: alice })));
+    store.dispatch(setActiveSpace(ENC));
     await settle();
     const all = filters();
     const kinds = new Set(all.flatMap((f) => f.kinds as number[]));

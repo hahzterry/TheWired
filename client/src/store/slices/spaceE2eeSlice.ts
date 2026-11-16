@@ -1,6 +1,7 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 import type { SpaceEpochInfo } from "@ishtarservices/shared-types";
 import type { RootState } from "../index";
+import { isEncryptedSpaceId } from "@/features/spaces/e2ee/spaceIdFormat";
 
 /**
  * Non-secret state of end-to-end encrypted spaces (docs/E2EE_SPACES.md): which
@@ -16,6 +17,8 @@ export interface EncryptedSpaceState {
   /** Who may always issue keys: the space's creator as known when the first
    *  grant was accepted. Null while only other members' grants have been seen. */
   root: string | null;
+  /** The salt that, with `root`, hashes to the space id (null until a key). */
+  rootSalt: string | null;
   /** Epochs this account accepted a key for. */
   epochs: SpaceEpochInfo[];
   /** epochId -> pubkeys an authorized grant handed that epoch's key to. */
@@ -30,22 +33,19 @@ interface SpaceE2eeState {
    * mistaken for the next one's (see `selectSpaceE2eeLoaded`).
    */
   account: string | null;
-  /** The account whose record could not be read in time (local storage not
-   *  answering). Cleared as soon as the record loads. */
-  unavailable: string | null;
   spaces: Record<string, EncryptedSpaceState>;
   /** spaceId -> epoch ids whose key is in this session's memory. */
   ready: Record<string, string[]>;
 }
 
-const initialState: SpaceE2eeState = { account: null, unavailable: null, spaces: {}, ready: {} };
+const initialState: SpaceE2eeState = { account: null, spaces: {}, ready: {} };
 
 const own = (obj: object, key: string): boolean => Object.prototype.hasOwnProperty.call(obj, key);
 
 function ensure(state: SpaceE2eeState, spaceId: string): EncryptedSpaceState {
   let entry = own(state.spaces, spaceId) ? state.spaces[spaceId] : undefined;
   if (!entry) {
-    entry = { root: null, epochs: [], holders: {} };
+    entry = { root: null, rootSalt: null, epochs: [], holders: {} };
     state.spaces[spaceId] = entry;
   }
   return entry;
@@ -61,13 +61,8 @@ export const spaceE2eeSlice = createSlice({
       action: PayloadAction<{ account: string; spaces: Record<string, EncryptedSpaceState> }>,
     ) {
       state.account = action.payload.account;
-      state.unavailable = null;
       state.spaces = action.payload.spaces;
       state.ready = {};
-    },
-    /** The record could not be read in time for this account. */
-    spaceE2eeRecordUnavailable(state, action: PayloadAction<string>) {
-      if (state.account !== action.payload) state.unavailable = action.payload;
     },
     /** Logout or account switch: nothing of the previous account stays. */
     resetSpaceE2ee() {
@@ -86,9 +81,15 @@ export const spaceE2eeSlice = createSlice({
       if (merged.length !== current.length) entry.holders[action.payload.epochId] = merged;
     },
     /** This account accepted a key for an epoch. */
-    epochAccepted(state, action: PayloadAction<{ spaceId: string; root: string; epoch: SpaceEpochInfo }>) {
+    epochAccepted(
+      state,
+      action: PayloadAction<{ spaceId: string; root: string; rootSalt: string; epoch: SpaceEpochInfo }>,
+    ) {
       const entry = ensure(state, action.payload.spaceId);
-      if (!entry.root) entry.root = action.payload.root;
+      if (!entry.root) {
+        entry.root = action.payload.root;
+        entry.rootSalt = action.payload.rootSalt;
+      }
       if (!entry.epochs.some((e) => e.id === action.payload.epoch.id)) entry.epochs.push(action.payload.epoch);
       const ready = own(state.ready, action.payload.spaceId) ? state.ready[action.payload.spaceId] : [];
       if (!ready.includes(action.payload.epoch.id)) state.ready[action.payload.spaceId] = [...ready, action.payload.epoch.id];
@@ -108,7 +109,6 @@ export const spaceE2eeSlice = createSlice({
 export const {
   hydrateSpaceE2ee,
   resetSpaceE2ee,
-  spaceE2eeRecordUnavailable,
   markSpaceEncrypted,
   addEpochHolders,
   epochAccepted,
@@ -140,11 +140,6 @@ export function isSpaceE2eeLoadedFor(state: Pick<RootState, "spaceE2ee" | "ident
 
 export const selectSpaceE2eeLoaded = (state: RootState): boolean => isSpaceE2eeLoadedFor(state);
 
-/** The record is not loaded because local storage did not answer in time. */
-export const selectSpaceE2eeRecordUnavailable = (state: RootState): boolean =>
-  !isSpaceE2eeLoadedFor(state) &&
-  state.spaceE2ee.unavailable !== null &&
-  state.spaceE2ee.unavailable === state.identity.pubkey;
 
 /** The pinned key root of an encrypted space, or null. */
 export const selectSpaceKeyRoot =
@@ -152,11 +147,12 @@ export const selectSpaceKeyRoot =
   (state: RootState): string | null =>
     encryptedSpaceEntry(state.spaceE2ee.spaces, spaceId)?.root ?? null;
 
-/** Is this space end-to-end encrypted (as far as this device knows)? */
+/** Is this space end-to-end encrypted? Decided from the id: an encrypted
+ *  space's id commits to its key root, and only such a space can be one. */
 export const selectIsEncryptedSpace =
   (spaceId: string | null | undefined) =>
-  (state: RootState): boolean =>
-    encryptedSpaceEntry(state.spaceE2ee.spaces, spaceId) !== undefined;
+  (_state: RootState): boolean =>
+    isEncryptedSpaceId(spaceId);
 
 /** Does this session hold a key to send with in this space? */
 export const selectHasSpaceKey =

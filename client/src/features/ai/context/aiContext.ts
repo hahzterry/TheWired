@@ -7,7 +7,7 @@
  * (see docs/AI_ENGINE.md §Phase 1 + the master plan §10).
  */
 import { store } from "@/store";
-import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
+import { isEncryptedSpaceId, namesEncryptedSpace } from "@/features/spaces/e2ee/spaceIdFormat";
 import { profileCache } from "@/lib/nostr/profileCache";
 import type { NostrEvent } from "@/types/nostr";
 import type { AIContext, AIContextKind } from "@/types/ai";
@@ -27,10 +27,8 @@ const MAX_BODY_CHARS = 600;
  * simply never part of an AI context.
  */
 export function isEncryptedSpaceContent(eventOrSpaceId: NostrEvent | string): boolean {
-  const spaces = store.getState().spaceE2ee?.spaces;
-  if (!spaces) return false;
-  if (typeof eventOrSpaceId === "string") return encryptedSpaceEntry(spaces, eventOrSpaceId) !== undefined;
-  return eventOrSpaceId.tags.some((t) => t[0] === "h" && encryptedSpaceEntry(spaces, t[1]) !== undefined);
+  if (typeof eventOrSpaceId === "string") return isEncryptedSpaceId(eventOrSpaceId);
+  return namesEncryptedSpace(eventOrSpaceId.tags);
 }
 
 /** Sync display name for a pubkey from the profile cache, else a short key. */

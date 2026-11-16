@@ -380,7 +380,7 @@ function RichSegment({
       );
 
     case "invite":
-      return <InviteCard code={segment.code} />;
+      return <InviteCard code={segment.code} spaceId={segment.spaceId} />;
 
     case "embed":
       return <EmbedRenderer embed={segment.embed} />;

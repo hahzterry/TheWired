@@ -4,12 +4,15 @@ import { Users, ArrowRight, Loader2, AlertCircle } from "lucide-react";
 import { Avatar } from "../ui/Avatar";
 import { getInviteWithPreview, type InviteWithPreview } from "@/lib/api/invites";
 import { useAppSelector } from "@/store/hooks";
+import { invitePath } from "@/features/spaces/inviteLink";
 
 interface InviteCardProps {
   code: string;
+  /** The space the link names (newer links); checked when joining. */
+  spaceId?: string;
 }
 
-export function InviteCard({ code }: InviteCardProps) {
+export function InviteCard({ code, spaceId }: InviteCardProps) {
   const navigate = useNavigate();
   const spaces = useAppSelector((s) => s.spaces.list);
 
@@ -45,7 +48,7 @@ export function InviteCard({ code }: InviteCardProps) {
       navigate("/");
     } else {
       // Open join flow — navigate to invite route which triggers JoinSpaceModal
-      navigate(`/invite/${code}`);
+      navigate(spaceId ? invitePath(code, spaceId) : `/invite/${encodeURIComponent(code)}`);
     }
   };
 

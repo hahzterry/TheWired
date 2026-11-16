@@ -20,10 +20,14 @@ import {
 import { RelayPicker, type ExtraPreset } from "./RelayPicker";
 import type { RelayInfo } from "../../lib/nostr/relayInfo";
 import { relayUrlToHost } from "./spaceType";
-import { signAndPublish } from "../../lib/nostr/publish";
+import { signAndPublish, signWithAccount } from "../../lib/nostr/publish";
 import { relayManager } from "../../lib/nostr/relayManager";
 import { probeRelayNip11 } from "../../lib/nostr/relayInfo";
 import { buildCreateGroup, buildEditGroupMetadata } from "../../lib/nostr/eventBuilder";
+import { isEncryptedSpaceId } from "./e2ee/spaceIdFormat";
+
+/** A creation step that failed in a way the user must be told about. */
+class EncryptedCreateError extends Error {}
 import {
   embeddedRelaySupported,
   getEmbeddedRelayStatus,
@@ -232,6 +236,8 @@ function CreateSpaceModalInner({
    *  space never gets created: a failed or cancelled creation, or encryption
    *  unticked before the retry. */
   const preparedIdRef = useRef<string | null>(null);
+  /** The salt the pending encrypted space's id commits with. */
+  const rootSaltRef = useRef<string | null>(null);
 
   // The keyring (and the codec under it) loads only when someone actually
   // makes an encrypted space: it stays off the startup path.
@@ -254,7 +260,28 @@ function CreateSpaceModalInner({
     setCreating(true);
     setCreateError(null);
 
-    const spaceId = pendingIdRef.current ?? (pendingIdRef.current = generateId());
+    // An encrypted space is chat-only for now: the other channel types have
+    // no sealed form yet, so creating them would only produce dead channels.
+    const makeEncrypted = e2eeEnabled && encrypted;
+
+    // An encrypted space's id commits to its key root (this account), so a
+    // plain id can't become one and a committed id must never be used for a
+    // plain space (docs/E2EE_SPACES.md §5.4). A retry keeps its id, and with
+    // it the key prepared for it; switching encryption on or off starts over.
+    const pending = pendingIdRef.current;
+    let spaceId: string;
+    if (makeEncrypted && (!pending || !isEncryptedSpaceId(pending) || !rootSaltRef.current)) {
+      await abandonPreparedKey();
+      const fresh = (await loadKeyring()).newEncryptedSpaceId(pubkey);
+      spaceId = pendingIdRef.current = fresh.id;
+      rootSaltRef.current = fresh.rootSalt;
+    } else if (!makeEncrypted && (!pending || isEncryptedSpaceId(pending))) {
+      await abandonPreparedKey();
+      rootSaltRef.current = null;
+      spaceId = pendingIdRef.current = generateId();
+    } else {
+      spaceId = pending!;
+    }
 
     // Resolve the space mode from the (toggle-gated) UI choices.
     const decentralized = decentralizedEnabled && spaceKind === "decentralized";
@@ -265,10 +292,6 @@ function CreateSpaceModalInner({
       : isNative
         ? "nip29-native"
         : "decentralized-alite";
-
-    // An encrypted space is chat-only for now: the other channel types have
-    // no sealed form yet, so creating them would only produce dead channels.
-    const makeEncrypted = e2eeEnabled && encrypted;
 
     const space: Space = {
       id: spaceId,
@@ -294,12 +317,9 @@ function CreateSpaceModalInner({
     // End-to-end encrypted space: make and store the first key before anything
     // is created, so a keychain failure can't leave a space that was meant to
     // be encrypted accepting plaintext (docs/E2EE_SPACES.md).
-    // A key prepared for this id on an earlier, failed attempt with encryption
-    // on must not make a now-plain space encrypted.
-    if (!makeEncrypted && preparedIdRef.current === spaceId) await abandonPreparedKey();
     if (makeEncrypted) {
       try {
-        await (await loadKeyring()).prepareFirstEpoch(space, fullHistory ? "full" : "epoch");
+        await (await loadKeyring()).prepareFirstEpoch(space, fullHistory ? "full" : "epoch", rootSaltRef.current!);
         preparedIdRef.current = spaceId;
       } catch (err) {
         setCreateError(
@@ -328,13 +348,22 @@ function CreateSpaceModalInner({
           const info = await probeRelayNip11(resolvedHostRelay);
           space.relayPubkey = info?.pubkey;
         }
-        await signAndPublish(
-          buildCreateGroup(pubkey, spaceId, space.name, {
-            isPrivate: privateGroup,
-            isClosed: privateGroup,
-          }),
-          [resolvedHostRelay],
-        );
+        const createEvent = buildCreateGroup(pubkey, spaceId, space.name, {
+          isPrivate: privateGroup,
+          isClosed: privateGroup,
+        });
+        if (makeEncrypted) {
+          // The group must exist under exactly this id, or the id commits to
+          // nothing: confirm the relay took it and serves it (a relay that
+          // assigns its own group ids can't host an encrypted space).
+          const check = await import("./e2ee/relayGroupCheck");
+          await check.createGroupConfirmed(await signWithAccount(createEvent), resolvedHostRelay);
+          if (!space.relayPubkey || !(await check.relayServesGroup(resolvedHostRelay, spaceId, space.relayPubkey))) {
+            throw new EncryptedCreateError(check.RELAY_CANNOT_HOST_MESSAGE);
+          }
+        } else {
+          await signAndPublish(createEvent, [resolvedHostRelay]);
+        }
         if (space.about || space.picture) {
           await signAndPublish(
             buildEditGroupMetadata(pubkey, spaceId, {
@@ -346,6 +375,15 @@ function CreateSpaceModalInner({
           );
         }
       } catch (err) {
+        if (makeEncrypted) {
+          // Nothing usable was created: drop the prepared key and say why.
+          await abandonPreparedKey();
+          pendingIdRef.current = null;
+          rootSaltRef.current = null;
+          setCreateError(err instanceof Error ? err.message : "Couldn't create the encrypted space.");
+          setCreating(false);
+          return;
+        }
         console.error("[CreateSpace] NIP-29 group creation failed:", err);
         // Still create locally so the user can retry sending into it.
       }
@@ -379,7 +417,12 @@ function CreateSpaceModalInner({
         // Without the backend row the space has no roles, channels or
         // membership, so a local-only copy would be a dead space. Keep the
         // form open so the user can retry.
-        if (err instanceof ApiRequestError && err.code === "SPACE_EXISTS") pendingIdRef.current = null;
+        if (err instanceof ApiRequestError && err.code === "SPACE_EXISTS") {
+          // Another space already has this id: start over with a new one (for
+          // an encrypted space, a new salt and so a new committed id).
+          pendingIdRef.current = null;
+          rootSaltRef.current = null;
+        }
         // Nothing was created: drop the key prepared for it.
         await abandonPreparedKey();
         setCreateError(
@@ -394,6 +437,7 @@ function CreateSpaceModalInner({
 
     pendingIdRef.current = null;
     preparedIdRef.current = null;
+    rootSaltRef.current = null;
     // Now navigate to the space
     onCreate(space);
     if (makeEncrypted) {

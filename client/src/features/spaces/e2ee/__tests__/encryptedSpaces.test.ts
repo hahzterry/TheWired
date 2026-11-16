@@ -48,6 +48,7 @@ vi.mock("@/lib/nostr/publishOutbox", () => ({ publishOutbox: { record: vi.fn() }
 import {
   buildSpaceKeyGrants,
   buildSpaceRumor,
+  committedSpaceId,
   epochIdOf,
   generateEpochKey,
   openSealedSpaceEvent,
@@ -92,7 +93,6 @@ import * as forgetSeen from "@/lib/nostr/forgetSeen";
 import { selectIsEncryptedSpace, selectSpaceE2eeLoaded, selectSpaceKeyRoot } from "@/store/slices/spaceE2eeSlice";
 
 const HOST = "wss://space.example";
-const SPACE = "encspace01";
 const CHANNEL = "general";
 
 interface Person {
@@ -114,6 +114,18 @@ const alice = person(); // another space admin / creator, depending on the test
 const bob = person();
 const carol = person();
 const dave = person();
+
+/** Every encrypted space's id commits to its key root (docs/E2EE_SPACES.md
+ *  §5.4). The tests use two: one this account created, one Alice created. */
+const SALT = "5a175a175a175a175a175a175a175a17";
+const SPACE_ME = committedSpaceId(me.pubkey, SALT);
+const SPACE_ALICE = committedSpaceId(alice.pubkey, SALT);
+const ROOT_OF = new Map([
+  [SPACE_ME, me.pubkey],
+  [SPACE_ALICE, alice.pubkey],
+]);
+/** The space under test; describes where Alice is the key root switch it. */
+let SPACE = SPACE_ME;
 
 function space(over: Partial<Space> = {}): Space {
   return {
@@ -166,10 +178,11 @@ function grantFrom(
   const [unsigned] = buildSpaceKeyGrants({
     granter: who.pubkey,
     spaceId: SPACE,
+    rootSalt: SALT,
     epochKey: key,
     seq: 0,
     prev: null,
-    root: who.pubkey,
+    root: ROOT_OF.get(SPACE) ?? who.pubkey,
     managers: [who.pubkey],
     history: "epoch",
     at: 1_763_000_000,
@@ -177,6 +190,19 @@ function grantFrom(
     ...over,
   });
   return finalizeEvent(unsigned as never, who.sk) as unknown as NostrEvent;
+}
+
+/** A grant that claims `claimedRoot` (with `salt`) as the root of `spaceId`,
+ *  signed by `who`. Built for the space `who`'s own key commits to, then
+ *  relabelled: what an attacker, a relay or a server could publish. */
+function forgedGrant(who: Person, key: Uint8Array, recipients: string[], spaceId: string, claimedRoot: string, salt = SALT): NostrEvent {
+  const own = committedSpaceId(who.pubkey, SALT);
+  const [unsigned] = buildSpaceKeyGrants({
+    granter: who.pubkey, spaceId: own, rootSalt: SALT, epochKey: key, seq: 0, prev: null, root: who.pubkey,
+    managers: [who.pubkey], history: "epoch", at: 1_763_000_000, recipients,
+  });
+  const tags = unsigned.tags.map((t) => (t[0] === "h" ? ["h", spaceId] : t[0] === "root" ? ["root", claimedRoot, salt] : t));
+  return finalizeEvent({ ...unsigned, tags } as never, who.sk) as unknown as NostrEvent;
 }
 
 function deliverGrant(event: NostrEvent): Promise<GrantOutcome> {
@@ -211,6 +237,7 @@ async function holdersFromRelay(q: { epoch: { id: string } }): Promise<string[]>
 }
 
 beforeEach(async () => {
+  SPACE = SPACE_ME;
   // The non-secret record persists in (fake) IndexedDB; start each test clean.
   await clearAllUserState();
   vi.spyOn(relayManager, "connect").mockImplementation(() => undefined as never);
@@ -261,7 +288,7 @@ afterEach(async () => {
 describe("creating an encrypted space", () => {
   it("stores the first key in the keychain and never in Redux", async () => {
     const s = space();
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     const current = sendEpochOf(SPACE)!;
     expect(current.info.seq).toBe(0);
     expect(current.info.managers).toEqual([me.pubkey]);
@@ -274,16 +301,16 @@ describe("creating an encrypted space", () => {
   });
 
   it("is idempotent across a retried creation", async () => {
-    await prepareFirstEpoch(space(), "epoch");
+    await prepareFirstEpoch(space(), "epoch", SALT);
     const first = sendEpochOf(SPACE)!.info.id;
-    await prepareFirstEpoch(space(), "epoch");
+    await prepareFirstEpoch(space(), "epoch", SALT);
     expect(sendEpochOf(SPACE)!.info.id).toBe(first);
     expect(store.getState().spaceE2ee.spaces[SPACE].epochs).toHaveLength(1);
   });
 
   it("publishes one grant to the space's relay with the creator as recipient", async () => {
     const s = space();
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     store.dispatch(addSpace(s));
     await publishFirstEpoch(s);
     await settle();
@@ -300,7 +327,7 @@ describe("creating an encrypted space", () => {
 
   it("publishes the creator's own grant on the next reconcile if the first one never went out", async () => {
     const s = space();
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     store.dispatch(addSpace(s));
     // publishFirstEpoch was never reached (the signer was away, the tab closed).
     expect(store.getState().spaceE2ee.spaces[SPACE].holders[sendEpochOf(SPACE)!.info.id]).toBeUndefined();
@@ -314,7 +341,7 @@ describe("creating an encrypted space", () => {
   it("fails the creation when the keychain write fails, leaving no key", async () => {
     const secretStore = await import("@/lib/nostr/secretStore");
     const spy = vi.spyOn(secretStore, "setSecret").mockRejectedValueOnce(new Error("keychain locked"));
-    await expect(prepareFirstEpoch(space(), "epoch")).rejects.toThrow("keychain locked");
+    await expect(prepareFirstEpoch(space(), "epoch", SALT)).rejects.toThrow("keychain locked");
     expect(sendEpochOf(SPACE)).toBeNull();
     expect(store.getState().spaceE2ee.spaces[SPACE]).toBeUndefined();
     spy.mockRestore();
@@ -324,7 +351,7 @@ describe("creating an encrypted space", () => {
 describe("sending and receiving", () => {
   beforeEach(async () => {
     const s = space({ memberPubkeys: [me.pubkey, bob.pubkey] });
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     store.dispatch(addSpace(s));
     h.published.length = 0;
   });
@@ -445,7 +472,7 @@ describe("sending and receiving", () => {
 describe("handing out keys and rotating (manager)", () => {
   beforeEach(async () => {
     const s = space({ memberPubkeys: [me.pubkey] });
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     store.dispatch(addSpace(s));
     await publishFirstEpoch(s);
     await settle();
@@ -611,7 +638,7 @@ describe("handing out keys and rotating (manager)", () => {
 describe("history policy 'full'", () => {
   it("hands a new member every epoch, oldest first", async () => {
     const s = space();
-    await prepareFirstEpoch(s, "full");
+    await prepareFirstEpoch(s, "full", SALT);
     store.dispatch(addSpace(s));
     await publishFirstEpoch(s);
     setRoster([me.pubkey, bob.pubkey]);
@@ -635,6 +662,10 @@ describe("history policy 'full'", () => {
 });
 
 describe("receiving keys (member)", () => {
+  beforeEach(() => {
+    SPACE = SPACE_ALICE;
+  });
+
   const key0 = generateEpochKey();
 
   beforeEach(() => {
@@ -794,11 +825,9 @@ describe("receiving keys (member)", () => {
 
   it("refuses an epoch that names another root", async () => {
     await deliverGrant(grantFrom(alice, key0, [me.pubkey], { managers: [alice.pubkey, bob.pubkey] }));
-    const key1 = generateEpochKey();
-    // Bob is a manager, but he cannot re-root the space on himself.
-    expect(
-      await deliverGrant(grantFrom(bob, key1, [me.pubkey], { seq: 1, prev: epochIdOf(key0), managers: [bob.pubkey] })),
-    ).toBe("unauthorized");
+    // Bob is a manager, but he cannot re-root the space on himself: a grant
+    // claiming him as root doesn't open the space id.
+    expect(await deliverGrant(forgedGrant(bob, generateEpochKey(), [me.pubkey], SPACE, bob.pubkey))).toBe("invalid");
     expect(store.getState().spaceE2ee.spaces[SPACE].root).toBe(alice.pubkey);
   });
 
@@ -886,6 +915,10 @@ describe("receiving keys (member)", () => {
 });
 
 describe("restart", () => {
+  beforeEach(() => {
+    SPACE = SPACE_ALICE;
+  });
+
   const key0 = generateEpochKey();
 
   async function restart(): Promise<void> {
@@ -971,34 +1004,52 @@ describe("restart", () => {
 
 // ── Regression tests for the second code review ─────────────────────────────
 
-describe("first key: who may pin the key root", () => {
+describe("first key: the space id commits to its root", () => {
+  beforeEach(() => {
+    SPACE = SPACE_ALICE;
+  });
   const key0 = generateEpochKey();
 
-  it("refuses an admin's first grant naming itself root when the creator is known", async () => {
-    store.dispatch(
-      addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey, carol.pubkey], memberPubkeys: [me.pubkey] })),
-    );
-    // Carol is a listed admin (the relay or backend says so) and signs a grant
-    // that makes herself the space's key root.
-    expect(await deliverGrant(grantFrom(carol, key0, [me.pubkey]))).toBe("unauthorized");
-    expect(store.getState().spaceE2ee.spaces[SPACE]).toBeUndefined();
-    expect(sendEpochOf(SPACE)).toBeNull();
-
-    // The creator's real grant is still accepted afterwards.
-    const real = generateEpochKey();
-    expect(await deliverGrant(grantFrom(alice, real, [me.pubkey]))).toBe("accepted");
+  it("accepts the first key from the root the id commits to, whatever the server says about the space", async () => {
+    // The server names nobody (an imported group) or the wrong creator: irrelevant.
+    store.dispatch(addSpace(space({ creatorPubkey: carol.pubkey, adminPubkeys: [carol.pubkey], memberPubkeys: [me.pubkey] })));
+    expect(await deliverGrant(grantFrom(alice, key0, [me.pubkey]))).toBe("accepted");
     expect(store.getState().spaceE2ee.spaces[SPACE].root).toBe(alice.pubkey);
+    expect(selectSpaceKeyRoot(SPACE)(store.getState())).toBe(alice.pubkey);
   });
 
-  it("refuses a first grant from a manager the payload lists, unless it is the root", async () => {
-    store.dispatch(
-      addSpace(space({ creatorPubkey: "", adminPubkeys: [alice.pubkey, carol.pubkey], memberPubkeys: [me.pubkey] })),
-    );
-    // Root is Alice, Carol merely listed as a manager: Carol can't pin Alice.
+  it("refuses a grant whose root doesn't hash to the id, even from the listed creator and admins", async () => {
+    // Carol is listed as the creator and admin (a lying relay or backend),
+    // and signs a grant naming herself root of Alice's space.
+    store.dispatch(addSpace(space({ creatorPubkey: carol.pubkey, adminPubkeys: [carol.pubkey], memberPubkeys: [me.pubkey] })));
+    expect(await deliverGrant(forgedGrant(carol, key0, [me.pubkey], SPACE, carol.pubkey))).toBe("invalid");
+    // Or naming Alice as root with the wrong salt.
+    expect(await deliverGrant(forgedGrant(carol, key0, [me.pubkey], SPACE, alice.pubkey, "ff".repeat(16)))).toBe("invalid");
+    expect(store.getState().spaceE2ee.spaces[SPACE]).toBeUndefined();
+    expect(sendEpochOf(SPACE)).toBeNull();
+    // The real root's key is still accepted afterwards.
+    expect(await deliverGrant(grantFrom(alice, key0, [me.pubkey]))).toBe("accepted");
+  });
+
+  it("refuses a first key from anyone but the root, even with the right root in the grant", async () => {
+    store.dispatch(addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey, carol.pubkey], memberPubkeys: [me.pubkey] })));
+    // Carol signs a grant that correctly names Alice as root (so it opens the
+    // id), listing herself as a manager. Only Alice can hand out the first key.
     expect(
-      await deliverGrant(grantFrom(carol, key0, [me.pubkey], { root: alice.pubkey, managers: [alice.pubkey, carol.pubkey] })),
+      await deliverGrant(grantFrom(carol, key0, [me.pubkey], { managers: [alice.pubkey, carol.pubkey] })),
     ).toBe("unauthorized");
     expect(sendEpochOf(SPACE)).toBeNull();
+  });
+
+  it("ignores grants in a space whose id is not a committed one", async () => {
+    const plain = "plainspace01";
+    store.dispatch(addSpace(space({ id: plain, creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey], memberPubkeys: [me.pubkey] })));
+    expect(await deliverGrant(forgedGrant(alice, key0, [me.pubkey], plain, alice.pubkey))).toBe("invalid");
+    expect(store.getState().spaceE2ee.spaces[plain]).toBeUndefined();
+    // So nobody can turn a plain space into an encrypted one, and its chat stays.
+    await expect(
+      signAndPublish(buildChatMessage(me.pubkey, plain, "still plain", undefined, CHANNEL), [HOST]),
+    ).resolves.toMatchObject({ kind: 9 });
   });
 
   it("shows the pinned root, and nothing before a key arrives", async () => {
@@ -1009,63 +1060,45 @@ describe("first key: who may pin the key root", () => {
   });
 });
 
-describe("never plaintext before the record is loaded", () => {
-  it("knows a space is encrypted while its keys are still loading, and refuses plaintext", async () => {
-    // A previous session knew this space was encrypted.
-    store.dispatch(addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey], memberPubkeys: [me.pubkey] })));
-    await deliverGrant(grantFrom(alice, generateEpochKey(), [me.pubkey]));
-    await settle();
-    clearSpaceE2eeSession();
-    store.dispatch(resetAll());
-    store.dispatch(login({ pubkey: me.pubkey, signerType: "nip07" }));
-    store.dispatch(addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey], memberPubkeys: [me.pubkey] })));
-
-    // The keychain hangs (an OS prompt nobody has answered yet).
-    const secretStore = await import("@/lib/nostr/secretStore");
-    let release!: () => void;
-    const gate = new Promise<void>((res) => (release = res));
-    const spy = vi.spyOn(secretStore, "getSecret").mockImplementation(async (k: string) => {
-      await gate;
-      return h.keychain.get(k) ?? null;
-    });
-    const signed: unknown[] = [];
-    const nip07 = await import("@/lib/nostr/loginFlow");
-    const signer = nip07.getSigner()!;
-    const signEvent = vi.spyOn(signer, "signEvent");
-    vi.spyOn(nip07, "getSigner").mockReturnValue({ ...signer, signEvent: (u: UnsignedEvent) => { signed.push(u); return signEvent(u); } } as never);
-
-    const hydrating = ensureSpaceE2eeHydrated();
-    await settle();
-    expect(selectSpaceE2eeLoaded(store.getState())).toBe(true);
-    expect(selectIsEncryptedSpace(SPACE)(store.getState())).toBe(true);
-    expect(sendEpochOf(SPACE)).toBeNull();
-    await expect(
-      signAndPublish(buildChatMessage(me.pubkey, SPACE, "typed while the keychain was busy", undefined, CHANNEL), [HOST]),
-    ).rejects.toThrow(/end-to-end encrypted/);
-    expect(signed).toHaveLength(0);
-    expect(h.published).toHaveLength(0);
-
-    release();
-    await hydrating;
-    spy.mockRestore();
+describe("knowing a space is encrypted, from its id alone", () => {
+  beforeEach(() => {
+    SPACE = SPACE_ALICE;
   });
 
-  it("refuses space-scoped plaintext when the record cannot be read at all", async () => {
-    // The storage layer is on another account (or none): the record can't be read.
+  it("refuses plaintext into an encrypted space with the feature off, no record and no key", async () => {
     clearSpaceE2eeSession();
     store.dispatch(resetAll());
     store.dispatch(login({ pubkey: me.pubkey, signerType: "nip07" }));
-    setActivePubkey(null);
+    store.dispatch(addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey], memberPubkeys: [me.pubkey] })));
+    expect(store.getState().features.enabled).not.toContain(FEATURE_E2EE_SPACES);
+    expect(store.getState().spaceE2ee.account).toBeNull();
+    expect(selectIsEncryptedSpace(SPACE)(store.getState())).toBe(true);
+    await expect(
+      signAndPublish(buildChatMessage(me.pubkey, SPACE, "would leak", undefined, CHANNEL), [HOST]),
+    ).rejects.toThrow(/end-to-end encrypted/);
+    expect(h.published).toHaveLength(0);
+    // What stays in the clear still goes through.
+    await expect(
+      signAndPublish({ pubkey: me.pubkey, created_at: 1, kind: 9021, tags: [["h", SPACE]], content: "" }, [HOST]),
+    ).resolves.toMatchObject({ kind: 9021 });
+  });
+
+  it("ignores plaintext chat received in an encrypted space it holds no record for", async () => {
+    store.dispatch(addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey], memberPubkeys: [me.pubkey] })));
+    const plain = finalizeEvent(buildChatMessage(bob.pubkey, SPACE, "not sealed", undefined, CHANNEL) as never, bob.sk);
+    await processIncomingEvent(plain as unknown as NostrEvent, HOST);
+    expect(chatIn()).toHaveLength(0);
+  });
+
+  it("never blocks a plain space, even when local storage can't be read", async () => {
+    clearSpaceE2eeSession();
+    store.dispatch(resetAll());
+    store.dispatch(login({ pubkey: me.pubkey, signerType: "nip07" }));
+    setActivePubkey(null); // the account's storage can't be read
     store.dispatch(addSpace(space({ id: "plain-somewhere" })));
-    expect(selectSpaceE2eeLoaded(store.getState())).toBe(false);
     await expect(
       signAndPublish(buildChatMessage(me.pubkey, "plain-somewhere", "hello", undefined, CHANNEL), [HOST]),
-    ).rejects.toThrow(/Still loading/);
-    expect(h.published).toHaveLength(0);
-    // Not space-scoped: unaffected.
-    await expect(
-      signAndPublish({ pubkey: me.pubkey, created_at: 1, kind: 1, tags: [], content: "a note" }, [HOST]),
-    ).resolves.toMatchObject({ kind: 1 });
+    ).resolves.toMatchObject({ kind: 9 });
     setActivePubkey(me.pubkey);
   });
 });
@@ -1073,7 +1106,7 @@ describe("never plaintext before the record is loaded", () => {
 describe("grants the relay refused", () => {
   beforeEach(async () => {
     const s = space({ memberPubkeys: [me.pubkey] });
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     store.dispatch(addSpace(s));
     await publishFirstEpoch(s);
     await settle();
@@ -1129,6 +1162,10 @@ describe("grants the relay refused", () => {
 });
 
 describe("account switch and forgetting", () => {
+  beforeEach(() => {
+    SPACE = SPACE_ALICE;
+  });
+
   it("drops the previous account's record when the session is cleared for another account", async () => {
     store.dispatch(addSpace(space({ creatorPubkey: alice.pubkey, adminPubkeys: [alice.pubkey], memberPubkeys: [me.pubkey] })));
     await deliverGrant(grantFrom(alice, generateEpochKey(), [me.pubkey]));
@@ -1167,6 +1204,10 @@ describe("account switch and forgetting", () => {
 });
 
 describe("queues other members can't flush", () => {
+  beforeEach(() => {
+    SPACE = SPACE_ALICE;
+  });
+
   const key0 = generateEpochKey();
 
   beforeEach(() => {
@@ -1209,21 +1250,23 @@ describe("queues other members can't flush", () => {
 describe("a creation that never happened", () => {
   it("undoes the prepared key when the space is abandoned", async () => {
     const s = space();
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     expect(store.getState().spaceE2ee.spaces[SPACE]).toBeDefined();
     await abandonFirstEpoch(SPACE);
     expect(store.getState().spaceE2ee.spaces[SPACE]).toBeUndefined();
     expect(h.keychain.get(spaceKeySlot(me.pubkey, SPACE))).toBeUndefined();
     // A plain space under the same id is now just a plain space.
     store.dispatch(addSpace(s));
-    await expect(signAndPublish(buildChatMessage(me.pubkey, SPACE, "plain", undefined, CHANNEL), [HOST])).resolves.toMatchObject({
-      kind: 9,
-    });
+    // The id stays a committed one: plaintext is still refused there, and a
+    // retried creation would start with a new id.
+    await expect(signAndPublish(buildChatMessage(me.pubkey, SPACE, "plain", undefined, CHANNEL), [HOST])).rejects.toThrow(
+      /end-to-end encrypted/,
+    );
   });
 
   it("leaves a space alone once its key has been handed to anyone", async () => {
     const s = space();
-    await prepareFirstEpoch(s, "epoch");
+    await prepareFirstEpoch(s, "epoch", SALT);
     store.dispatch(addSpace(s));
     await publishFirstEpoch(s);
     await abandonFirstEpoch(SPACE);

@@ -20,6 +20,28 @@ export const SPACE_E2EE_KINDS = {
 /** HKDF salt for every derivation from an epoch key. */
 export const SPACE_E2EE_SALT = "thewired-space-e2ee-v1";
 
+// ── Committed space ids (docs/E2EE_SPACES.md §5.4, D12) ──────────────────────
+//
+// An encrypted space's id commits to its key root:
+//
+//   id   = "e2e1-" + hex( SHA-256( "thewired-space-id-v1" || 0x00 || root || salt ) )[0..32]
+//   root = the key root's pubkey, 32 bytes
+//   salt = 16 random bytes chosen at creation, carried in every grant
+//
+// so any device that knows the id can check a grant's root with no server
+// input. 128 bits of the hash; lowercase hex and '-' only, valid as a NIP-29
+// group id. The prefix makes the format recognizable: a space whose id has
+// this form is encrypted, and only such a space can be.
+
+/** Prefix of a committed (encrypted) space id; the 1 is the format version. */
+export const SPACE_E2EE_ID_PREFIX = "e2e1-";
+/** A committed space id: the prefix and 32 lowercase hex characters. */
+export const SPACE_E2EE_ID_RE = /^e2e1-[0-9a-f]{32}$/;
+/** Domain-separation tag hashed into a committed id. */
+export const SPACE_E2EE_ID_DOMAIN = "thewired-space-id-v1";
+/** Bytes of salt in a committed id. */
+export const SPACE_E2EE_ID_SALT_BYTES = 16;
+
 /** Tag names on the outer events. */
 export const SPACE_E2EE_TAGS = {
   /** `["epoch", <16 hex>]` — names the epoch key the event is under. */
@@ -27,6 +49,10 @@ export const SPACE_E2EE_TAGS = {
   /** `["eph", <64 hex>]` — the throwaway pubkey a grant's `p` entries are
    *  NIP-44-encrypted from. */
   EPHEMERAL: "eph",
+  /** `["root", <64 hex pubkey>, <32 hex salt>]` on a grant — the opening of
+   *  the space id's commitment, public so a device can check a grant's root
+   *  before asking its signer to decrypt anything. Must match the payload. */
+  ROOT: "root",
 } as const;
 
 /** Rumor kinds a receiver accepts inside a sealed event; others are dropped. */
@@ -79,6 +105,8 @@ export interface SpaceKeyGrantPayload {
   /** The space's key root: who made the first epoch and may always issue
    *  keys. The same in every epoch of a space; receivers pin it. */
   root: string;
+  /** The salt (32 hex) that, with `root`, hashes to the space id. */
+  rootSalt: string;
   /** Pubkeys allowed to issue the NEXT epoch (and late grants of this one).
    *  Always includes `root`. */
   managers: string[];

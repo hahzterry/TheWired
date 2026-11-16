@@ -10,13 +10,7 @@ import { addLocalEventId } from "../db/musicStore";
 import { publishOutbox } from "./publishOutbox";
 import { devLocalTargets, resolvePublishTargets } from "./gatedTargets";
 import { store } from "@/store";
-import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
-import {
-  RECORD_UNAVAILABLE_MESSAGE,
-  SpaceE2eeRecordUnavailableError,
-  ensureSpaceE2eeRecord,
-  isSpaceE2eeRecordLoaded,
-} from "@/features/spaces/e2ee/e2eeRecord";
+import { namesEncryptedSpace } from "@/features/spaces/e2ee/spaceIdFormat";
 
 /**
  * Where an event goes when the caller named no relays. Public events use the
@@ -50,34 +44,20 @@ export interface SignOptions {
  * This is the one chokepoint every publish path signs through, so a feature
  * that doesn't know about encryption can't leak into such a space.
  *
- * Fails closed: until the account's record of encrypted spaces is loaded,
- * nothing space-scoped is signed in the clear (the record is read here if it
- * hasn't been yet). Spaces that are not encrypted are unaffected once it is.
+ * Decided from the space id alone: an encrypted space's id commits to its key
+ * root and has a recognizable form, and no other space can be encrypted. So it
+ * holds with the feature off, before anything is loaded, and when local
+ * storage can't be read, without ever blocking a plain space.
  */
-async function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): Promise<void> {
+function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): void {
   if (SPACE_E2EE_PLAINTEXT_KINDS.includes(unsigned.kind)) return;
-  if (!unsigned.tags.some((t) => t[0] === "h" && t[1])) return;
-  if (!isSpaceE2eeRecordLoaded()) {
-    // Bounded: a storage read that never answers (an IndexedDB open blocked by
-    // another tab) is a prompt, explained refusal, never a hang.
-    let unavailable = false;
-    await ensureSpaceE2eeRecord().catch((err: unknown) => {
-      unavailable = err instanceof SpaceE2eeRecordUnavailableError;
-    });
-    if (!isSpaceE2eeRecordLoaded()) {
-      throw new Error(unavailable ? RECORD_UNAVAILABLE_MESSAGE : "Still loading this account's spaces. Try again in a moment.");
-    }
-  }
-  const encrypted = store.getState().spaceE2ee.spaces;
-  for (const tag of unsigned.tags) {
-    if (tag[0] === "h" && encryptedSpaceEntry(encrypted, tag[1])) {
-      throw new Error("This space is end-to-end encrypted, and this can't be posted there yet.");
-    }
+  if (namesEncryptedSpace(unsigned.tags)) {
+    throw new Error("This space is end-to-end encrypted, and this can't be posted there yet.");
   }
 }
 
 async function signWith(unsigned: UnsignedEvent, opts?: SignOptions): Promise<NostrEvent> {
-  await assertSealedForEncryptedSpace(unsigned);
+  assertSealedForEncryptedSpace(unsigned);
   if (opts?.signer) return opts.signer.signEvent(unsigned);
   const signer = getSigner();
   if (!signer) throw new Error("No signer available");
