@@ -16,8 +16,16 @@ const ENCRYPTED = "e2e1-" + "1234abcd".repeat(4);
 const PLAIN = "a1b2c3d4e5f6";
 
 describe("invite links", () => {
-  it("put the space id in the path", () => {
+  it("put the space id in the path of an encrypted space's link", () => {
     expect(invitePath("Ab3dEf9h", ENCRYPTED)).toBe(`/invite/Ab3dEf9h/${ENCRYPTED}`);
+  });
+
+  it("keep the short form for every other space, which older clients route", () => {
+    expect(invitePath("Ab3dEf9h", PLAIN)).toBe("/invite/Ab3dEf9h");
+    // The short form still parses to the code, and joining a plain space from
+    // it is allowed.
+    expect(parseInviteLink(`https://thewired.app${invitePath("Ab3dEf9h", PLAIN)}`)).toEqual({ code: "Ab3dEf9h" });
+    expect(verifyInviteSpace(undefined, PLAIN)).toEqual({ ok: true });
   });
 
   it("parse the code and the space from a full link, a deep-link path, or a bare code", () => {
