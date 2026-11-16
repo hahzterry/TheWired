@@ -12,6 +12,7 @@ import {
   hydrateSpaceE2ee,
   isSpaceE2eeLoadedFor,
   resetSpaceE2ee,
+  spaceE2eeRecordUnavailable,
   type EncryptedSpaceState,
 } from "@/store/slices/spaceE2eeSlice";
 import { getActivePubkey, getUserState, saveUserState } from "@/lib/db/userStateStore";
@@ -45,26 +46,46 @@ export function sanitizeSpaceE2eeRecord(raw: unknown): Record<string, EncryptedS
   return out;
 }
 
-let loading: { account: string; promise: Promise<void> } | null = null;
+/** How long a caller waits for the record before giving up on this attempt. */
+export const RECORD_READ_TIMEOUT_MS = 4_000;
+let readTimeoutMs = RECORD_READ_TIMEOUT_MS;
+
+/** Test-only: shorten the wait. */
+export function _setRecordReadTimeoutForTest(ms: number = RECORD_READ_TIMEOUT_MS): void {
+  readTimeoutMs = ms;
+}
+
+/** What the user is told while the record cannot be read. */
+export const RECORD_UNAVAILABLE_MESSAGE =
+  "This app's local storage isn't answering, so it can't check which of your spaces are end-to-end encrypted. " +
+  "Close other tabs or windows of The Wired, or reload, then try again.";
+
+/** The record could not be read within the wait (local storage not
+ *  answering: an IndexedDB open blocked by another tab, a stuck disk). */
+export class SpaceE2eeRecordUnavailableError extends Error {
+  constructor() {
+    super(RECORD_UNAVAILABLE_MESSAGE);
+    this.name = "SpaceE2eeRecordUnavailableError";
+  }
+}
+
+interface Read {
+  account: string;
+  promise: Promise<void>;
+  startedAt: number;
+}
+
+/** The read in flight, if any. Joined only while it is younger than the wait:
+ *  an older one may never settle (a blocked IndexedDB open), so the next
+ *  attempt starts a fresh read instead of queueing behind it. */
+let loading: Read | null = null;
 
 /** Is the logged-in account's record in the store? */
 export function isSpaceE2eeRecordLoaded(): boolean {
   return isSpaceE2eeLoadedFor(store.getState());
 }
 
-/**
- * Load the logged-in account's record into the store. One read per account per
- * session; safe to call from anywhere, any number of times. Rejects when the
- * record could not be read: callers that are about to sign must then refuse,
- * not assume there is nothing to protect. A failed read is retried on the next
- * call.
- */
-export function ensureSpaceE2eeRecord(): Promise<void> {
-  const account = store.getState().identity.pubkey;
-  if (!account) return Promise.resolve();
-  if (isSpaceE2eeRecordLoaded()) return Promise.resolve();
-  if (loading?.account === account) return loading.promise;
-
+function startRead(account: string): Read {
   const promise = (async () => {
     // Per-account rows are keyed by the storage layer's active pubkey, which
     // the login flow sets before the store's. Never read under another
@@ -72,19 +93,62 @@ export function ensureSpaceE2eeRecord(): Promise<void> {
     if (getActivePubkey() !== account) throw new Error("account storage is not ready");
     const raw = await getUserState(SPACE_E2EE_STATE_KEY);
     if (getActivePubkey() !== account || store.getState().identity.pubkey !== account) return;
-    store.dispatch(hydrateSpaceE2ee({ account, spaces: sanitizeSpaceE2eeRecord(raw) }));
+    // A read that settles late (storage answered after the wait) still loads
+    // the record, unless another read got there first.
+    if (!isSpaceE2eeRecordLoaded()) {
+      store.dispatch(hydrateSpaceE2ee({ account, spaces: sanitizeSpaceE2eeRecord(raw) }));
+    }
   })();
-  const entry = { account, promise };
-  loading = entry;
-  promise.then(
-    () => {
-      if (loading === entry) loading = null;
-    },
-    () => {
-      if (loading === entry) loading = null;
-    },
-  );
-  return promise;
+  const read: Read = { account, promise, startedAt: Date.now() };
+  const clear = () => {
+    if (loading === read) loading = null;
+  };
+  promise.then(clear, clear);
+  return read;
+}
+
+/**
+ * Load the logged-in account's record into the store. Safe to call from
+ * anywhere, any number of times; at most one read in flight per account.
+ *
+ * Settles within RECORD_READ_TIMEOUT_MS. Rejects when the record could not be
+ * read (SpaceE2eeRecordUnavailableError when storage did not answer in time):
+ * callers that are about to sign must then refuse, not assume there is
+ * nothing to protect. The next call tries again; a read that answers late
+ * still loads the record, so posting recovers on its own.
+ */
+export function ensureSpaceE2eeRecord(): Promise<void> {
+  const account = store.getState().identity.pubkey;
+  if (!account) return Promise.resolve();
+  if (isSpaceE2eeRecordLoaded()) return Promise.resolve();
+
+  const now = Date.now();
+  if (!loading || loading.account !== account || now - loading.startedAt >= readTimeoutMs) {
+    loading = startRead(account);
+  }
+  const read = loading;
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (store.getState().identity.pubkey === account) store.dispatch(spaceE2eeRecordUnavailable(account));
+      reject(new SpaceE2eeRecordUnavailableError());
+    }, Math.max(0, readTimeoutMs - (now - read.startedAt)));
+    read.promise.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        if (err instanceof Error && err.message !== "account storage is not ready") {
+          if (store.getState().identity.pubkey === account) store.dispatch(spaceE2eeRecordUnavailable(account));
+          reject(new SpaceE2eeRecordUnavailableError());
+          return;
+        }
+        reject(err);
+      },
+    );
+  });
 }
 
 /**

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
-import { selectIsEncryptedSpace, selectHasSpaceKey, selectSpaceE2eeLoaded } from "../../store/slices/spaceE2eeSlice";
+import { selectIsEncryptedSpace, selectHasSpaceKey, selectSpaceE2eeLoaded, selectSpaceE2eeRecordUnavailable } from "../../store/slices/spaceE2eeSlice";
+import { RECORD_UNAVAILABLE_MESSAGE } from "../spaces/e2ee/e2eeRecord";
 import { selectFeatureEnabled, FEATURE_E2EE_SPACES } from "../../store/slices/featuresSlice";
 import { ChatMessage } from "./ChatMessage";
 import { ChatReply } from "./ChatReply";
@@ -67,6 +68,9 @@ export function ChatView() {
   // this space is NOT encrypted: the composer waits (it is a moment, from
   // IndexedDB, and never waits on the keychain).
   const e2eeRecordLoaded = useAppSelector(selectSpaceE2eeLoaded);
+  // …and if local storage hasn't answered in time, say so instead of leaving
+  // a silently disabled input.
+  const e2eeRecordUnavailable = useAppSelector(selectSpaceE2eeRecordUnavailable);
   const sealedNotice = !encrypted
     ? null
     : !e2eeEnabled
@@ -412,13 +416,13 @@ export function ChatView() {
         </div>
       ) : (
         <>
-        {sealedNotice && (
+        {(sealedNotice || e2eeRecordUnavailable) && (
           <div
             role="status"
             className="flex items-center justify-center gap-2 border-t border-border px-4 py-2 text-muted"
           >
             <Lock size={14} />
-            <span className="text-xs">{sealedNotice}</span>
+            <span className="text-xs">{sealedNotice ?? RECORD_UNAVAILABLE_MESSAGE}</span>
           </div>
         )}
         <ChatInput

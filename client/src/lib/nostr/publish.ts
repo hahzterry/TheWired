@@ -11,7 +11,12 @@ import { publishOutbox } from "./publishOutbox";
 import { devLocalTargets, resolvePublishTargets } from "./gatedTargets";
 import { store } from "@/store";
 import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
-import { ensureSpaceE2eeRecord, isSpaceE2eeRecordLoaded } from "@/features/spaces/e2ee/e2eeRecord";
+import {
+  RECORD_UNAVAILABLE_MESSAGE,
+  SpaceE2eeRecordUnavailableError,
+  ensureSpaceE2eeRecord,
+  isSpaceE2eeRecordLoaded,
+} from "@/features/spaces/e2ee/e2eeRecord";
 
 /**
  * Where an event goes when the caller named no relays. Public events use the
@@ -53,9 +58,14 @@ async function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): Promise<v
   if (SPACE_E2EE_PLAINTEXT_KINDS.includes(unsigned.kind)) return;
   if (!unsigned.tags.some((t) => t[0] === "h" && t[1])) return;
   if (!isSpaceE2eeRecordLoaded()) {
-    await ensureSpaceE2eeRecord().catch(() => {});
+    // Bounded: a storage read that never answers (an IndexedDB open blocked by
+    // another tab) is a prompt, explained refusal, never a hang.
+    let unavailable = false;
+    await ensureSpaceE2eeRecord().catch((err: unknown) => {
+      unavailable = err instanceof SpaceE2eeRecordUnavailableError;
+    });
     if (!isSpaceE2eeRecordLoaded()) {
-      throw new Error("Still loading this account's spaces. Try again in a moment.");
+      throw new Error(unavailable ? RECORD_UNAVAILABLE_MESSAGE : "Still loading this account's spaces. Try again in a moment.");
     }
   }
   const encrypted = store.getState().spaceE2ee.spaces;

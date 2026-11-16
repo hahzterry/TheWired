@@ -348,6 +348,10 @@ stores the message under.
 event id and the `h` tag; moderator deletion is the existing kind 9005. The relay really
 removes the ciphertext row, which an encrypted tombstone could not do.
 
+**Until it knows which spaces are encrypted, a client MUST NOT publish plaintext content kinds
+into any space.** This client loads that record before anything else and refuses, with an
+explanation, while it can't (§16); the relay-enforced flag (D8) would make this unnecessary.
+
 **In an encrypted space a client MUST NOT publish plaintext content kinds** (9, 7, 1, 1068, …)
 with that space's `h` tag, and MUST ignore plaintext kind 9 it receives there. Allowed in the
 clear: 5, 9000–9022, 4290, 4291, 1984, 30078 layout overlays.
@@ -568,10 +572,18 @@ being off by default.
   there, which blocks plaintext chat on those devices; there is no "unmark" in the UI.
 - **The first key is trust on first use** (D12): a lying relay or backend can hand a device
   its first key. The pinned root is shown so a wrong one can be noticed.
-- **The composer waits for the account's record** of encrypted spaces (one IndexedDB read
-  at startup and after an account switch), and nothing space-scoped is signed in the clear
-  until it has loaded. If it can't be read at all, posting into any space is refused with
-  "Still loading".
+- **Posting to any space is refused while the account's record of encrypted spaces cannot be
+  read — by design** (owner decision). The record is one IndexedDB read at startup and after
+  an account switch; until it has loaded, the composer is disabled and nothing space-scoped
+  is signed in the clear, because nobody can say the space is *not* encrypted. Each attempt
+  waits at most a few seconds: if local storage doesn't answer (an IndexedDB open blocked by
+  another tab of the app, for example), the post is refused at once with "local storage isn't
+  answering… close other tabs or windows of The Wired, or reload", and the composer shows the
+  same explanation. The next attempt (and a background retry) reads again, and a read that
+  answers late still loads the record, so posting recovers by itself. The kinds that stay in
+  the clear (deletions, NIP-29 management, join and leave, reports, layout, voice presence)
+  are not held back. This client-side strictness can go once the relay-enforced flag (D8)
+  refuses plaintext in encrypted spaces.
 
 - **History is one REQ of 500 sealed events per space**, newest first, with no paging.
 - **Reactions**: the reaction button still shows in an encrypted space, and reacting is

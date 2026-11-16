@@ -30,12 +30,15 @@ interface SpaceE2eeState {
    * mistaken for the next one's (see `selectSpaceE2eeLoaded`).
    */
   account: string | null;
+  /** The account whose record could not be read in time (local storage not
+   *  answering). Cleared as soon as the record loads. */
+  unavailable: string | null;
   spaces: Record<string, EncryptedSpaceState>;
   /** spaceId -> epoch ids whose key is in this session's memory. */
   ready: Record<string, string[]>;
 }
 
-const initialState: SpaceE2eeState = { account: null, spaces: {}, ready: {} };
+const initialState: SpaceE2eeState = { account: null, unavailable: null, spaces: {}, ready: {} };
 
 const own = (obj: object, key: string): boolean => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -58,8 +61,13 @@ export const spaceE2eeSlice = createSlice({
       action: PayloadAction<{ account: string; spaces: Record<string, EncryptedSpaceState> }>,
     ) {
       state.account = action.payload.account;
+      state.unavailable = null;
       state.spaces = action.payload.spaces;
       state.ready = {};
+    },
+    /** The record could not be read in time for this account. */
+    spaceE2eeRecordUnavailable(state, action: PayloadAction<string>) {
+      if (state.account !== action.payload) state.unavailable = action.payload;
     },
     /** Logout or account switch: nothing of the previous account stays. */
     resetSpaceE2ee() {
@@ -100,6 +108,7 @@ export const spaceE2eeSlice = createSlice({
 export const {
   hydrateSpaceE2ee,
   resetSpaceE2ee,
+  spaceE2eeRecordUnavailable,
   markSpaceEncrypted,
   addEpochHolders,
   epochAccepted,
@@ -130,6 +139,12 @@ export function isSpaceE2eeLoadedFor(state: Pick<RootState, "spaceE2ee" | "ident
 }
 
 export const selectSpaceE2eeLoaded = (state: RootState): boolean => isSpaceE2eeLoadedFor(state);
+
+/** The record is not loaded because local storage did not answer in time. */
+export const selectSpaceE2eeRecordUnavailable = (state: RootState): boolean =>
+  !isSpaceE2eeLoadedFor(state) &&
+  state.spaceE2ee.unavailable !== null &&
+  state.spaceE2ee.unavailable === state.identity.pubkey;
 
 /** The pinned key root of an encrypted space, or null. */
 export const selectSpaceKeyRoot =
