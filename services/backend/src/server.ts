@@ -39,6 +39,7 @@ import { accountRoutes } from "./routes/account.js";
 import { mediaGrantRoutes } from "./routes/mediaGrant.js";
 import { authContext } from "./middleware/authContext.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { registerHttpMetrics } from "./middleware/httpMetrics.js";
 
 export async function createServer() {
   const server = Fastify({
@@ -93,6 +94,9 @@ export async function createServer() {
 
   // Global hooks
   server.addHook("onRequest", authContext);
+  // Request counters and timings. The metrics themselves are served by the
+  // internal listener (metricsServer.ts), never by this server.
+  registerHttpMetrics(server);
   server.setErrorHandler(errorHandler);
 
   // Register routes

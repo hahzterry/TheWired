@@ -2,6 +2,11 @@ import { db } from "../db/connection.js";
 import { spaceActivityDaily, memberEngagement } from "../db/schema/analytics.js";
 import { sql } from "drizzle-orm";
 import { startLockedInterval } from "../lib/workerLock.js";
+import { recordJobFailure } from "../lib/metrics/index.js";
+
+/** Lock + metric names of the two passes. */
+const DAILY_JOB = "analyticsDailyAggregation";
+const ROLLING_JOB = "analyticsRollingStats";
 
 interface ActivityRow {
   h_tag: string;
@@ -201,6 +206,7 @@ export async function runDailyAggregation(): Promise<void> {
     );
   } catch (err) {
     console.error("[analytics] Aggregation error:", (err as Error).message);
+    recordJobFailure(DAILY_JOB);
   }
 }
 
@@ -238,6 +244,7 @@ export async function refreshRollingStats(): Promise<void> {
     );
   } catch (err) {
     console.error("[analytics] Rolling stats error:", (err as Error).message);
+    recordJobFailure(ROLLING_JOB);
   }
 }
 
@@ -245,7 +252,7 @@ export async function refreshRollingStats(): Promise<void> {
 export function startAnalyticsAggregator(): { stop: () => void } {
   // Daily history rollup every 24 hours (first run 60s after boot)
   const daily = startLockedInterval({
-    name: "analyticsDailyAggregation",
+    name: DAILY_JOB,
     intervalMs: 24 * 60 * 60 * 1000,
     initialDelayMs: 60_000,
     // One hour is plenty for the pass and short enough that a crashed replica
@@ -255,7 +262,7 @@ export function startAnalyticsAggregator(): { stop: () => void } {
   });
   // Rolling 24h stats every hour (first run 90s after boot)
   const hourly = startLockedInterval({
-    name: "analyticsRollingStats",
+    name: ROLLING_JOB,
     intervalMs: 60 * 60 * 1000,
     initialDelayMs: 90_000,
     task: refreshRollingStats,

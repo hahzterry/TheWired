@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/thewired/gateway/internal/auth"
 	"github.com/thewired/gateway/internal/config"
 	"github.com/thewired/gateway/internal/gatewayauth"
+	"github.com/thewired/gateway/internal/metrics"
 	"github.com/thewired/gateway/internal/proxy"
 	"github.com/thewired/gateway/internal/ratelimit"
 )
@@ -21,6 +24,10 @@ func main() {
 	cfg := config.Load()
 
 	if err := proxy.ValidateBackendURL(cfg.BackendURL); err != nil {
+		log.Fatalf("%v", err)
+	}
+	metricsAddr, err := metrics.ParseAddr(cfg.MetricsAddr)
+	if err != nil {
 		log.Fatalf("%v", err)
 	}
 
@@ -72,6 +79,23 @@ func main() {
 		MaxHeaderBytes:    64 << 10,
 	}
 
+	// Internal metrics listener: its own socket, never routed by the web
+	// proxy. Refuse to share the public port — that would publish it.
+	var metricsSrv *http.Server
+	if metricsAddr != "" {
+		if sameListener(metricsAddr, cfg.Port) {
+			log.Fatalf("METRICS_ADDR %q is the public port; metrics need their own", metricsAddr)
+		}
+		metricsSrv = metrics.NewServer(metricsAddr, metrics.Default)
+		go func() {
+			// Not fatal: losing metrics must not take the gateway down. The
+			// scraper's own `up == 0` is what reports this.
+			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("Metrics listener failed on %s: %v", metricsAddr, err)
+			}
+		}()
+	}
+
 	// Start server in a goroutine
 	go func() {
 		log.Printf("Gateway listening on %s", addr)
@@ -90,9 +114,19 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	if metricsSrv != nil {
+		metricsSrv.Close()
+	}
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
 	log.Println("Gateway stopped")
+}
+
+// sameListener reports whether a metrics address ("host:port") uses the
+// public listener's port.
+func sameListener(metricsAddr string, publicPort int) bool {
+	_, port, err := net.SplitHostPort(metricsAddr)
+	return err == nil && port == strconv.Itoa(publicPort)
 }

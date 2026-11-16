@@ -12,6 +12,11 @@ import { runWithWorkerLock, startLockedInterval } from "../lib/workerLock.js";
 import { getRedis } from "../lib/redis.js";
 import { pushService } from "../services/pushService.js";
 import {
+  notificationPushesSent,
+  notificationRows,
+  notificationSendFailures,
+} from "../lib/metrics/index.js";
+import {
   createExpoSender,
   DEVICE_NOT_REGISTERED,
   type ExpoChannel,
@@ -318,14 +323,17 @@ export async function dispatchOnce(deps: DispatchDeps): Promise<DispatchStats> {
           if (wrapTtlSec !== undefined) await webPush.sendNotification(target, payload, { TTL: wrapTtlSec });
           else await webPush.sendNotification(target, payload);
           tookIt.push(sub.endpoint);
+          notificationPushesSent.inc({ channel: "webpush" });
         } catch (err: any) {
           if (err?.statusCode === 410 || err?.statusCode === 404) {
+            notificationSendFailures.inc({ channel: "webpush", reason: "subscription_gone" });
             await db
               .delete(pushSubscriptions)
               .where(and(eq(pushSubscriptions.pubkey, sub.pubkey), eq(pushSubscriptions.endpoint, sub.endpoint)));
           } else {
             allSent = false;
             deviceError = true;
+            notificationSendFailures.inc({ channel: "webpush", reason: "send_error" });
             const message = err?.statusCode ? `HTTP ${err.statusCode}` : (err as Error)?.message;
             await pushService.recordDeliveryError(pubkey, "webpush_failed", message).catch(() => {});
           }
@@ -382,11 +390,13 @@ export async function dispatchOnce(deps: DispatchDeps): Promise<DispatchStats> {
           const token = expoDevices[i].token;
           if (ticket.status === "ok") {
             tookIt.push(token);
+            notificationPushesSent.inc({ channel: "expo" });
             if (ticket.id) {
               const entry: TicketEntry = { id: ticket.id, token, pubkey, at: now() };
               await redis.lpush(TICKETS_KEY, JSON.stringify(entry));
             }
           } else if (ticket.details?.error === DEVICE_NOT_REGISTERED) {
+            notificationSendFailures.inc({ channel: "expo", reason: "device_not_registered" });
             await pushService.deleteToken(token);
             await pushService.recordDeliveryError(pubkey, DEVICE_NOT_REGISTERED, ticket.message);
             deviceError = true;
@@ -396,6 +406,7 @@ export async function dispatchOnce(deps: DispatchDeps): Promise<DispatchStats> {
             // InvalidCredentials ticket (no APNs key on the Expo project) is
             // otherwise visible only here, in the server log.
             console.error(`[notifications] expo ticket error for ${pubkey}: ${ticket.message}`);
+            notificationSendFailures.inc({ channel: "expo", reason: "ticket_error" });
             await pushService.recordDeliveryError(pubkey, ticket.details?.error ?? "ticket_error", ticket.message);
             deviceError = true;
             allSent = false;
@@ -403,6 +414,7 @@ export async function dispatchOnce(deps: DispatchDeps): Promise<DispatchStats> {
         }
       } catch (err) {
         console.error("[notifications] expo send failed:", (err as Error).message);
+        notificationSendFailures.inc({ channel: "expo", reason: "request_failed" });
         await pushService.recordDeliveryError(pubkey, "send_failed", (err as Error).message).catch(() => {});
         deviceError = true;
         allSent = false;
@@ -436,9 +448,13 @@ export async function dispatchOnce(deps: DispatchDeps): Promise<DispatchStats> {
         .update(notificationQueue)
         .set({ attempts: sql`${notificationQueue.attempts} + 1` })
         .where(inArray(notificationQueue.id, ids));
+      notificationRows.inc({ outcome: "retried" }, ids.length);
     }
   }
 
+  notificationRows.inc({ outcome: "sent" }, stats.sent);
+  notificationRows.inc({ outcome: "expired" }, stats.expired);
+  notificationRows.inc({ outcome: "deferred" }, stats.deferred);
   return stats;
 }
 
@@ -476,6 +492,7 @@ export async function pollReceiptsOnce(deps: DispatchDeps): Promise<number> {
     receipts = await deps.sender.receipts(ready.map((t) => t.id));
   } catch (err) {
     console.error("[notifications] expo receipts failed:", (err as Error).message);
+    notificationSendFailures.inc({ channel: "expo", reason: "receipts_request_failed" });
     // Put them back — receipts stay available for a day.
     await redis.lpush(TICKETS_KEY, ...ready.map((t) => JSON.stringify(t)));
     return 0;
@@ -499,6 +516,11 @@ export async function pollReceiptsOnce(deps: DispatchDeps): Promise<number> {
     const owner = t.pubkey ?? (await pushService.ownerOfToken(t.token));
     if (r.status === "error") {
       const error = r.details?.error ?? "receipt_error";
+      // The provider's own error string stays out of the label (open set).
+      notificationSendFailures.inc({
+        channel: "expo",
+        reason: error === DEVICE_NOT_REGISTERED ? "device_not_registered" : "receipt_error",
+      });
       if (error === DEVICE_NOT_REGISTERED) {
         await pushService.deleteToken(t.token);
         pruned++;
@@ -590,7 +612,12 @@ export function startNotificationDispatcher(
   const runKick = async () => {
     if (stopped) return;
     try {
-      const ran = await runWithWorkerLock(DISPATCHER_LOCK, DISPATCH_INTERVAL_MS, () => exclusive(pass));
+      // A kick is an extra attempt on top of the tick and routinely finds the
+      // tick (or another replica) holding the lock; that is not a skipped
+      // run of the dispatcher, so it stays out of the lock-skip counter.
+      const ran = await runWithWorkerLock(DISPATCHER_LOCK, DISPATCH_INTERVAL_MS, () => exclusive(pass), {
+        countLockSkip: false,
+      });
       if (ran) lockMisses = 0;
       // Another pass holds the lock (this replica's tick, or another
       // replica): it may have read the queue before the kicking row landed.

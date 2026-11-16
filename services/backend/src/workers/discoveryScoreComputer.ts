@@ -1,5 +1,6 @@
 import { discoveryService } from "../services/discoveryService.js";
 import { startLockedInterval } from "../lib/workerLock.js";
+import { recordJobFailure } from "../lib/metrics/index.js";
 
 const INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -18,6 +19,7 @@ export function startDiscoveryScoreComputer(): { stop: () => void } {
       await discoveryService.autoDelistInactive();
     } catch (err) {
       console.error("[discoveryScoreComputer] Error:", err);
+      recordJobFailure("discoveryScoreComputer");
     }
   }
 

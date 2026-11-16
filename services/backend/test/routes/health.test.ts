@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { buildTestServer, closeTestServer } from "../helpers/testServer.js";
 import { getMeilisearchClient } from "../../src/lib/meilisearch.js";
 import { getRedis } from "../../src/lib/redis.js";
+import { resetDependencyState } from "../../src/lib/dependencyHealth.js";
 
 /**
  * `GET /health` is the container healthcheck. It must report a dead
@@ -28,6 +29,8 @@ afterEach(() => {
   health.mockResolvedValue({ status: "available" });
   vi.restoreAllMocks();
   vi.useRealTimers();
+  // A probe left hanging by one test must not be the one the next test waits on.
+  resetDependencyState();
 });
 
 function getHealth() {

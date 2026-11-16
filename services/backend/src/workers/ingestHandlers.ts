@@ -33,6 +33,7 @@ import { classifyOrigin } from "../services/reportFootprint.js";
 import { suspensionService } from "../services/suspensionService.js";
 import { accountDeletionService } from "../services/accountDeletionService.js";
 import { leaveSpace } from "../services/membershipService.js";
+import { ingestEventsRejected, recordIngestedEvent, recordIngestError } from "../lib/metrics/index.js";
 
 /**
  * Per-event ingestion context (Decentralized Spaces, M3). The multi-relay
@@ -197,9 +198,25 @@ function decideAction(event: NostrEvent, ctx: IngestContext): IngestAction {
  * computed by {@link planIngest}.
  */
 export async function processEvent(event: NostrEvent, ctx: IngestContext): Promise<void> {
-  if (!verifyEvent(event)) return;
-  if (await authorBlocked(event)) return;
+  if (!verifyEvent(event)) {
+    ingestEventsRejected.inc({ reason: "invalid_signature" });
+    return;
+  }
+  if (await authorBlocked(event)) {
+    ingestEventsRejected.inc({ reason: "author_blocked" });
+    return;
+  }
+  recordIngestedEvent(event.kind, event.created_at, ctx.isOwnRelay);
 
+  try {
+    await dispatchEvent(event, ctx);
+  } catch (err) {
+    recordIngestError(event.kind, "process");
+    throw err;
+  }
+}
+
+async function dispatchEvent(event: NostrEvent, ctx: IngestContext): Promise<void> {
   const { action, indexSearch } = planIngest(event, ctx);
 
   switch (action) {
@@ -423,6 +440,7 @@ export async function emitNotifications(event: NostrEvent, ctx: IngestContext): 
     }
   } catch (err) {
     console.error("[notifications] emit failed:", (err as Error).message);
+    recordIngestError(event.kind, "notifications");
   }
 }
 
@@ -720,6 +738,7 @@ async function syncMusicSearchDocs(event: NostrEvent, kind: 31683 | 33123) {
       await dropMusicDocs(index, others);
     } catch (err) {
       console.error(`[ingester] Failed to remove superseded ${index} docs:`, (err as Error).message);
+      recordIngestError(event.kind, "search_index");
     }
 
     if (!isIndexableMusic(event.tags)) return;
@@ -734,6 +753,7 @@ async function syncMusicSearchDocs(event: NostrEvent, kind: 31683 | 33123) {
       await write.waitTask({ timeout: 10_000 });
     } catch (err) {
       console.error(`[ingester] ${index} write still pending:`, (err as Error).message);
+      recordIngestError(event.kind, "search_index");
     }
 
     // Only LISTED versions feed the genre/tag chip counts, so the counts match
@@ -824,6 +844,7 @@ async function indexMusicRelease(event: NostrEvent, kind: 31683 | 33123) {
   } catch (err) {
     const noun = kind === 31683 ? "track" : "album";
     console.error(`[ingester] Failed to capture ${noun} revision:`, (err as Error).message);
+    recordIngestError(event.kind, "revision");
   }
 }
 
@@ -832,6 +853,7 @@ async function indexProposal(event: NostrEvent) {
     await proposalService.indexProposal(event);
   } catch (err) {
     console.error("[ingester] Failed to index proposal:", (err as Error).message);
+    recordIngestError(event.kind, "proposal");
   }
 }
 
@@ -863,6 +885,7 @@ async function processDeletion(event: NostrEvent) {
         );
       } catch (err) {
         console.error(`[ingester] Failed to delete ${index} from relay DB:`, err);
+        recordIngestError(event.kind, "deletion");
       }
       try {
         await inAddressOrder(addr, async () => {
@@ -874,6 +897,7 @@ async function processDeletion(event: NostrEvent) {
         });
       } catch (err) {
         console.error(`[ingester] Failed to delete ${index} from Meilisearch:`, err);
+        recordIngestError(event.kind, "search_index");
       }
     }
 

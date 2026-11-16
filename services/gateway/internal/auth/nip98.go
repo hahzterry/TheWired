@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+
+	"github.com/thewired/gateway/internal/metrics"
 )
 
 // NostrEvent represents a NIP-98 auth event (kind 27235)
@@ -23,39 +25,54 @@ type NostrEvent struct {
 	Sig       string     `json:"sig"`
 }
 
+// VerifyError is a failed NIP-98 check. Reason is one of a closed set of
+// names (the metrics.Auth* constants) for counting; Error() keeps the
+// detailed message for the log.
+type VerifyError struct {
+	Reason string
+	err    error
+}
+
+func (e *VerifyError) Error() string { return e.err.Error() }
+func (e *VerifyError) Unwrap() error { return e.err }
+
+func verifyErr(reason string, err error) error {
+	return &VerifyError{Reason: reason, err: err}
+}
+
 // VerifyNIP98 verifies a NIP-98 auth event
 func VerifyNIP98(event *NostrEvent, expectedURL, expectedMethod string) error {
 	// Check kind
 	if event.Kind != 27235 {
-		return fmt.Errorf("invalid kind: expected 27235, got %d", event.Kind)
+		return verifyErr(metrics.AuthWrongKind, fmt.Errorf("invalid kind: expected 27235, got %d", event.Kind))
 	}
 
 	// Check timestamp (within 60 seconds)
 	now := time.Now().Unix()
 	if math.Abs(float64(now-event.CreatedAt)) > 60 {
-		return fmt.Errorf("event too old or too new: created_at=%d, now=%d", event.CreatedAt, now)
+		return verifyErr(metrics.AuthStaleTimestamp, fmt.Errorf("event too old or too new: created_at=%d, now=%d", event.CreatedAt, now))
 	}
 
 	// Check u tag (URL)
 	urlTag := getTagValue(event.Tags, "u")
 	if urlTag != expectedURL {
-		return fmt.Errorf("URL mismatch: expected %s, got %s", expectedURL, urlTag)
+		return verifyErr(metrics.AuthURLMismatch, fmt.Errorf("URL mismatch: expected %s, got %s", expectedURL, urlTag))
 	}
 
 	// Check method tag
 	methodTag := getTagValue(event.Tags, "method")
 	if methodTag != expectedMethod {
-		return fmt.Errorf("method mismatch: expected %s, got %s", expectedMethod, methodTag)
+		return verifyErr(metrics.AuthMethodMismatch, fmt.Errorf("method mismatch: expected %s, got %s", expectedMethod, methodTag))
 	}
 
 	// Verify event ID
 	if err := verifyEventID(event); err != nil {
-		return fmt.Errorf("invalid event ID: %w", err)
+		return verifyErr(metrics.AuthInvalidID, fmt.Errorf("invalid event ID: %w", err))
 	}
 
 	// Verify schnorr signature
 	if err := verifySignature(event); err != nil {
-		return fmt.Errorf("invalid signature: %w", err)
+		return verifyErr(metrics.AuthInvalidSignature, fmt.Errorf("invalid signature: %w", err))
 	}
 
 	return nil
