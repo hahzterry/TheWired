@@ -5,6 +5,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { useProfile } from "../profile/useProfile";
 import { useZap } from "../wallet/WalletProvider";
 import { spaceVisibility } from "./spaceVisibility";
+import { selectIsEncryptedSpace, selectSpaceKeyRoot } from "@/store/slices/spaceE2eeSlice";
 
 export function SpaceInfoPanel() {
   const activeSpaceId = useAppSelector((s) => s.spaces.activeSpaceId);
@@ -105,6 +106,8 @@ export function SpaceInfoPanel() {
         </div>
       )}
 
+      <SpaceKeyRoot spaceId={space.id} />
+
       {/* Space ID (copyable) */}
       <SpaceIdCopy spaceId={space.id} />
     </div>
@@ -159,3 +162,38 @@ function SpaceIdCopy({ spaceId }: { spaceId: string }) {
     </button>
   );
 }
+
+/**
+ * Who this device trusts to hand out the space's keys (docs/E2EE_SPACES.md
+ * §5.4). The first key a device sees decides it, so it is shown here, with
+ * the full key to compare out of band: a wrong one means a relay, a server or
+ * an admin handed this device a key the space's members don't share.
+ */
+function SpaceKeyRoot({ spaceId }: { spaceId: string }) {
+  const encrypted = useAppSelector(selectIsEncryptedSpace(spaceId));
+  const root = useAppSelector(selectSpaceKeyRoot(spaceId));
+  const { profile } = useProfile(root ?? "");
+  if (!encrypted) return null;
+  const name = root ? profile?.display_name || profile?.name || `${root.slice(0, 12)}...` : null;
+  return (
+    <div>
+      <h4 className="label-caps mb-1.5">
+        <Lock size={10} className="inline mr-1" />
+        End-to-end encrypted
+      </h4>
+      {root ? (
+        <>
+          <p className="text-xs text-soft">
+            Keys are handed out by <span className="text-body">{name}</span>.
+          </p>
+          <p className="mt-1 break-all font-mono text-[10px] text-muted" title="Compare with what other members see">
+            {root}
+          </p>
+        </>
+      ) : (
+        <p className="text-xs text-soft">This device hasn&apos;t received a key for this space yet.</p>
+      )}
+    </div>
+  );
+}
+

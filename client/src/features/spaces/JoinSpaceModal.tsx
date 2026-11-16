@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { INVITE_MISMATCH_MESSAGE, parseInviteLink, verifyInviteSpace } from "./inviteLink";
 import { useNavigate } from "react-router-dom";
 import { X, ArrowLeft, Users, AlertCircle } from "lucide-react";
 import { Modal, ModalTitle } from "../../components/ui/Modal";
@@ -34,24 +35,6 @@ const ERROR_MESSAGES: Record<string, string> = {
   ALREADY_MEMBER: "You're already a member of this space.",
 };
 
-/** Parse an invite code from raw input (code, URL, or deep link) */
-function parseInviteCode(input: string): string {
-  const trimmed = input.trim();
-
-  // Try URL patterns: .../invite/CODE or ?invite=CODE
-  try {
-    const url = new URL(trimmed);
-    const pathMatch = url.pathname.match(/\/invite\/([A-Za-z0-9_-]+)/);
-    if (pathMatch) return pathMatch[1];
-    const param = url.searchParams.get("invite");
-    if (param) return param;
-  } catch {
-    // Not a URL — treat as raw code
-  }
-
-  // Strip any leading/trailing whitespace and return
-  return trimmed;
-}
 
 function JoinSpaceModalInner({ open, onClose, initialCode, onImportInstead }: JoinSpaceModalProps) {
   const { joinSpace } = useSpace();
@@ -62,6 +45,8 @@ function JoinSpaceModalInner({ open, onClose, initialCode, onImportInstead }: Jo
   const [step, setStep] = useState<Step>("input");
   const [codeInput, setCodeInput] = useState(initialCode ?? "");
   const [invite, setInvite] = useState<InviteWithPreview | null>(null);
+  /** The space the invite link names, if it names one (docs/E2EE_SPACES.md §5.4). */
+  const [linkedSpaceId, setLinkedSpaceId] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -108,14 +93,23 @@ function JoinSpaceModalInner({ open, onClose, initialCode, onImportInstead }: Jo
       return;
     }
 
-    const code = parseInviteCode(codeInput);
+    const parsed = parseInviteLink(codeInput);
+    const code = parsed.code;
     if (!code) return;
+    setLinkedSpaceId(parsed.spaceId);
 
     setError(null);
     setLoading(true);
 
     try {
       const res = await getInviteWithPreview(code);
+      // The server resolved the code; the link (made by the inviter's client)
+      // says which space it should be. Never show a join for anything else.
+      const verdict = verifyInviteSpace(parsed.spaceId, res.data.spaceId);
+      if (!verdict.ok) {
+        setError(verdict.message);
+        return;
+      }
       setInvite(res.data);
       setStep("preview");
     } catch (err) {
@@ -137,6 +131,15 @@ function JoinSpaceModalInner({ open, onClose, initialCode, onImportInstead }: Jo
 
     try {
       const res = await redeemInvite(invite.code);
+      // Check again what the redeem answered: the space joined must still be
+      // the one the link names.
+      const resolved = res.data.spaceId ?? invite.spaceId;
+      const verdict = verifyInviteSpace(linkedSpaceId, resolved);
+      if (!verdict.ok || resolved !== invite.spaceId) {
+        setStep("preview");
+        setError(verdict.ok ? INVITE_MISMATCH_MESSAGE : verdict.message);
+        return;
+      }
 
       // Create local space object — use the mode from backend so read-only
       // spaces are correctly reflected for joiners

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { X, Search, Plus, Rss } from "lucide-react";
+import { X, Search, Plus, Rss, Lock } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
@@ -14,15 +14,20 @@ import { useUserSearch } from "../search/useUserSearch";
 import { useProfile } from "../profile/useProfile";
 import {
   FEATURE_DECENTRALIZED_SPACES,
+  FEATURE_E2EE_SPACES,
   selectFeatureEnabled,
 } from "../../store/slices/featuresSlice";
 import { RelayPicker, type ExtraPreset } from "./RelayPicker";
 import type { RelayInfo } from "../../lib/nostr/relayInfo";
 import { relayUrlToHost } from "./spaceType";
-import { signAndPublish } from "../../lib/nostr/publish";
+import { signAndPublish, signWithAccount } from "../../lib/nostr/publish";
 import { relayManager } from "../../lib/nostr/relayManager";
 import { probeRelayNip11 } from "../../lib/nostr/relayInfo";
 import { buildCreateGroup, buildEditGroupMetadata } from "../../lib/nostr/eventBuilder";
+import { isEncryptedSpaceId } from "./e2ee/spaceIdFormat";
+
+/** A creation step that failed in a way the user must be told about. */
+class EncryptedCreateError extends Error {}
 import {
   embeddedRelaySupported,
   getEmbeddedRelayStatus,
@@ -118,6 +123,9 @@ function CreateSpaceModalInner({
   const decentralizedEnabled = useAppSelector(
     selectFeatureEnabled(FEATURE_DECENTRALIZED_SPACES),
   );
+  const e2eeEnabled = useAppSelector(selectFeatureEnabled(FEATURE_E2EE_SPACES));
+  const [encrypted, setEncrypted] = useState(false);
+  const [fullHistory, setFullHistory] = useState(false);
   const [name, setName] = useState("");
   const [about, setAbout] = useState("");
   const [picture, setPicture] = useState("");
@@ -224,13 +232,56 @@ function CreateSpaceModalInner({
   // and the backend treats a repeat create by the same creator as idempotent,
   // so a slow success can't turn into two spaces.
   const pendingIdRef = useRef<string | null>(null);
+  /** The pending space id a first key was made for (e2ee). It is undone if the
+   *  space never gets created: a failed or cancelled creation, or encryption
+   *  unticked before the retry. */
+  const preparedIdRef = useRef<string | null>(null);
+  /** The salt the pending encrypted space's id commits with. */
+  const rootSaltRef = useRef<string | null>(null);
+
+  // The keyring (and the codec under it) loads only when someone actually
+  // makes an encrypted space: it stays off the startup path.
+  const loadKeyring = () => import("./e2ee/spaceKeyring");
+
+  async function abandonPreparedKey(): Promise<void> {
+    const id = preparedIdRef.current;
+    if (!id) return;
+    preparedIdRef.current = null;
+    await (await loadKeyring()).abandonFirstEpoch(id).catch(() => {});
+  }
+
+  function handleClose(): void {
+    void abandonPreparedKey();
+    onClose();
+  }
 
   async function handleCreate() {
     if (!name.trim() || !pubkey || creating || pictureUploading) return;
     setCreating(true);
     setCreateError(null);
 
-    const spaceId = pendingIdRef.current ?? (pendingIdRef.current = generateId());
+    // An encrypted space is chat-only for now: the other channel types have
+    // no sealed form yet, so creating them would only produce dead channels.
+    const makeEncrypted = e2eeEnabled && encrypted;
+
+    // An encrypted space's id commits to its key root (this account), so a
+    // plain id can't become one and a committed id must never be used for a
+    // plain space (docs/E2EE_SPACES.md §5.4). A retry keeps its id, and with
+    // it the key prepared for it; switching encryption on or off starts over.
+    const pending = pendingIdRef.current;
+    let spaceId: string;
+    if (makeEncrypted && (!pending || !isEncryptedSpaceId(pending) || !rootSaltRef.current)) {
+      await abandonPreparedKey();
+      const fresh = (await loadKeyring()).newEncryptedSpaceId(pubkey);
+      spaceId = pendingIdRef.current = fresh.id;
+      rootSaltRef.current = fresh.rootSalt;
+    } else if (!makeEncrypted && (!pending || isEncryptedSpaceId(pending))) {
+      await abandonPreparedKey();
+      rootSaltRef.current = null;
+      spaceId = pendingIdRef.current = generateId();
+    } else {
+      spaceId = pending!;
+    }
 
     // Resolve the space mode from the (toggle-gated) UI choices.
     const decentralized = decentralizedEnabled && spaceKind === "decentralized";
@@ -248,11 +299,11 @@ function CreateSpaceModalInner({
       about: about.trim() || undefined,
       picture: picture.trim() || undefined,
       // Native NIP-29 groups are chat-centric; force read-write.
-      mode: isNative ? "read-write" : mode,
+      mode: isNative || makeEncrypted ? "read-write" : mode,
       creatorPubkey: pubkey,
       adminPubkeys: [pubkey],
       memberPubkeys: [pubkey],
-      feedPubkeys: !isNative && mode === "read" ? feedPubkeys : [],
+      feedPubkeys: !isNative && !makeEncrypted && mode === "read" ? feedPubkeys : [],
       hostRelay: resolvedHostRelay,
       isPrivate: isNative ? privateGroup : false,
       // New backend spaces start unlisted (invite-only) until a listing request.
@@ -262,6 +313,22 @@ function CreateSpaceModalInner({
       channelSource: isNative ? "synthesized" : "backend",
       groupRef: { host: relayUrlToHost(resolvedHostRelay), groupId: spaceId },
     };
+
+    // End-to-end encrypted space: make and store the first key before anything
+    // is created, so a keychain failure can't leave a space that was meant to
+    // be encrypted accepting plaintext (docs/E2EE_SPACES.md).
+    if (makeEncrypted) {
+      try {
+        await (await loadKeyring()).prepareFirstEpoch(space, fullHistory ? "full" : "epoch", rootSaltRef.current!);
+        preparedIdRef.current = spaceId;
+      } catch (err) {
+        setCreateError(
+          `Couldn't set up encryption: ${err instanceof Error ? err.message : "unknown error"}. Try again.`,
+        );
+        setCreating(false);
+        return;
+      }
+    }
 
     if (isNative) {
       // Relay-authoritative NIP-29 group: publish kind:9007 (create) + 9002
@@ -281,13 +348,22 @@ function CreateSpaceModalInner({
           const info = await probeRelayNip11(resolvedHostRelay);
           space.relayPubkey = info?.pubkey;
         }
-        await signAndPublish(
-          buildCreateGroup(pubkey, spaceId, space.name, {
-            isPrivate: privateGroup,
-            isClosed: privateGroup,
-          }),
-          [resolvedHostRelay],
-        );
+        const createEvent = buildCreateGroup(pubkey, spaceId, space.name, {
+          isPrivate: privateGroup,
+          isClosed: privateGroup,
+        });
+        if (makeEncrypted) {
+          // The group must exist under exactly this id, or the id commits to
+          // nothing: confirm the relay took it and serves it (a relay that
+          // assigns its own group ids can't host an encrypted space).
+          const check = await import("./e2ee/relayGroupCheck");
+          await check.createGroupConfirmed(await signWithAccount(createEvent), resolvedHostRelay);
+          if (!space.relayPubkey || !(await check.relayServesGroup(resolvedHostRelay, spaceId, space.relayPubkey))) {
+            throw new EncryptedCreateError(check.RELAY_CANNOT_HOST_MESSAGE);
+          }
+        } else {
+          await signAndPublish(createEvent, [resolvedHostRelay]);
+        }
         if (space.about || space.picture) {
           await signAndPublish(
             buildEditGroupMetadata(pubkey, spaceId, {
@@ -299,15 +375,26 @@ function CreateSpaceModalInner({
           );
         }
       } catch (err) {
+        if (makeEncrypted) {
+          // Nothing usable was created: drop the prepared key and say why.
+          await abandonPreparedKey();
+          pendingIdRef.current = null;
+          rootSaltRef.current = null;
+          setCreateError(err instanceof Error ? err.message : "Couldn't create the encrypted space.");
+          setCreating(false);
+          return;
+        }
         console.error("[CreateSpace] NIP-29 group creation failed:", err);
         // Still create locally so the user can retry sending into it.
       }
     } else {
       // Platform / A-lite: bootstrap on the backend FIRST (seeds roles + channels).
-      const channelList = Array.from(selectedChannels).map((type) => ({
-        type,
-        label: `#${type}`,
-      }));
+      const channelList = makeEncrypted
+        ? [{ type: "chat", label: "#chat" }]
+        : Array.from(selectedChannels).map((type) => ({
+            type,
+            label: `#${type}`,
+          }));
 
       try {
         await registerSpace({
@@ -321,7 +408,7 @@ function CreateSpaceModalInner({
         });
 
         // Register feed sources after space is created
-        if (mode === "read" && feedPubkeys.length > 0) {
+        if (!makeEncrypted && mode === "read" && feedPubkeys.length > 0) {
           addFeedSources(spaceId, feedPubkeys).catch((err) => {
             console.error("[CreateSpace] Feed sources registration failed:", err);
           });
@@ -330,7 +417,14 @@ function CreateSpaceModalInner({
         // Without the backend row the space has no roles, channels or
         // membership, so a local-only copy would be a dead space. Keep the
         // form open so the user can retry.
-        if (err instanceof ApiRequestError && err.code === "SPACE_EXISTS") pendingIdRef.current = null;
+        if (err instanceof ApiRequestError && err.code === "SPACE_EXISTS") {
+          // Another space already has this id: start over with a new one (for
+          // an encrypted space, a new salt and so a new committed id).
+          pendingIdRef.current = null;
+          rootSaltRef.current = null;
+        }
+        // Nothing was created: drop the key prepared for it.
+        await abandonPreparedKey();
         setCreateError(
           err instanceof ApiRequestError && err.code === "INVALID_HOST_RELAY"
             ? "The server doesn't accept that host relay."
@@ -342,8 +436,15 @@ function CreateSpaceModalInner({
     }
 
     pendingIdRef.current = null;
+    preparedIdRef.current = null;
+    rootSaltRef.current = null;
     // Now navigate to the space
     onCreate(space);
+    if (makeEncrypted) {
+      void loadKeyring().then((keyring) => keyring.publishFirstEpoch(space)).catch((err) => {
+        console.error("[CreateSpace] publishing the space key failed:", err instanceof Error ? err.message : "unknown error");
+      });
+    }
 
     setName("");
     setAbout("");
@@ -354,6 +455,8 @@ function CreateSpaceModalInner({
     setHostRelay(BOOTSTRAP_RELAYS[0]);
     setRelayInfo(null);
     setPrivateGroup(false);
+    setEncrypted(false);
+    setFullHistory(false);
     setFeedPubkeys([]);
     setSelectedChannels(new Set(["chat", "notes", "media", "articles", "music"]));
     setQuery("");
@@ -366,6 +469,9 @@ function CreateSpaceModalInner({
   // (those are Wired backend concepts that don't apply).
   const nativeSelected =
     decentralizedEnabled && spaceKind === "decentralized" && decentralizedFlavor === "native";
+  // Chat-only spaces (native groups, and encrypted spaces for now) have no
+  // mode / channel / feed choices to make.
+  const chatOnlySelected = nativeSelected || (e2eeEnabled && encrypted);
 
   // Offer the self-hosted relay only for NIP-29-native spaces: creating one
   // publishes 9007 (so the creator becomes a relay-native member and the
@@ -410,12 +516,12 @@ function CreateSpaceModalInner({
   const showDropdown = query.trim() && (filteredResults.length > 0 || isSearching);
 
   return (
-    <Modal open={open} onClose={onClose}>
+    <Modal open={open} onClose={handleClose}>
       <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl card-glass p-8 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <ModalTitle className="text-lg font-bold text-heading">Create Space</ModalTitle>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-full p-1 text-soft hover:bg-card-hover hover:text-heading transition-colors"
           >
             <X size={18} />
@@ -540,6 +646,42 @@ function CreateSpaceModalInner({
             </>
           )}
 
+          {e2eeEnabled && (
+            <div className="rounded-lg border border-border bg-surface px-2.5 py-2">
+              <label className="flex cursor-pointer items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={encrypted}
+                  onChange={(e) => setEncrypted(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <Lock size={14} className="text-soft" />
+                <span className="text-sm text-heading">End-to-end encrypted</span>
+              </label>
+              {encrypted && (
+                <>
+                  <p className="mt-1.5 text-[11px] text-muted">
+                    Only members can read the chat; the relay stores ciphertext. The space is
+                    chat-only for now: search, link previews, notifications, attachments, polls,
+                    reactions and the other channel types are off, and it can&apos;t be switched
+                    back later.
+                  </p>
+                  <label className="mt-1.5 flex cursor-pointer items-center gap-2.5">
+                    <input
+                      type="checkbox"
+                      checked={fullHistory}
+                      onChange={(e) => setFullHistory(e.target.checked)}
+                      className="rounded border-border"
+                    />
+                    <span className="text-[12px] text-soft">
+                      New members can read messages from before they joined
+                    </span>
+                  </label>
+                </>
+              )}
+            </div>
+          )}
+
           <div>
             <label className="mb-1 block text-xs font-medium text-soft">
               Name *
@@ -577,7 +719,7 @@ function CreateSpaceModalInner({
             shape="square"
           />
 
-          {!nativeSelected && (
+          {!chatOnlySelected && (
           <div>
             <label className="mb-1 block text-xs font-medium text-soft">
               Mode
@@ -613,7 +755,7 @@ function CreateSpaceModalInner({
           )}
 
           {/* Channel selection */}
-          {!nativeSelected && (
+          {!chatOnlySelected && (
           <div>
             <label className="mb-1 block text-xs font-medium text-soft">
               Channels
@@ -660,7 +802,7 @@ function CreateSpaceModalInner({
           )}
 
           {/* Feed Sources -- shown only for feed mode */}
-          {!nativeSelected && mode === "read" && (
+          {!chatOnlySelected && mode === "read" && (
             <div>
               <label className="mb-1 block text-xs font-medium text-soft">
                 Feed Sources
@@ -739,7 +881,7 @@ function CreateSpaceModalInner({
           </p>
         )}
         <div className="mt-6 flex justify-end gap-2">
-          <Button variant="ghost" size="md" onClick={onClose}>
+          <Button variant="ghost" size="md" onClick={handleClose}>
             Cancel
           </Button>
           <Button

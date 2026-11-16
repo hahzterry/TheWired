@@ -4,6 +4,7 @@ import {
   FEATURE_AI,
   FEATURE_DECENTRALIZED_SPACES,
   FEATURE_MUSIC_INSIGHTS,
+  FEATURE_E2EE_SPACES,
   setFeatureEnabled,
   type FeatureId,
 } from "../../store/slices/featuresSlice";
@@ -26,6 +27,15 @@ const FEATURES: FeatureRow[] = [
     label: "Decentralized Spaces",
     description:
       "Create spaces on a relay you choose, start pure NIP-29 groups, and import groups from other Nostr apps. Platform spaces are unaffected.",
+  },
+  {
+    id: FEATURE_E2EE_SPACES,
+    label: "Encrypted spaces",
+    description: `Create spaces whose chat is end-to-end encrypted: the relay stores only ciphertext, and search, link previews and notifications are off there. Experimental. ${
+      IS_TAURI
+        ? "Space keys are stored in your OS keychain."
+        : "Space keys stay in memory for this session and are fetched again after a reload."
+    }`,
   },
   {
     id: FEATURE_AI,

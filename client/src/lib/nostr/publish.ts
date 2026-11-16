@@ -1,4 +1,5 @@
 import type { EventSigner } from "@ishtarservices/core";
+import { SPACE_E2EE_PLAINTEXT_KINDS } from "@ishtarservices/shared-types";
 import type { NostrEvent, UnsignedEvent } from "../../types/nostr";
 import { getSigner, getSignerTimeoutMs } from "./loginFlow";
 import { signingQueue } from "./signingQueue";
@@ -9,6 +10,7 @@ import { addLocalEventId } from "../db/musicStore";
 import { publishOutbox } from "./publishOutbox";
 import { devLocalTargets, resolvePublishTargets } from "./gatedTargets";
 import { store } from "@/store";
+import { namesEncryptedSpace } from "@/features/spaces/e2ee/spaceIdFormat";
 
 /**
  * Where an event goes when the caller named no relays. Public events use the
@@ -35,7 +37,27 @@ export interface SignOptions {
   signer?: EventSigner;
 }
 
+/**
+ * Refuse to sign plaintext content for an end-to-end encrypted space
+ * (docs/E2EE_SPACES.md §6.1). Chat there goes out sealed (kind 4290); only
+ * deletions, group management, reports and layout overlays stay in the clear.
+ * This is the one chokepoint every publish path signs through, so a feature
+ * that doesn't know about encryption can't leak into such a space.
+ *
+ * Decided from the space id alone: an encrypted space's id commits to its key
+ * root and has a recognizable form, and no other space can be encrypted. So it
+ * holds with the feature off, before anything is loaded, and when local
+ * storage can't be read, without ever blocking a plain space.
+ */
+function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): void {
+  if (SPACE_E2EE_PLAINTEXT_KINDS.includes(unsigned.kind)) return;
+  if (namesEncryptedSpace(unsigned.tags)) {
+    throw new Error("This space is end-to-end encrypted, and this can't be posted there yet.");
+  }
+}
+
 async function signWith(unsigned: UnsignedEvent, opts?: SignOptions): Promise<NostrEvent> {
+  assertSealedForEncryptedSpace(unsigned);
   if (opts?.signer) return opts.signer.signEvent(unsigned);
   const signer = getSigner();
   if (!signer) throw new Error("No signer available");

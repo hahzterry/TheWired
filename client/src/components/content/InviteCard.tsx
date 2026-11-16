@@ -7,9 +7,11 @@ import { useAppSelector } from "@/store/hooks";
 
 interface InviteCardProps {
   code: string;
+  /** The space the link names (newer links); checked when joining. */
+  spaceId?: string;
 }
 
-export function InviteCard({ code }: InviteCardProps) {
+export function InviteCard({ code, spaceId }: InviteCardProps) {
   const navigate = useNavigate();
   const spaces = useAppSelector((s) => s.spaces.list);
 
@@ -45,7 +47,9 @@ export function InviteCard({ code }: InviteCardProps) {
       navigate("/");
     } else {
       // Open join flow — navigate to invite route which triggers JoinSpaceModal
-      navigate(`/invite/${code}`);
+      // Same path as invitePath() in features/spaces/inviteLink.ts, built here so
+      // the invite checks stay out of the startup bundle.
+      navigate(`/invite/${encodeURIComponent(code)}` + (spaceId ? `/${encodeURIComponent(spaceId)}` : ""));
     }
   };
 

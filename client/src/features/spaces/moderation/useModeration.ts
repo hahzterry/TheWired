@@ -20,6 +20,15 @@ import { resolveRelaySet } from "../relaySet";
 import { buildRemoveUser } from "../../../lib/nostr/eventBuilder";
 import { signAndPublish } from "../../../lib/nostr/publish";
 import * as moderationApi from "../../../lib/api/moderation";
+import { isEncryptedSpaceId } from "../e2ee/spaceIdFormat";
+
+/** In an encrypted space a removal must be followed by a new key for those who
+ *  remain (docs/E2EE_SPACES.md §5.3). A no-op for every other space; the key
+ *  code loads only for an encrypted one. */
+function rotateAfterRemoval(spaceId: string, pubkey: string): void {
+  if (!isEncryptedSpaceId(spaceId)) return;
+  void import("../e2ee/keyReconcile").then((m) => m.reconcileSpaceKeys(spaceId, { exclude: [pubkey] }));
+}
 
 const EMPTY_BANS: Ban[] = [];
 const EMPTY_MUTES: Mute[] = [];
@@ -115,6 +124,7 @@ export function useModeration(spaceId: string | null, enabled = true) {
       const ban = await moderationApi.banMember(spaceId, { pubkey, reason, expiresAt });
       dispatch(addBan({ spaceId, ban: ban as Ban }));
       dispatch(removeMemberLocallyThunk(spaceId, pubkey));
+      rotateAfterRemoval(spaceId, pubkey);
     },
     [spaceId, backendBacked, dispatch],
   );
@@ -152,6 +162,7 @@ export function useModeration(spaceId: string | null, enabled = true) {
       if (backendBacked) {
         await moderationApi.kickMember(spaceId, pubkey);
         dispatch(removeMemberLocallyThunk(spaceId, pubkey));
+        rotateAfterRemoval(spaceId, pubkey);
         return;
       }
       // #40 — nip29-native spaces have no backend; kick by publishing a relay-
@@ -161,6 +172,7 @@ export function useModeration(spaceId: string | null, enabled = true) {
       if (!space || !myPubkey || !isNip29Native(space)) return;
       await signAndPublish(buildRemoveUser(myPubkey, spaceId, pubkey), resolveRelaySet(space));
       dispatch(removeMemberLocallyThunk(spaceId, pubkey));
+      rotateAfterRemoval(spaceId, pubkey);
     },
     [spaceId, backendBacked, space, myPubkey, dispatch],
   );

@@ -1,8 +1,8 @@
 # Decentralized Spaces — implementation status & remaining work
 
-> Status: **M0–M7 + M9 shipped; M8 (E2EE / Model B) is the remaining milestone.**
-> Companion to `PACKAGES_DESIGN.md` §6/§7. The detailed M8 spec lives in
-> `docs/NIP17_GROUP_ROOMS.md`.
+> Status: **M0–M7 + M9 shipped; M8 (E2EE / Model B) has a design and a first slice behind a
+> default-off feature.**
+> Companion to `PACKAGES_DESIGN.md` §6/§7. The M8 design lives in `docs/E2EE_SPACES.md`.
 
 The Wired runs **three space modes side by side**, gated by one client predicate
 (`isBackendBacked`) and one relay authority resolver, so Platform spaces stay
@@ -71,21 +71,24 @@ byte-for-byte unchanged:
 
 ## Remaining
 
-### M8 — E2EE / Model B  ← the open milestone
+### M8 — E2EE / Model B  ← design + first slice, behind a default-off feature
 
 The end-to-end-encrypted tier — the one place message content is hidden from the relay (so
-moderation, search, analytics, and push are necessarily off for those rooms; "Model B").
+server-side moderation of content, search, analytics, and push are necessarily off there;
+"Model B").
 
-- **NIP-17 gift-wrapped rooms** — the protocol **engine is built + tested**
-  (`client/src/lib/nostr/nip17Room.ts`, 7 tests); the **feature integration is the TODO**:
-  generalize the 1:1 DM store/receive/send/UI to group rooms. The relay needs **zero changes**
-  (kind:1059 routes by `p` tag and bypasses NIP-29 gating).
-- **MLS over Nostr** (NIP-EE / "Marmot" / `nostr-mls`) — scalable forward-secret groups; stays
-  **tracked behind an audit gate**, not built.
-
-Full step-by-step plan (store `conversationId` keying, eventPipeline receive branch on
-`isGroupDM` bypassing the `HEX64` guard, `sendGroupRoomMessage`, multi-recipient create-room +
-group UI): **`docs/NIP17_GROUP_ROOMS.md`**.
+- **Encrypted spaces** — a space whose chat travels as sealed events under a shared,
+  per-epoch space key that rotates when a member is removed. The relay keeps gating,
+  rate-limiting and deleting them like any `h`-tagged event and stores only ciphertext.
+  Design, wire format and the open contract decisions: **`docs/E2EE_SPACES.md`**. The first
+  slice (create, key hand-over, sealed chat, rotation) ships behind the "Encrypted spaces"
+  feature (Settings → Features, default off); the wire format is provisional until those
+  decisions are made.
+- **NIP-17 gift-wrapped rooms** — small ad-hoc encrypted rooms (≤ 10 people) outside any
+  space; shipped with the DM wire contract (`docs/DM_WIRE_CONTRACT.md` §4). Not the tool for
+  spaces: one wrap per member per message and no relay-side membership.
+- **MLS over Nostr** (Marmot) — forward-secret groups; stays **tracked behind an audit gate**,
+  not built. `E2EE_SPACES.md` §3 compares the three and §12 says how a space would move to it.
 
 ### Smaller deferred items
 

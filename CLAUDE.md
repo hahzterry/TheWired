@@ -190,6 +190,16 @@ Optional built-ins (AI, self-hosted spaces) are gated by `featuresSlice` flags (
 ### Three Space Modes
 Spaces run in three modes side-by-side, gated by one client predicate (`features/spaces/spaceType.ts` → `isBackendBacked`): **Platform** (backend `app.*`), **Decentralized A-lite** (Platform space on a creator-chosen `hostRelay`), **NIP-29-native** (relay-only, no backend). `space.id` IS a NIP-29 group id and chat targets an arbitrary `hostRelay`. See `docs/DECENTRALIZED_SPACES.md`.
 
+### Encrypted Spaces (provisional, default-off feature)
+A space can be end-to-end encrypted (`features/spaces/e2ee/`, `docs/E2EE_SPACES.md`): chat travels as kind **4290** sealed events under a per-epoch space key handed out in kind **4291** key grants; the codec is `packages/core/src/crypto/spaceKeys.ts`, the contract constants `packages/shared-types/src/spaceE2ee.ts`. Load-bearing rules:
+- **Epoch keys NEVER touch Redux or IndexedDB** — only the keyring's memory + the keychain (`secretStore`). `spaceE2eeSlice` holds non-secret state only.
+- **Never publish plaintext content with an encrypted space's `h` tag.** `publish.ts` refuses to sign it; send through `sealForSpace`. The pipeline ignores plaintext kind 9 received there.
+- **The key reconcile acts on the authority's roster fetched at that moment** (`freshRoster.ts`), never the cached `memberPubkeys`, and on the key holders the relay serves (`freshHolders.ts`), never a local note.
+- **An encrypted space's id commits to its key root** (`e2e1-` + 128 bits of SHA-256 over a tag, the root and a salt; `committedSpaceId` in the codec). The guards (publish, ingest, composer, AI) decide from the id alone via `spaceIdFormat.ts` (tiny, startup-safe), feature on or off; grants in a space with any other id are ignored, and a first key is accepted only from the root the id commits to. Invite links are `/invite/<code>/<spaceId>` (`inviteLink.ts`); the join refuses a code the server resolves to another space. Keep the keyring, controller and codec off the startup path (dynamic `import()`).
+- **No encrypted-space content in AI context** (`isEncryptedSpaceContent` in `features/ai/context/aiContext.ts`).
+- **Key managers come from the epoch chain, never from the server's role list.** Accepting a grant goes through `judgeEpochGrant` (root pinned, `seq`/`prev` must link); look up `spaceE2ee.spaces` with `encryptedSpaceEntry` (own-property), since space ids are other people's strings.
+- The relay has no code for these kinds on purpose; `services/relay/tests/sealed_space_events.rs` pins that they are gated and stored like chat.
+
 ### AI Engine (security contracts — do not break)
 Toggleable AI assistant in `features/ai/`. 3-tier engine (detect local Ollama/LM Studio · managed `llama-server` · cloud keys) behind one OpenAI-compatible adapter; every backend normalizes to a `ChatChunk` stream. Load-bearing rules:
 - **API keys NEVER touch Redux** — only `llmManager` (singleton) memory + the OS keychain (`secretStore`). The `aiSlice` holds non-secret config only.
@@ -259,7 +269,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 ## Nostr Protocol Notes
 
 - Use the `mcp__nostrbook` tools to look up NIP specs, event kinds, and tag definitions
-- Event kinds used: 0, 1, 3, 7, 9, 20, 22, 34235/34236, 30023, 30311, 1311, 1059/13/14 (NIP-17), 9734/9735 (NIP-57 zaps), 13194/23194/23195/23196/23197 (NIP-47 NWC), 24133 (NIP-46), 10000, 10002, 10009, 10063, 22242, 24242, 27235, 30078 (NIP-78 — also decentralized-space layout/relay-set overlays), 31683/33123/30119 (music), 39000-39002 + 9000-9022 (NIP-29). Full table in README/ARCHITECTURE.
+- Event kinds used: 0, 1, 3, 7, 9, 20, 22, 34235/34236, 30023, 30311, 1311, 1059/13/14 (NIP-17), 9734/9735 (NIP-57 zaps), 13194/23194/23195/23196/23197 (NIP-47 NWC), 24133 (NIP-46), 10000, 10002, 10009, 10063, 22242, 24242, 27235, 30078 (NIP-78 — also decentralized-space layout/relay-set overlays), 31683/33123/30119 (music), 39000-39002 + 9000-9022 (NIP-29), 4290/4291 (encrypted spaces, provisional). Full table in README/ARCHITECTURE.
 - Adding a new kind has many touch-points (`EVENT_KINDS`, routes, filterBuilder, the `indexEvent` switch in `lib/nostr/pipeline/indexEvent.ts`, slices, render components) — load the `nostr-kind-rendering` skill; a missed step means the event silently never appears.
 - Bootstrap relays: `wss://relay.damus.io`, `wss://nos.lol`
 - Channel routing is defined in `client/src/lib/nostr/channelRoutes.ts`

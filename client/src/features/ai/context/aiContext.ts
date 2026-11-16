@@ -7,6 +7,7 @@
  * (see docs/AI_ENGINE.md §Phase 1 + the master plan §10).
  */
 import { store } from "@/store";
+import { isEncryptedSpaceId, namesEncryptedSpace } from "@/features/spaces/e2ee/spaceIdFormat";
 import { profileCache } from "@/lib/nostr/profileCache";
 import type { NostrEvent } from "@/types/nostr";
 import type { AIContext, AIContextKind } from "@/types/ai";
@@ -17,6 +18,18 @@ export const MAX_CONTEXT_CHARS = 8000;
 const MAX_EVENTS = 40;
 /** Per-message body cap inside a multi-message snapshot. */
 const MAX_BODY_CHARS = 600;
+
+/**
+ * Is this event (or space) content of an end-to-end encrypted space? Such
+ * content is decrypted on this device for its user only, and none of it may
+ * reach a model, which can be a cloud provider (docs/E2EE_SPACES.md §8).
+ * A consent step like the one for DMs can open this later; until then it is
+ * simply never part of an AI context.
+ */
+export function isEncryptedSpaceContent(eventOrSpaceId: NostrEvent | string): boolean {
+  if (typeof eventOrSpaceId === "string") return isEncryptedSpaceId(eventOrSpaceId);
+  return namesEncryptedSpace(eventOrSpaceId.tags);
+}
 
 /** Sync display name for a pubkey from the profile cache, else a short key. */
 export function displayName(pubkey: string): string {
@@ -107,7 +120,7 @@ export function frameUntrustedContext(context: AIContext): string {
 /** A single note (kind:1 / kind:9). */
 export function buildNoteContext(eventId: string): AIContext | null {
   const event = store.getState().events.entities[eventId];
-  if (!event) return null;
+  if (!event || isEncryptedSpaceContent(event)) return null;
   return makeContext({
     kind: "note",
     label: `Note by ${displayName(event.pubkey)}`,
@@ -122,12 +135,12 @@ export function buildNoteContext(eventId: string): AIContext | null {
 export function buildThreadContext(rootEventId: string): AIContext | null {
   const state = store.getState();
   const root = state.events.entities[rootEventId];
-  if (!root) return null;
+  if (!root || isEncryptedSpaceContent(root)) return null;
   const muted = mutedPubkeys();
   const replyIds = state.events.replies[rootEventId] ?? [];
   const replies = replyIds
     .map((id) => state.events.entities[id])
-    .filter((e): e is NostrEvent => !!e && !muted.has(e.pubkey))
+    .filter((e): e is NostrEvent => !!e && !muted.has(e.pubkey) && !isEncryptedSpaceContent(e))
     .sort((a, b) => a.created_at - b.created_at)
     .slice(0, MAX_EVENTS);
 
@@ -227,7 +240,7 @@ export function buildDMMessageContext(
 export function buildSpaceContext(spaceId: string): AIContext | null {
   const state = store.getState();
   const space = state.spaces.list.find((s) => s.id === spaceId);
-  if (!space) return null;
+  if (!space || isEncryptedSpaceContent(spaceId)) return null;
   const muted = mutedPubkeys();
   const ids = (state.events.chatMessages[spaceId] ?? []).slice(-MAX_EVENTS);
   const events = ids
@@ -260,7 +273,7 @@ export function buildChannelContext(
   const state = store.getState();
   const space = state.spaces.list.find((s) => s.id === spaceId);
   const channel = (state.spaces.channels[spaceId] ?? []).find((c) => c.id === channelId);
-  if (!space || !channel) return null;
+  if (!space || !channel || isEncryptedSpaceContent(spaceId)) return null;
   const muted = mutedPubkeys();
   // Chat channels key kind:9 by groupId (with a `channel` tag); feed channels use spaceFeeds.
   const chatIds = (state.events.chatMessages[spaceId] ?? [])

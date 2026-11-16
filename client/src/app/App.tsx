@@ -34,6 +34,7 @@ import { getAutoUpdatesEnabled } from "../features/settings/appSettingsStore";
 import { useAppUpdater } from "../hooks/useAppUpdater";
 import { useZoomShortcuts } from "../hooks/useZoomShortcuts";
 import { useEmbeddedRelayAutostart } from "../features/settings/useEmbeddedRelayAutostart";
+import { useSpaceE2ee } from "../features/spaces/e2ee/useSpaceE2ee";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { BoundaryResetProvider } from "./BoundaryResetProvider";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
@@ -57,6 +58,7 @@ function AuthGate() {
   // Desktop: bring the self-hosted relay back up (if the user was hosting) and
   // re-point their self-hosted spaces to its live address after a restart.
   useEmbeddedRelayAutostart();
+  useSpaceE2ee();
 
   if (restoring || switchingAccount) {
     return (
@@ -276,6 +278,10 @@ function AppRoutes() {
             path="invite/:code"
             element={<InviteRouteWrapper />}
           />
+          <Route
+            path="invite/:code/:spaceId"
+            element={<InviteRouteWrapper />}
+          />
         </Route>
       </Route>
     </Routes>
@@ -295,7 +301,7 @@ function ProfileRouteWrapper() {
 }
 
 function InviteRouteWrapper() {
-  const { code } = useParams<{ code: string }>();
+  const { code, spaceId } = useParams<{ code: string; spaceId?: string }>();
   const navigate = useNavigate();
   if (!code) return null;
   return (
@@ -304,7 +310,7 @@ function InviteRouteWrapper() {
       <JoinSpaceModal
         open
         onClose={() => navigate("/")}
-        initialCode={code}
+        initialCode={spaceId ? `/invite/${code}/${spaceId}` : code}
       />
     </>
   );

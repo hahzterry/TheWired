@@ -6,6 +6,9 @@ import { addEvent, hideMessage, trackDeletedNote } from "../../../store/slices/e
 import { incrementEventCount } from "../../../store/slices/relaysSlice";
 import { evaluateNotification } from "../notificationEvaluator";
 import { createLogger, shortKey, shortRelay } from "../../debug/logger";
+import { SPACE_E2EE_PLAINTEXT_KINDS } from "@ishtarservices/shared-types";
+import { namesEncryptedSpace } from "../../../features/spaces/e2ee/spaceIdFormat";
+import { getSpaceE2eeHooks } from "../spaceE2eeHooks";
 import type { PipelineContext } from "./types";
 import type { Batching } from "./batching";
 
@@ -28,10 +31,13 @@ function logChatLatency(event: NostrEvent, relayUrl: string, receivedAt: number)
 
 /**
  * `processIncomingEvent`: the stages every incoming event passes, in order:
- * validate, dedup, verify, the gift-wrap exit, the deleted-content guards,
- * dispatch, index, notify, flush.
+ * validate, dedup, verify, the gift-wrap exit, the encrypted-space exit, then
+ * (`ingestVerifiedEvent`) the deleted-content guards, dispatch, index, notify,
+ * flush.
  *
- * The body is the code as it stood inside `createEventPipeline`.
+ * The body is the code as it stood inside `createEventPipeline`, with the
+ * stages after verification in their own function so the inner event of a
+ * sealed space event can enter there (docs/E2EE_SPACES.md).
  */
 export function createIngest(
   ctx: PipelineContext,
@@ -103,6 +109,45 @@ export function createIngest(
       }
       return;
     }
+
+    // Encrypted spaces (docs/E2EE_SPACES.md): the two contract kinds never enter
+    // the store as-is. A key grant goes to the keyring; a sealed event is opened
+    // and its inner event continues below under the outer id. With the feature
+    // off (or not started) both are dropped and unmarked, so nothing else changes.
+    if (event.kind === EVENT_KINDS.SPACE_KEY_GRANT) {
+      if (!getSpaceE2eeHooks()?.onKeyGrant(event)) dedup.unmarkSeen(event.id);
+      else dispatch(incrementEventCount(relayUrl));
+      return;
+    }
+    if (event.kind === EVENT_KINDS.SPACE_SEALED_EVENT) {
+      const opened = getSpaceE2eeHooks()?.openSealed(event, relayUrl) ?? { status: "declined" as const };
+      if (opened.status === "declined") dedup.unmarkSeen(event.id);
+      if (opened.status !== "opened") return;
+      await ingestVerifiedEvent(opened.event, relayUrl, receivedAt, true);
+      return;
+    }
+
+    await ingestVerifiedEvent(event, relayUrl, receivedAt, false);
+  }
+
+  /**
+   * Everything after validation, dedup and signature verification. `sealed` is
+   * true for the inner event of a sealed space event: it arrives here under the
+   * outer event's id (already verified and deduped) and is the only form of
+   * content an encrypted space accepts.
+   */
+  async function ingestVerifiedEvent(
+    event: NostrEvent,
+    relayUrl: string,
+    receivedAt: number,
+    sealed: boolean,
+  ): Promise<void> {
+    // In an encrypted space, plaintext content is never rendered: it can only
+    // come from a client that doesn't know the space is encrypted, or from
+    // someone injecting unencrypted messages among the sealed ones. What stays
+    // in the clear there (deletions, group management, layout) passes.
+    // Decided from the id: only a committed id can be an encrypted space.
+    if (!sealed && !SPACE_E2EE_PLAINTEXT_KINDS.includes(event.kind) && namesEncryptedSpace(event.tags)) return;
 
     // Step 3b: Reject re-delivered deleted notes/reposts/polls
     if (
@@ -198,5 +243,11 @@ export function createIngest(
     else flushEventPipeline();
   }
 
-  return { processIncomingEvent };
+  /** Ingest the inner event of a sealed space event that was parked until its
+   *  key arrived. Its outer event was verified and deduped when it was parked. */
+  async function ingestOpenedSealedEvent(event: NostrEvent, relayUrl: string): Promise<void> {
+    await ingestVerifiedEvent(event, relayUrl, Date.now(), true);
+  }
+
+  return { processIncomingEvent, ingestOpenedSealedEvent };
 }

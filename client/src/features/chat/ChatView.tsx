@@ -1,4 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
+import { selectIsEncryptedSpace, selectHasSpaceKey } from "../../store/slices/spaceE2eeSlice";
+import { selectFeatureEnabled, FEATURE_E2EE_SPACES } from "../../store/slices/featuresSlice";
 import { ChatMessage } from "./ChatMessage";
 import { ChatReply } from "./ChatReply";
 import { ChatEditBanner } from "./ChatEditBanner";
@@ -56,6 +58,18 @@ export function ChatView() {
   const canSend = isLoggedIn && !isReadOnly && (!permissionsLoaded || can("SEND_MESSAGES", channelIdPart));
   const canAttachFiles = !permissionsLoaded || can("ATTACH_FILES", channelIdPart);
   const canEmbedLinks = !permissionsLoaded || can("EMBED_LINKS", channelIdPart);
+  // End-to-end encrypted space (docs/E2EE_SPACES.md): chat needs the feature on
+  // and this session to hold the space's key; attachments and polls are off.
+  const encrypted = useAppSelector(selectIsEncryptedSpace(activeSpaceId));
+  const hasSpaceKey = useAppSelector(selectHasSpaceKey(activeSpaceId));
+  const e2eeEnabled = useAppSelector(selectFeatureEnabled(FEATURE_E2EE_SPACES));
+  const sealedNotice = !encrypted
+    ? null
+    : !e2eeEnabled
+      ? "This space is end-to-end encrypted. Turn on Encrypted spaces in Settings → Features to read and post here."
+      : !hasSpaceKey
+        ? "This space is end-to-end encrypted. Waiting for an admin to share the key with you."
+        : null;
   // Deleting other members' messages: admins and the creator, plus (platform
   // spaces) any role granted MANAGE_MESSAGES here — the relay checks the same roles.
   const canModDelete = mayModDelete(activeSpace, myPubkey, can("MANAGE_MESSAGES", channelIdPart));
@@ -393,10 +407,20 @@ export function ChatView() {
           <span className="text-xs">This is a read-only space</span>
         </div>
       ) : (
+        <>
+        {sealedNotice && (
+          <div
+            role="status"
+            className="flex items-center justify-center gap-2 border-t border-border px-4 py-2 text-muted"
+          >
+            <Lock size={14} />
+            <span className="text-xs">{sealedNotice}</span>
+          </div>
+        )}
         <ChatInput
           onSend={(content, mentions, attachments, emojiTags) => sendMessage(content, mentions, attachments, emojiTags)}
-          onCreatePoll={sendPoll}
-          disabled={!canSend}
+          onCreatePoll={encrypted ? undefined : sendPoll}
+          disabled={!canSend || sealedNotice !== null}
           memberPubkeys={memberPubkeys}
           spaceId={activeSpaceId}
           attachments={upload.attachments}
@@ -412,9 +436,10 @@ export function ChatView() {
           editingMessage={editingMessage}
           onEditSubmit={editMessage}
           onEditCancel={() => setEditingMessage(null)}
-          canAttachFiles={canAttachFiles}
+          canAttachFiles={canAttachFiles && !encrypted}
           canEmbedLinks={canEmbedLinks}
         />
+        </>
       )}
     </div>
   );

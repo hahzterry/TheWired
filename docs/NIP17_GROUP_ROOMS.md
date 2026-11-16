@@ -1,6 +1,9 @@
 # NIP-17 Group Rooms — E2EE group chat (Decentralized Spaces M8)
 
-> Status: **engine shipped + tested; feature integration deferred (this is the TODO).**
+> Status: **superseded for spaces by `docs/E2EE_SPACES.md`** (a shared per-epoch space key
+> inside the NIP-29 envelope). Small NIP-17 rooms themselves shipped with the DM wire contract
+> (`docs/DM_WIRE_CONTRACT.md` §4). Kept for the reasoning below; the "what's left" list here is
+> historical.
 > Companion to `PACKAGES_DESIGN.md` §6/§7 and the decentralized-spaces plan (M0–M9).
 
 ## What this is — and why it's separate from spaces

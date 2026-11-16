@@ -12,6 +12,7 @@ import {
   frameUntrustedBlock,
   frameUntrustedContext,
   displayName,
+  isEncryptedSpaceContent,
 } from "../context/aiContext";
 import type { ToolDef } from "./types";
 import { toHexPubkey, asString } from "./validate";
@@ -70,7 +71,11 @@ const read_space_feed: ToolDef = {
   },
   access: "read",
   run(args) {
-    const ctx = buildSpaceContext(asString(args.spaceId).trim());
+    const spaceId = asString(args.spaceId).trim();
+    if (isEncryptedSpaceContent(spaceId)) {
+      return { output: "That space is end-to-end encrypted; its messages are not available to the assistant." };
+    }
+    const ctx = buildSpaceContext(spaceId);
     if (!ctx) return { output: "Error: that space isn't loaded." };
     return { output: frameUntrustedContext(ctx) };
   },
@@ -117,6 +122,7 @@ const search_notes: ToolDef = {
       const e = state.events.entities[id];
       if (!e || (e.kind !== 1 && e.kind !== 9)) continue;
       if (muted.has(e.pubkey)) continue;
+      if (isEncryptedSpaceContent(e)) continue;
       if (e.content.toLowerCase().includes(query)) matches.push(e);
       if (matches.length >= limit * 3) break;
     }

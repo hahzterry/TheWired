@@ -37,7 +37,7 @@ export function createEventPipeline(deps: EventPipelineDeps) {
   const { indexDeletion } = createDeletionIndexer(ctx, batching);
   const { indexModDelete } = createModDeleteIndexer(ctx, batching);
   const { indexEvent } = createEventIndexer(ctx, batching, { indexEventIntoSpaceFeeds, indexDeletion, indexModDelete });
-  const { processIncomingEvent } = createIngest(ctx, batching, { indexEvent });
+  const { processIncomingEvent, ingestOpenedSealedEvent } = createIngest(ctx, batching, { indexEvent });
   const { handleGiftWrap } = createGiftWrapHandler(ctx, {
     ...createFriendWrapHandlers(ctx),
     ...createCallWrapHandlers(ctx),
@@ -49,6 +49,7 @@ export function createEventPipeline(deps: EventPipelineDeps) {
 
   return {
     processIncomingEvent,
+    ingestOpenedSealedEvent,
     flushEventPipeline,
     resetEventPipelineCaches,
     forgetSeenEvents,

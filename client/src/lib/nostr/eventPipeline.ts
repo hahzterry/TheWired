@@ -5,6 +5,7 @@
  *   createEventPipeline.ts  builds one pipeline from its stages (the factory)
  *   types.ts                EventPipelineDeps (injected platform couplings), PipelineContext
  *   ingest.ts               processIncomingEvent: validate → dedup → verify → dispatch → index → notify → flush
+ *                           (also where a sealed space event is opened; the feature registers through ../spaceE2eeHooks)
  *   batching.ts             burst buffer, flush timer, entity sweep, cache reset
  *   sweep.ts                computeSweep (pure eviction choice)
  *   indexEvent.ts           indexEvent: THE kind switch — a new kind gets its `case` there
@@ -52,6 +53,9 @@ const defaultPipeline = createEventPipeline({
  * 4. Dispatch to Redux + index
  */
 export const processIncomingEvent = defaultPipeline.processIncomingEvent;
+
+/** Ingest an opened sealed space event that was waiting for its key. */
+export const ingestOpenedSealedEvent = defaultPipeline.ingestOpenedSealedEvent;
 
 /** Apply all buffered burst-path ops in one batch — see createEventPipeline. */
 export const flushEventPipeline = defaultPipeline.flushEventPipeline;
