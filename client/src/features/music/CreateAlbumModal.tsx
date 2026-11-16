@@ -3,7 +3,7 @@ import {
   X, Upload, Trash2, GripVertical, ArrowUp, ArrowDown,
   Wand2, Music, ListOrdered, ChevronDown, ChevronUp, Disc3, Image, KeyRound,
 } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadAudio, uploadCoverArt } from "@/lib/api/music";
@@ -494,9 +494,9 @@ function CreateAlbumModalInner({ open, onClose, album }: CreateAlbumModalProps) 
     <Modal open={open} onClose={onClose}>
       <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl card-glass p-6 shadow-[var(--shadow-elevated)]">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-heading">
+          <ModalTitle className="text-lg font-semibold text-heading">
             {isEditing ? "Edit Project" : "Create Project"}
-          </h2>
+          </ModalTitle>
           <button onClick={onClose} className="text-soft hover:text-heading">
             <X size={18} />
           </button>

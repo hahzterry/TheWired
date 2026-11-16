@@ -34,6 +34,72 @@ jobs:
         if: github.event_name == 'pull_request'
         run: pnpm test:client:coverage
 
+  # ── Client production build + bundle budget ────
+  # The same `tsc -b && vite build` a release runs, so a Rolldown or
+  # build-target break shows up on the PR instead of at the release tag. The
+  # size step prints every chunk (raw + gzip), writes the table to the job
+  # summary and fails when a line in client/bundle-budget.json is exceeded.
+  client-build:
+    name: Client Build + Bundle Budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Production build
+        run: pnpm --filter @thewired/client build
+
+      - name: Bundle size report and budget
+        run: pnpm --filter @thewired/client size
+
+  # ── Client accessibility ───────────────────────
+  # Lint: jsx-a11y rules over client/src. The shared primitives must be
+  # clean; everything else is held to client/a11y-lint-baseline.json, so the
+  # job fails on new violations only.
+  # Browser: axe + keyboard checks in Chromium against the Vite dev server.
+  # No backend is needed: the spec cuts the page off from relays and the API.
+  client-a11y:
+    name: Client Accessibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Accessibility lint (ratchet)
+        run: pnpm --filter @thewired/client lint
+
+      - name: Install Chromium
+        run: pnpm --filter @thewired/client exec playwright install --with-deps chromium
+
+      - name: axe + keyboard checks (Playwright)
+        run: pnpm --filter @thewired/client test:e2e:a11y
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: a11y-playwright-report
+          path: |
+            client/playwright-report
+            client/test-results
+          retention-days: 7
+
   # ── Gateway Tests (Go) ─────────────────────────
   gateway:
     name: Gateway Tests
@@ -94,8 +160,10 @@ jobs:
   # ── Tauri shell (Rust) ─────────────────────────
   # Compiles the desktop shell (and the embedded relay it links) so dependency
   # bumps under client/src-tauri are checked before merge, and runs the NIP-44
-  # vectors that exercise its crypto crates. The keystore tests need an OS
-  # keychain and are left to local runs.
+  # vectors that exercise its crypto crates and the managed AI engine's tests
+  # (downloads, archive filter, supervisor, request forwarding; no model or
+  # engine binary is fetched). The keystore tests need an OS keychain and are
+  # left to local runs.
   tauri:
     name: Tauri Shell Tests
     runs-on: ubuntu-latest
@@ -119,7 +187,7 @@ jobs:
       # against an empty one, the web build is not under test here. The second
       # check builds the release configuration (`tauri build` turns on
       # custom-protocol), which compiles the `cfg(not(dev))` code paths.
-      - name: Check, and run the NIP-44 and IPC permission tests
+      - name: Check, and run the NIP-44, IPC permission and AI engine tests
         working-directory: client/src-tauri
         run: |
           mkdir -p ../dist
@@ -127,6 +195,7 @@ jobs:
           cargo check --locked --features tauri/custom-protocol
           cargo test --locked --lib nip44::
           cargo test --locked --lib ipc_acl_tests::
+          cargo test --locked --lib llm::
 
   # ── Backend Tests (Vitest + PostgreSQL) ─────────
   backend:

@@ -1,7 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import {
+  Children,
+  Fragment,
+  createContext,
+  isValidElement,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 import { useClickOutside } from "../../hooks/useClickOutside";
+import { focusableWithin, useEscapeLayer } from "./layer";
 
 interface PopoverMenuProps {
   open: boolean;
@@ -10,25 +23,41 @@ interface PopoverMenuProps {
   position?: "above" | "below";
   /** When provided, renders via portal with fixed positioning anchored to this element */
   anchorRef?: RefObject<HTMLElement | null>;
+  /** Accessible name for the popup (e.g. "Message actions"). */
+  label?: string;
 }
 
-const FOCUSABLE =
-  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+/** True inside a PopoverMenu that is a real menu (items and separators only). */
+const MenuRoleContext = createContext(false);
 
-export function PopoverMenu({ open, onClose, children, position = "above", anchorRef }: PopoverMenuProps) {
+/**
+ * A popup made of nothing but PopoverMenuItem / PopoverMenuSeparator is an
+ * ARIA menu. Anything else (a slider, a text field, a custom list) is left as
+ * a plain container: `role="menu"` forbids those children.
+ */
+function isItemsOnly(children: ReactNode): boolean {
+  let items = 0;
+  const walk = (nodes: ReactNode): boolean =>
+    Children.toArray(nodes).every((child) => {
+      if (!isValidElement(child)) return false;
+      if (child.type === Fragment) return walk((child.props as { children?: ReactNode }).children);
+      if (child.type === PopoverMenuItem) {
+        items += 1;
+        return true;
+      }
+      return child.type === PopoverMenuSeparator;
+    });
+  return walk(children) && items > 0;
+}
+
+export function PopoverMenu({ open, onClose, children, position = "above", anchorRef, label }: PopoverMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [coords, setCoords] = useState<React.CSSProperties>({});
   const usePortal = !!anchorRef;
+  const isMenu = isItemsOnly(children);
   useClickOutside(ref, onClose, open);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  // Escape closes this popup only, not the dialog it was opened from.
+  useEscapeLayer(open, onClose);
 
   // Keyboard a11y: move focus into the menu on open, let Up/Down/Home/End rove
   // its items, and restore focus to the opener on close. Arrow keys are ignored
@@ -37,8 +66,7 @@ export function PopoverMenu({ open, onClose, children, position = "above", ancho
     if (!open) return;
     const menu = ref.current;
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    const items = () =>
-      menu ? Array.from(menu.querySelectorAll<HTMLElement>(FOCUSABLE)) : [];
+    const items = () => focusableWithin(menu);
 
     const raf = window.requestAnimationFrame(() => {
       if (menu && !menu.contains(document.activeElement)) {
@@ -137,8 +165,14 @@ export function PopoverMenu({ open, onClose, children, position = "above", ancho
   const menuEl = (
     <div
       ref={ref}
+      role={isMenu ? "menu" : undefined}
+      aria-label={label}
       tabIndex={-1}
-      onClick={(e) => e.stopPropagation()}
+      // The popup stays mounted while closed (it fades out). `inert` keeps its
+      // controls out of the tab order and the accessibility tree meanwhile;
+      // `aria-hidden` says the same to tools that do not model `inert`.
+      inert={!open}
+      aria-hidden={open ? undefined : true}
       className={cn(
         "w-max min-w-[160px] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-xl card-glass py-1.5 shadow-xl outline-none transition-all duration-150",
         usePortal ? "fixed z-50" : "absolute right-0 z-40",
@@ -149,14 +183,23 @@ export function PopoverMenu({ open, onClose, children, position = "above", ancho
       )}
       style={usePortal ? coords : undefined}
     >
-      {children}
+      <MenuRoleContext.Provider value={isMenu}>{children}</MenuRoleContext.Provider>
+    </div>
+  );
+
+  // Event boundary: clicks inside the popup must not reach click handlers on
+  // the trigger's ancestors (a clickable card, a row). `contents` keeps the
+  // wrapper out of layout.
+  const boundary = (
+    <div role="presentation" className="contents" onClick={(e) => e.stopPropagation()}>
+      {menuEl}
     </div>
   );
 
   if (usePortal) {
-    return createPortal(menuEl, document.body);
+    return createPortal(boundary, document.body);
   }
-  return menuEl;
+  return boundary;
 }
 
 interface PopoverMenuItemProps {
@@ -172,8 +215,11 @@ export function PopoverMenuItem({
   onClick,
   variant = "default",
 }: PopoverMenuItemProps) {
+  const inMenu = useContext(MenuRoleContext);
   return (
     <button
+      type="button"
+      role={inMenu ? "menuitem" : undefined}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -192,5 +238,6 @@ export function PopoverMenuItem({
 }
 
 export function PopoverMenuSeparator() {
-  return <div className="my-1.5 border-t border-border" />;
+  const inMenu = useContext(MenuRoleContext);
+  return <div role={inMenu ? "separator" : undefined} className="my-1.5 border-t border-border" />;
 }

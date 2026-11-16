@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { nip19 } from "nostr-tools";
 import { useAppSelector } from "@/store/hooks";
 import { Spinner } from "@/components/ui/Spinner";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { ArticleReader } from "./ArticleReader";
 import { useArticle } from "./useArticle";
@@ -79,7 +79,7 @@ export function ArticlePage() {
       {confirmDelete && (
         <Modal open onClose={() => setConfirmDelete(false)}>
           <div className="w-full max-w-sm rounded-2xl border border-border card-glass p-5">
-            <h3 className="text-base font-semibold text-heading">Delete this article?</h3>
+            <ModalTitle as="h3" className="text-base font-semibold text-heading">Delete this article?</ModalTitle>
             <p className="mt-1 text-sm text-soft">
               This publishes a deletion request to relays. It can't be guaranteed to remove every
               copy, but compliant relays and clients will drop it.

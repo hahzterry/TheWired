@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useId } from "react";
 import { parseHSL, toHSLString } from "../../lib/themeEngine";
 
 interface ColorPickerProps {
@@ -21,15 +21,18 @@ export function ColorPicker({ label, value, onChange }: ColorPickerProps) {
   );
 
   const previewColor = `hsl(${h}, ${s}%, ${l}%)`;
+  const id = useId();
+  const labelId = `${id}-label`;
 
   return (
-    <div className="space-y-2">
+    <div role="group" aria-labelledby={labelId} className="space-y-2">
       <div className="flex items-center gap-2">
         <div
+          aria-hidden="true"
           className="h-6 w-6 rounded-md border border-border"
           style={{ backgroundColor: previewColor }}
         />
-        <span className="text-xs font-medium text-heading">{label}</span>
+        <span id={labelId} className="text-xs font-medium text-heading">{label}</span>
         <span className="ml-auto text-[10px] font-mono text-muted">
           {Math.round(h)} {Math.round(s)}% {Math.round(l)}%
         </span>
@@ -37,9 +40,11 @@ export function ColorPicker({ label, value, onChange }: ColorPickerProps) {
 
       {/* Hue */}
       <div className="space-y-0.5">
-        <label className="text-[10px] text-muted">Hue</label>
+        <label htmlFor={`${id}-hue`} className="text-[10px] text-muted">Hue</label>
         <input
+          id={`${id}-hue`}
           type="range"
+          aria-valuetext={`${Math.round(h)}°`}
           min={0}
           max={360}
           value={h}
@@ -54,9 +59,11 @@ export function ColorPicker({ label, value, onChange }: ColorPickerProps) {
 
       {/* Saturation */}
       <div className="space-y-0.5">
-        <label className="text-[10px] text-muted">Saturation</label>
+        <label htmlFor={`${id}-saturation`} className="text-[10px] text-muted">Saturation</label>
         <input
+          id={`${id}-saturation`}
           type="range"
+          aria-valuetext={`${Math.round(s)}%`}
           min={0}
           max={100}
           value={s}
@@ -71,9 +78,11 @@ export function ColorPicker({ label, value, onChange }: ColorPickerProps) {
 
       {/* Lightness */}
       <div className="space-y-0.5">
-        <label className="text-[10px] text-muted">Lightness</label>
+        <label htmlFor={`${id}-lightness`} className="text-[10px] text-muted">Lightness</label>
         <input
+          id={`${id}-lightness`}
           type="range"
+          aria-valuetext={`${Math.round(l)}%`}
           min={0}
           max={100}
           value={l}

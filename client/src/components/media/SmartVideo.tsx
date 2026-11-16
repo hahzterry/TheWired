@@ -13,6 +13,7 @@ import {
 } from "./mediaLayout";
 import { useMediaFallback, type MediaFallbackSources } from "./useMediaFallback";
 import { MediaUnavailable } from "./MediaUnavailable";
+import { useResumePlayback } from "./useResumePlayback";
 
 // Keep video heights in sync with SmartImage's density map.
 const DENSITY: Record<MediaDensity, { fittedHeight: string; maxH: string }> = {
@@ -78,6 +79,9 @@ export const SmartVideo = memo(function SmartVideo({
   // hand over to the native controls.
   const [started, setStarted] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
+  // The card may be unmounted by a virtualized list and mounted again later:
+  // come back at the position it was left at, paused.
+  useResumePlayback(videoRef, url);
 
   // Resolve orientation AND, when no poster was supplied (plain kind:1 note
   // videos have no imeta thumb), nudge the element to paint its first frame so
@@ -269,6 +273,9 @@ export const SmartVideo = memo(function SmartVideo({
           if (rate !== playbackRate) setPlaybackRate(rate);
         }}
         className={`relative z-10 mx-auto block w-full ${fitted ? "h-full" : d.maxH} object-contain`}
+        // Size known up front (imeta `dim` or an earlier load): hold the
+        // card's box before the metadata arrives so the feed doesn't shift.
+        style={!fitted && natural ? { aspectRatio: `${natural.w} / ${natural.h}` } : undefined}
       />
       {overlay}
     </div>

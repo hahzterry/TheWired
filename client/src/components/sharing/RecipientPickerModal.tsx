@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, Search, Send, ChevronLeft } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Avatar } from "@/components/ui/Avatar";
 import { useAppSelector } from "@/store/hooks";
@@ -98,7 +98,7 @@ function RecipientPickerModalInner({
                 <ChevronLeft size={18} />
               </button>
             )}
-            <h2 className="text-lg font-semibold text-heading">{title}</h2>
+            <ModalTitle className="text-lg font-semibold text-heading">{title}</ModalTitle>
           </div>
           <button onClick={onClose} className="text-soft hover:text-heading">
             <X size={18} />

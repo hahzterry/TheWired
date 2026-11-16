@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 /**
  * Labelled switch used across settings tabs. Extracted to one primitive — the
  * same `role="switch"` control had been hand-copied in 6+ settings files with
@@ -14,16 +16,23 @@ export function Toggle({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
+  const descriptionId = useId();
   return (
     <div className="flex items-center justify-between gap-4 px-4 py-3">
       <div className="min-w-0">
         <div className="text-sm font-medium text-heading">{label}</div>
-        {description && <div className="text-xs text-muted">{description}</div>}
+        {description && (
+          <div id={descriptionId} className="text-xs text-muted">
+            {description}
+          </div>
+        )}
       </div>
       <button
+        type="button"
         role="switch"
         aria-checked={checked}
         aria-label={label}
+        aria-describedby={description ? descriptionId : undefined}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
           checked ? "bg-primary" : "bg-faint"

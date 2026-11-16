@@ -242,6 +242,9 @@ pnpm test:core              # @ishtarservices/core: gift wrap, NIP-17 rooms, fil
 | `pnpm test:relay` | Relay Rust tests (integration tests need PostgreSQL) |
 | `pnpm test:all` | Run core + client + backend + gateway + relay tests |
 | `pnpm test:e2e` | Playwright E2E tests (needs full stack) |
+| `pnpm --filter @thewired/client test:e2e:a11y` | Accessibility E2E: axe + keyboard checks (needs only the Vite dev server) |
+| `pnpm lint` | Client accessibility lint with a baseline ratchet (see `docs/A11Y_BASELINE.md`) |
+| `pnpm size:client` | Bundle-size report + budget check (run after `pnpm --filter @thewired/client build`) |
 
 ### Test Users
 
@@ -263,12 +266,16 @@ Tests run automatically on push and pull request via GitHub Actions (`.github/wo
 | Job | What runs | Infrastructure |
 |-----|-----------|----------------|
 | **Client** | `pnpm test:client` + coverage | None |
+| **Client Build + Bundle Budget** | `tsc -b && vite build`, then per-chunk raw/gzip sizes against `client/bundle-budget.json` (table in the job summary) | None |
+| **Client Accessibility** | `pnpm lint` (jsx-a11y ratchet), then axe + keyboard checks in Chromium | None (Vite dev server only) |
 | **Gateway** | `go test ./... -v -count=1` | None |
 | **Relay** | `cargo test` (unit + integration) | PostgreSQL (service container) |
 | **Backend** | `pnpm test:backend` (Fastify inject) | PostgreSQL (service container) |
 | **Typecheck** | `pnpm typecheck` | None |
 
-All jobs run in parallel. Backend and relay tests get a fresh PostgreSQL 16 container per run. The `core` package tests and Playwright E2E are not in CI yet.
+All jobs run in parallel. Backend and relay tests get a fresh PostgreSQL 16 container per run. The `core` package tests and the full-stack Playwright E2E specs are not in CI yet; the accessibility spec is, because it runs without a backend.
+
+The bundle budget (`client/bundle-budget.json`) has a tight line for the startup payload (`initial:js`: the entry script plus its modulepreloads), totals for JS and CSS, a line for each deliberately large lazy chunk (the media SDK, HLS), and a per-file ceiling for every other lazy chunk. A PR fails when a line is exceeded, for example when a static import pulls a lazy library back into startup, or when a line no longer matches anything in the build. If a change is intended, edit the budget in the same PR; `pnpm size:client --update` re-records the existing lines from the current build. The accessibility gates and their baseline are described in [`docs/A11Y_BASELINE.md`](docs/A11Y_BASELINE.md).
 
 Other workflows: `build-images.yml` (Docker images, built only after Tests pass on `main`), `release.yml` (multi-platform Tauri builds + signed updates on `v*` tags), `linux-smoke-test.yml` (manual AppImage smoke test).
 

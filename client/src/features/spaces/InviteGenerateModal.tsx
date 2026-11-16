@@ -1,6 +1,6 @@
 import { useReducer, useCallback, useState, useRef, useEffect } from "react";
 import { X, Copy, Check, Send, Search } from "lucide-react";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
@@ -243,7 +243,7 @@ function InviteGenerateModalInner({
     <Modal open={open} onClose={handleClose}>
       <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl card-glass p-8 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-heading">Create Invite</h2>
+          <ModalTitle className="text-lg font-bold text-heading">Create Invite</ModalTitle>
           <button
             onClick={handleClose}
             className="rounded-full p-1 text-soft hover:bg-card-hover hover:text-heading transition-colors"

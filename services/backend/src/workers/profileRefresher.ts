@@ -5,6 +5,7 @@ import { profileCacheService } from "../services/profileCacheService.js";
 import { config } from "../config.js";
 import { lte } from "drizzle-orm";
 import { startLockedInterval } from "../lib/workerLock.js";
+import { recordJobFailure } from "../lib/metrics/index.js";
 
 /** Refresh stale cached profiles periodically */
 export function startProfileRefresher(): { stop: () => void } {
@@ -79,6 +80,7 @@ export function startProfileRefresher(): { stop: () => void } {
       });
     }).catch((err) => {
       console.error("[profiles] Refresh error:", err.message);
+      recordJobFailure("profileRefresher");
     });
   }
 

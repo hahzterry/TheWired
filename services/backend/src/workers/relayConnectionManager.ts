@@ -8,6 +8,14 @@ import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils";
 import { processEvent, type NostrEvent } from "./ingestHandlers.js";
 import { checkDialTarget, type RelayUrlCheck } from "../lib/relayUrlGuard.js";
+import {
+  ingestOwnRelayAuthenticated,
+  ingestRelayConnects,
+  ingestRelayReconnects,
+  ingestRelaysConfigured,
+  ingestRelaysConnected,
+  type RelayScope,
+} from "../lib/metrics/index.js";
 
 /**
  * Multi-relay ingestion manager (Decentralized Spaces, M3).
@@ -27,6 +35,10 @@ import { checkDialTarget, type RelayUrlCheck } from "../lib/relayUrlGuard.js";
  */
 
 const RECONNECT_MAX_MS = 60_000;
+
+/** WebSocket.OPEN, as a number: the readyState check must not depend on the
+ *  static being present on whatever WebSocket implementation is installed. */
+const WS_OPEN = 1;
 
 /** Largest frame accepted from an EXTERNAL relay (Node's built-in WebSocket
  *  has no maxPayload, so the cap is applied on receipt and the socket closed).
@@ -221,6 +233,29 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
   let refreshing: Promise<void> | null = null;
 
   const isOwn = (url: string) => url === config.relayUrl;
+  const scopeOf = (url: string): RelayScope => (isOwn(url) ? "own" : "external");
+
+  /** Republish the connection gauges from the live map. Called on every
+   *  change to it or to a socket's state; labelled by scope only — a relay
+   *  URL is operator- and user-supplied, never a label. */
+  function publishConnectionGauges(): void {
+    const configured: Record<RelayScope, number> = { own: 0, external: 0 };
+    const connected: Record<RelayScope, number> = { own: 0, external: 0 };
+    let ownAuthed = 0;
+    for (const [url, conn] of connections) {
+      const scope = scopeOf(url);
+      configured[scope] += 1;
+      if (conn.ws?.readyState === WS_OPEN) {
+        connected[scope] += 1;
+        if (scope === "own" && conn.authed) ownAuthed = 1;
+      }
+    }
+    for (const scope of ["own", "external"] as const) {
+      ingestRelaysConfigured.set({ scope }, configured[scope]);
+      ingestRelaysConnected.set({ scope }, connected[scope]);
+    }
+    ingestOwnRelayAuthenticated.set(ownAuthed);
+  }
 
   function sinceKey(url: string): string {
     return isOwn(url)
@@ -291,6 +326,7 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
       conn.reconnectTimer = null;
       open(url);
     }, conn.backoffMs);
+    ingestRelayReconnects.inc({ scope: scopeOf(url) });
     conn.backoffMs = Math.min(conn.backoffMs * 2, RECONNECT_MAX_MS);
   }
 
@@ -334,6 +370,8 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
     ws.addEventListener("open", async () => {
       conn.backoffMs = cfg.reconnectBaseMs;
       conn.authed = false;
+      ingestRelayConnects.inc({ scope: scopeOf(url) });
+      publishConnectionGauges();
       conn.pendingAuthId = undefined;
       conn.sinceReady = false;
       conn.gatedSent.clear();
@@ -420,6 +458,7 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
           allowedSpaceIds: isOwn(url) ? null : conn.spaceIds,
           relayPubkey: conn.relayPubkey,
         };
+        // A throw is counted inside processEvent (ingest_handler_errors).
         processEvent(event, ctx).catch((err) => {
           console.error("[ingester] Error processing event:", (err as Error).message);
         });
@@ -438,7 +477,10 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
     // good the first time a retry landed while the relay was still down. The
     // guard in scheduleReconnect makes the pair idempotent when an established
     // socket errors and then closes.
-    const reconnect = () => scheduleReconnect(conn, url, ws);
+    const reconnect = () => {
+      publishConnectionGauges();
+      scheduleReconnect(conn, url, ws);
+    };
     ws.addEventListener("close", reconnect);
     ws.addEventListener("error", reconnect);
   }
@@ -482,6 +524,7 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
       conn.pendingAuthId = undefined;
       if (msg[2] === true) {
         conn.authed = true;
+        publishConnectionGauges();
         // The relay accepted the key — but only RELAY_INGEST_PUBKEYS makes it
         // the ingest ROLE; an unlisted key is an ordinary authed user and the
         // wraps/reports REQs below come back empty (relay logs a warning).
@@ -521,6 +564,7 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
     } catch {
       /* ignore */
     }
+    publishConnectionGauges();
   }
 
   function setEq(a: Set<string>, b: Set<string>): boolean {
@@ -567,6 +611,7 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
       const existing = connections.get(url);
       if (!existing) {
         connections.set(url, newConn(ids));
+        publishConnectionGauges();
         open(url);
       } else if (!setEq(existing.spaceIds, ids)) {
         existing.spaceIds = ids;
@@ -588,6 +633,7 @@ export function startRelayIngester(opts: RelayIngesterOptions = {}): { stop: () 
     console.warn("[ingester] INGEST_SECRET_KEY is set but not a valid hex/nsec key — wraps REQ will be unauthenticated");
   }
   connections.set(config.relayUrl, newConn(new Set()));
+  publishConnectionGauges();
   open(config.relayUrl);
   // Then reconcile external relays now and on an interval.
   const scheduleRefresh = () => {

@@ -13,8 +13,13 @@ import { startTranscodeWorker } from "./workers/transcodeWorker.js";
 import { closeTranscodeQueue } from "./lib/queue.js";
 import { musicService } from "./services/musicService.js";
 import { startAccountDeletionWorker } from "./workers/accountDeletionWorker.js";
+import { parseMetricsAddr, startMetricsServer } from "./metricsServer.js";
+import { startMetricsSampler } from "./workers/metricsSampler.js";
 
 async function main() {
+  // A malformed METRICS_ADDR is a boot error, before anything is started.
+  const metricsAddr = parseMetricsAddr(config.metricsAddr);
+
   // Run database migrations before anything else
   await runMigrations();
 
@@ -49,6 +54,20 @@ async function main() {
     startAccountDeletionWorker(),
   ];
 
+  // Internal Prometheus listener + the sampler that keeps its pull-style
+  // gauges fresh. Off unless METRICS_ADDR is set.
+  let metricsServer: Awaited<ReturnType<typeof startMetricsServer>> | null = null;
+  if (metricsAddr) {
+    try {
+      metricsServer = await startMetricsServer(metricsAddr);
+      workers.push(startMetricsSampler());
+    } catch (err) {
+      // The API is already serving: losing metrics must not take it down.
+      // The scraper's own `up == 0` is what reports this.
+      console.error(`[metrics] listener failed to start on ${config.metricsAddr}:`, (err as Error).message);
+    }
+  }
+
   // BullMQ transcode worker is opt-in via env so we can scale producers and
   // consumers independently. Flag off by default; flip `TRANSCODE_WORKER=true`
   // to enable.
@@ -68,6 +87,8 @@ async function main() {
 
     // Close the transcode queue connection (harmless no-op if never opened)
     await closeTranscodeQueue().catch(() => {});
+
+    await metricsServer?.stop().catch(() => {});
 
     // Close Fastify server (drains in-flight requests)
     try {

@@ -1,7 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { StrictMode, createElement } from "react";
+import { act, render, renderHook } from "@testing-library/react";
 import {
   captureScrollPosition,
+  resolveAnchorTop,
   resolveScrollTop,
+  scaledAnchorOffset,
+  useAnchoredScrollRestore,
+  type SavedScrollPosition,
 } from "../useAnchoredScrollRestore";
 
 const ATTR = "data-feed-anchor";
@@ -58,6 +64,7 @@ describe("captureScrollPosition", () => {
       scrollTop: 250,
       anchorId: "c",
       anchorOffset: 50,
+      anchorHeight: 100,
     });
   });
 
@@ -139,5 +146,208 @@ describe("resolveScrollTop", () => {
   it("uses the pixel offset when there is no anchor id", () => {
     const c = makeContainer();
     expect(resolveScrollTop(c, { scrollTop: 123 }, ATTR)).toBe(123);
+  });
+});
+
+describe("resolveAnchorTop", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("is null when the anchor card is not rendered (virtualized list)", () => {
+    const c = makeContainer();
+    addCard(c, "a", 0);
+    expect(resolveAnchorTop(c, { scrollTop: 900, anchorId: "far", anchorOffset: 10 }, ATTR)).toBeNull();
+    expect(resolveAnchorTop(c, { scrollTop: 900 }, ATTR)).toBeNull();
+  });
+
+  it("is the card's live position plus the saved offset when it is rendered", () => {
+    const c = makeContainer();
+    addCard(c, "a", 0);
+    addCard(c, "b", 340);
+    expect(resolveAnchorTop(c, { scrollTop: 1, anchorId: "b", anchorOffset: 25 }, ATTR)).toBe(365);
+  });
+});
+
+describe("useAnchoredScrollRestore with a virtualized list", () => {
+  // Animation frames run by hand; cancelling one really removes it.
+  let frames: Map<number, FrameRequestCallback>;
+  let nextFrameId: number;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    frames = new Map();
+    nextFrameId = 1;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      const id = nextFrameId++;
+      frames.set(id, cb);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      frames.delete(id);
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Run the queued animation frames, `n` rounds. */
+  function runFrames(n = 1) {
+    for (let i = 0; i < n; i++) {
+      const batch = [...frames.values()];
+      frames.clear();
+      for (const cb of batch) cb(0);
+    }
+  }
+
+  function mount(saved: SavedScrollPosition, scrollToAnchor: (id: string, offset: number) => boolean | null) {
+    const container = makeContainer();
+    const hook = renderHook(() =>
+      useAnchoredScrollRestore({
+        key: "feed",
+        read: () => saved,
+        write: () => {},
+        cardAttr: ATTR,
+        scrollToAnchor,
+      }),
+    );
+    act(() => hook.result.current.containerRef(container));
+    return container;
+  }
+
+  it("asks the list for a card that is not rendered instead of applying the pixel offset", () => {
+    const ask = vi.fn(() => true);
+    const c = mount({ scrollTop: 9000, anchorId: "far", anchorOffset: 30 }, ask);
+    expect(ask).toHaveBeenCalledWith("far", 30);
+    // No clamped pixel jump while the list brings the card in.
+    expect(c.scrollTop).toBe(0);
+  });
+
+  it("pins to the card once the list has rendered it", () => {
+    const ask = vi.fn(() => true);
+    const c = mount({ scrollTop: 9000, anchorId: "far", anchorOffset: 30 }, ask);
+    runFrames(2);
+    addCard(c, "far", 4200);
+    runFrames(1);
+    expect(c.scrollTop).toBe(4230);
+    // The card moved (rows above it were measured): it follows.
+    c.replaceChildren();
+    addCard(c, "far", 4500);
+    runFrames(1);
+    expect(c.scrollTop).toBe(4530);
+  });
+
+  it("keeps asking while the list is not ready, then stops once the request is made", () => {
+    let ready = false;
+    const ask = vi.fn(() => ready);
+    mount({ scrollTop: 9000, anchorId: "far", anchorOffset: 0 }, ask);
+    runFrames(3);
+    expect(ask).toHaveBeenCalledTimes(4); // on restore + once per frame
+    ready = true;
+    runFrames(1);
+    expect(ask).toHaveBeenCalledTimes(5);
+    runFrames(5);
+    expect(ask).toHaveBeenCalledTimes(5); // waiting for the card to render
+  });
+
+  it("falls back to the pixel offset when the card is no longer in the list", () => {
+    const ask = vi.fn(() => null);
+    const c = mount({ scrollTop: 640, anchorId: "deleted", anchorOffset: 30 }, ask);
+    expect(c.scrollTop).toBe(640);
+    runFrames(3);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask the list when the card is already in the DOM", () => {
+    const ask = vi.fn(() => true);
+    const container = makeContainer();
+    addCard(container, "near", 300);
+    const hook = renderHook(() =>
+      useAnchoredScrollRestore({
+        key: "feed",
+        read: () => ({ scrollTop: 320, anchorId: "near", anchorOffset: 20 }),
+        write: () => {},
+        cardAttr: ATTR,
+        scrollToAnchor: ask,
+      }),
+    );
+    act(() => hook.result.current.containerRef(container));
+    expect(container.scrollTop).toBe(320);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("keeps re-pinning after StrictMode's mount-time effect replay", () => {
+    // React (development) runs the unmount cleanup once right after mount,
+    // which cancelled the loop started when the container attached during
+    // that same mount.
+    const ask = vi.fn(() => true);
+    function Feed() {
+      const { containerRef } = useAnchoredScrollRestore({
+        key: "feed",
+        read: () => ({ scrollTop: 9000, anchorId: "far", anchorOffset: 30 }),
+        write: () => {},
+        cardAttr: ATTR,
+        scrollToAnchor: ask,
+      });
+      return createElement("div", { ref: containerRef, "data-testid": "feed" });
+    }
+    const { getByTestId } = render(createElement(StrictMode, null, createElement(Feed)));
+    const container = getByTestId("feed") as HTMLDivElement;
+    runFrames(2);
+    addCard(container, "far", 4200);
+    runFrames(2);
+    expect(container.scrollTop).toBe(4230);
+  });
+
+  it("starts at the top with no saved position", () => {
+    const ask = vi.fn(() => true);
+    const container = makeContainer();
+    container.scrollTop = 500;
+    const hook = renderHook(() =>
+      useAnchoredScrollRestore({
+        key: "feed",
+        read: () => undefined,
+        write: () => {},
+        cardAttr: ATTR,
+        scrollToAnchor: ask,
+      }),
+    );
+    act(() => hook.result.current.containerRef(container));
+    expect(container.scrollTop).toBe(0);
+    expect(ask).not.toHaveBeenCalled();
+  });
+});
+
+describe("scaledAnchorOffset", () => {
+  it("keeps the exact offset while the card has the height it was saved at", () => {
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 183, anchorHeight: 280 }, 280)).toBe(183);
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 183, anchorHeight: 280 }, 280.6)).toBe(183);
+  });
+
+  it("scales the offset when the card came back shorter or taller", () => {
+    // A grid row was 280px tall and the reader was 210px into it (three
+    // quarters). At a narrower width the row is 180px: three quarters is 135.
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 210, anchorHeight: 280 }, 180)).toBe(135);
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 100, anchorHeight: 200 }, 400)).toBe(200);
+  });
+
+  it("uses the raw offset when no height was saved (older saved positions)", () => {
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a", anchorOffset: 183 }, 90)).toBe(183);
+    expect(scaledAnchorOffset({ scrollTop: 0, anchorId: "a" }, 90)).toBe(0);
+  });
+});
+
+describe("resolveAnchorTop with a resized card", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("lands on the same part of a card that came back at another height", () => {
+    const c = makeContainer();
+    addCard(c, "a", 0, 300);
+    addCard(c, "b", 300, 180); // was 280px tall when saved
+    const target = resolveAnchorTop(c, { scrollTop: 510, anchorId: "b", anchorOffset: 210, anchorHeight: 280 }, ATTR);
+    expect(target).toBe(300 + 135);
   });
 });

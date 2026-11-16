@@ -19,7 +19,7 @@ import {
   type MediaPrefs,
 } from "@ishtarservices/core";
 import { Button } from "@/components/ui/Button";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { Toggle } from "@/components/ui/Toggle";
 import { useAppSelector } from "@/store/hooks";
@@ -412,7 +412,7 @@ export function StorageSettingsTab() {
 
       <Modal open={confirmReplace} onClose={() => setConfirmReplace(false)}>
         <div className="w-full max-w-sm rounded-2xl border border-border bg-panel p-5">
-          <h3 className="text-sm font-semibold text-heading">Replace your Nostr server list?</h3>
+          <ModalTitle as="h3" className="text-sm font-semibold text-heading">Replace your Nostr server list?</ModalTitle>
           <p className="mt-2 text-xs leading-relaxed text-soft">
             Another app set a different media server list for your account. Saving shares your
             servers from here instead, and other apps will use them.

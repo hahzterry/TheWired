@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { Modal } from "./Modal";
+import { useId, useState, type ReactNode } from "react";
+import { Modal, ModalTitle } from "./Modal";
 import { Button } from "./Button";
 
 interface ConfirmDialogProps {
@@ -17,6 +17,7 @@ interface ConfirmDialogProps {
 export function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onClose }: ConfirmDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const bodyId = useId();
 
   async function handleConfirm() {
     setBusy(true);
@@ -32,18 +33,25 @@ export function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfi
   }
 
   return (
-    <Modal open={open} onClose={busy ? () => {} : onClose}>
-      <div className="w-full max-w-sm rounded-2xl card-glass p-6 shadow-2xl" role="alertdialog" aria-label={title}>
-        <h2 className="mb-2 text-base font-bold text-heading">{title}</h2>
-        <div className="text-sm text-soft">{body}</div>
-        {error && <p className="mt-3 text-xs text-red-400">{error}</p>}
+    <Modal
+      open={open}
+      onClose={busy ? () => {} : onClose}
+      role="alertdialog"
+      describedBy={bodyId}
+    >
+      <div className="w-full max-w-sm rounded-2xl card-glass p-6 shadow-2xl">
+        <ModalTitle className="mb-2 text-base font-bold text-heading">{title}</ModalTitle>
+        <div id={bodyId} className="text-sm text-soft">{body}</div>
+        {error && <p role="alert" className="mt-3 text-xs text-red-400">{error}</p>}
         <div className="mt-5 flex justify-end gap-2">
-          <Button variant="ghost" size="md" onClick={onClose} disabled={busy}>
+          <Button type="button" variant="ghost" size="md" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <button
+            type="button"
             onClick={handleConfirm}
             disabled={busy}
+            aria-busy={busy}
             className={
               danger
                 ? "rounded-xl bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-50"

@@ -18,6 +18,7 @@ import { matchMusicEmbed } from "@/lib/content/musicEmbeds";
 import { MusicEmbedShapeContext, type MusicEmbedShape } from "./musicEmbedContext";
 import { EmbedSurfaceContext } from "./embedSurface";
 import { MediaGallery, SmartImage, SmartVideo } from "../media";
+import { InlineAudio } from "../media/InlineAudio";
 import { ErrorBoundary, ItemBoundary } from "../ui/ErrorBoundary";
 
 interface RichContentProps {
@@ -198,7 +199,7 @@ function MediaSegment({
       </span>
     );
   }
-  return <audio src={url} controls preload="metadata" className="mt-1 max-w-xs" />;
+  return <InlineAudio src={url} className="mt-1 max-w-xs" />;
 }
 
 /**

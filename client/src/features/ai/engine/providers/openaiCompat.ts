@@ -14,15 +14,24 @@ import type {
   ToolDefinition,
 } from "../types";
 
+/** How a provider's requests are carried (see `fetchImpl` below). */
+export type EngineFetch = (url: string, init?: RequestInit) => Promise<Response>;
+
 /**
  * OpenAI Chat Completions adapter. Covers every backend that speaks that wire
  * format: OpenAI, OpenRouter, DeepSeek, Kimi, Ollama, LM Studio, and the
  * downloaded llama-server — parameterized only by `baseUrl` + an optional bearer
  * key. The key is read lazily via `getKey` so it never lives on the provider.
+ *
+ * `fetchImpl` is the transport. Everything else here (request shape, SSE
+ * parsing, tool-call assembly, `ChatChunk` normalization) is shared, so a
+ * backend that is not reached over the webview's HTTP stack — the built-in
+ * engine, which is reached over IPC — still goes through this one adapter.
  */
 export function makeOpenAICompatProvider(
   config: AIProviderConfig,
   getKey: () => string | null,
+  fetchImpl: EngineFetch = engineFetch,
 ): LLMProvider {
   const base = config.baseUrl.replace(/\/+$/, "");
 
@@ -42,7 +51,7 @@ export function makeOpenAICompatProvider(
   ): AsyncIterable<ChatChunk> {
     let res: Response;
     try {
-      res = await engineFetch(`${base}/chat/completions`, {
+      res = await fetchImpl(`${base}/chat/completions`, {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({
@@ -137,7 +146,7 @@ export function makeOpenAICompatProvider(
   }
 
   async function listModels(): Promise<AIModelInfo[]> {
-    const res = await engineFetch(`${base}/models`, { headers: headers() });
+    const res = await fetchImpl(`${base}/models`, { headers: headers() });
     if (!res.ok) {
       throw new Error(`Models request failed: ${res.status}`);
     }

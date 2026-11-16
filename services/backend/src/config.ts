@@ -191,4 +191,10 @@ export const config = {
   transcodeWorker: process.env.TRANSCODE_WORKER === "true",
   /** Max concurrent ffmpeg jobs per worker process. Default 1 keeps a vCPU free for API serving. */
   transcodeConcurrency: parseInt(process.env.TRANSCODE_CONCURRENCY ?? "1", 10),
+  /** Where the internal Prometheus listener binds (`host:port`, `:port` or a
+   *  port; no host = loopback). Empty = no listener. It is a separate socket
+   *  from the API on purpose — see metricsServer.ts and docs/METRICS.md. */
+  metricsAddr: process.env.METRICS_ADDR ?? "",
+  /** How often the dependency probes and queue-depth gauges are refreshed. */
+  metricsSampleIntervalMs: Math.max(1000, nonNegativeInt(process.env.METRICS_SAMPLE_INTERVAL_MS, 15_000)),
 } as const;

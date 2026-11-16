@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { X, Upload, Music, FileAudio, ChevronLeft } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadAudio } from "@/lib/api/music";
@@ -192,7 +192,7 @@ function ReplaceAudioModalInner({ track, onClose, onBack }: ReplaceAudioModalPro
                 <ChevronLeft size={18} />
               </button>
             )}
-            <h2 className="text-lg font-semibold text-heading">Replace Audio</h2>
+            <ModalTitle className="text-lg font-semibold text-heading">Replace Audio</ModalTitle>
           </div>
           <button onClick={onClose} className="text-soft hover:text-heading">
             <X size={18} />

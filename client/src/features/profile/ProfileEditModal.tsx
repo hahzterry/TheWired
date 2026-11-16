@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Spinner } from "../../components/ui/Spinner";
 import { ImageUpload } from "../../components/ui/ImageUpload";
@@ -76,7 +76,7 @@ function ProfileEditModalInner({ onClose }: ProfileEditModalProps) {
     <Modal open onClose={onClose}>
       <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl card-glass p-8">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-heading">Edit Profile</h2>
+          <ModalTitle className="text-lg font-bold text-heading">Edit Profile</ModalTitle>
           <Button variant="ghost" size="sm" onClick={onClose}>
             <X size={18} />
           </Button>

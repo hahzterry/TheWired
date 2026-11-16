@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { focusableWithin, useEscapeLayer } from "./layer";
 
 /**
  * Chrome-less anchored popup for self-styled panels (GIF/emoji pickers, poll
@@ -25,6 +26,13 @@ import { createPortal } from "react-dom";
  * Distinct from `PopoverMenu`, which is a styled menu (card chrome, focus
  * roving). This one only solves placement + sizing, and closes on Escape /
  * outside click / outside scroll, re-measuring on lazy content resize.
+ *
+ * Keyboard: the popup is portaled to the end of <body>, far from its trigger
+ * in tab order. So when it is opened from the keyboard on a button-like
+ * trigger, focus moves into it; Tab past either end closes it and returns to
+ * the trigger; and closing it while it holds focus puts focus back on the
+ * trigger. Popups anchored to a text field (autocompletes) never take focus:
+ * the user keeps typing.
  */
 
 interface Rect {
@@ -107,6 +115,25 @@ interface AnchoredPopoverProps {
   children: ReactNode;
   /** Preferred vertical side; flips automatically when it doesn't fit. */
   preferredSide?: "above" | "below";
+  /** Accessible name for the popup (e.g. "Emoji picker"). */
+  label?: string;
+  /** ARIA role for the popup container, when its content warrants one. */
+  role?: "dialog" | "listbox" | "menu" | "group";
+}
+
+function isTextEntry(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+}
+
+/** The trigger has keyboard focus (a mouse click leaves no :focus-visible). */
+function hasKeyboardFocus(el: HTMLElement): boolean {
+  if (document.activeElement !== el) return false;
+  try {
+    return el.matches(":focus-visible");
+  } catch {
+    return false;
+  }
 }
 
 export function AnchoredPopover({
@@ -115,8 +142,14 @@ export function AnchoredPopover({
   onClose,
   children,
   preferredSide = "below",
+  label,
+  role,
 }: AnchoredPopoverProps) {
   const popupRef = useRef<HTMLDivElement>(null);
+  // Whether focus is (or was last) inside the popup — read when it closes.
+  const heldFocus = useRef(false);
+  const close = useRef(onClose);
+  close.current = onClose;
   const [coords, setCoords] = useState<AnchoredPosition | null>(null);
 
   const updatePosition = useCallback(() => {
@@ -152,14 +185,52 @@ export function AnchoredPopover({
     return () => ro.disconnect();
   }, [open, updatePosition]);
 
+  // Escape closes this popup only, not the dialog it was opened from.
+  useEscapeLayer(open, onClose);
+
+  // Focus: move in when opened from the keyboard, hand back on close.
   useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const popup = popupRef.current;
+    if (!open || !anchorEl || !popup) return;
+    heldFocus.current = false;
+
+    const onFocusIn = () => {
+      heldFocus.current = true;
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    const onFocusOut = (e: FocusEvent) => {
+      // Focus moved somewhere deliberate (not just dropped): leave it there.
+      if (e.relatedTarget && !popup.contains(e.relatedTarget as Node)) heldFocus.current = false;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const items = focusableWithin(popup);
+      if (items.length === 0) return;
+      const active = document.activeElement;
+      const leavingBackward = e.shiftKey && (active === items[0] || active === popup);
+      const leavingForward = !e.shiftKey && active === items[items.length - 1];
+      if (leavingBackward || leavingForward) {
+        e.preventDefault();
+        close.current();
+      }
+    };
+    popup.addEventListener("focusin", onFocusIn);
+    popup.addEventListener("focusout", onFocusOut);
+    popup.addEventListener("keydown", onKeyDown);
+
+    if (!isTextEntry(anchorEl) && hasKeyboardFocus(anchorEl)) popup.focus({ preventScroll: true });
+
+    return () => {
+      popup.removeEventListener("focusin", onFocusIn);
+      popup.removeEventListener("focusout", onFocusOut);
+      popup.removeEventListener("keydown", onKeyDown);
+      const dropped = !document.activeElement || document.activeElement === document.body;
+      const stillInside = popup.contains(document.activeElement);
+      if (heldFocus.current && (dropped || stillInside) && document.contains(anchorEl)) {
+        anchorEl.focus();
+      }
+      heldFocus.current = false;
+    };
+  }, [open, anchorEl]);
 
   // Outside click closes; clicks on the anchor are left to the trigger's own
   // toggle handler (otherwise close + re-open would race on the same click).
@@ -209,7 +280,14 @@ export function AnchoredPopover({
     : { top: -9999, left: -9999 };
 
   return createPortal(
-    <div ref={popupRef} className="fixed z-50 flex flex-col" style={style}>
+    <div
+      ref={popupRef}
+      role={role}
+      aria-label={label}
+      tabIndex={-1}
+      className="fixed z-50 flex flex-col outline-none"
+      style={style}
+    >
       {children}
     </div>,
     document.body,

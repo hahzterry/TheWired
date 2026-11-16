@@ -21,6 +21,17 @@
 api.thewired.app {
 	import security_headers
 
+	# Service metrics are served by separate internal listeners that nothing
+	# here routes to (docs/METRICS.md). The gateway already answers 404 for
+	# these paths; refusing them at the edge too means a mistake further in
+	# cannot publish them.
+	@metrics {
+		path /metrics /metrics/* /api/metrics /api/metrics/*
+	}
+	handle @metrics {
+		respond 404
+	}
+
 	# Multipart uploads stream files up to the backend's MAX_BLOB_SIZE; every
 	# other API request is small JSON and gets a hard body cap at the edge
 	# (the gateway applies the same cap with a 413, this stops the bytes sooner).

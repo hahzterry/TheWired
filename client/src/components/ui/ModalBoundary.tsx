@@ -103,7 +103,7 @@ function ModalFallback({ retry, summary, reloadSuggested, onClose, contained }: 
   }
 
   return (
-    <Modal open onClose={close}>
+    <Modal open onClose={close} label="This dialog hit a problem">
       {card}
     </Modal>
   );

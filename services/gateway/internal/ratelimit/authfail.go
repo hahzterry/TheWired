@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/thewired/gateway/internal/metrics"
 )
 
 // AuthFailGuard rate-limits FAILED authentication attempts per client IP, in
@@ -72,6 +74,7 @@ func (g *AuthFailGuard) Middleware(next http.Handler) http.Handler {
 		ip := clientIP(r)
 		now := time.Now()
 		if g.blocked(ip, now) {
+			metrics.RateLimitRejection(metrics.BucketAuthFail)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			w.Write([]byte(`{"error":"too many failed auth attempts","code":"AUTH_RATE_LIMITED"}`))

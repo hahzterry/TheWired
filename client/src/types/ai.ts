@@ -212,3 +212,92 @@ export interface AIProviderConfig {
   /** false for keyless local engines (Ollama, LM Studio). */
   keyRequired: boolean;
 }
+
+// ── Managed local engine (desktop only) ─────────────────────────────────────
+// Everything here is display state mirrored from the native side. The engine's
+// per-launch access key and its port are NOT part of any of these shapes: they
+// never leave the native process (requests to the engine go over IPC).
+
+export type ManagedEnginePhase =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "restarting"
+  | "stopping"
+  | "failed";
+
+/** Failure classes reported by the native engine manager (`llm.rs` ErrorCode). */
+export type ManagedErrorCode =
+  | "unsupported_platform"
+  | "insufficient_memory"
+  | "insufficient_disk"
+  | "hash_mismatch"
+  | "engine_invalid"
+  | "network"
+  | "cancelled"
+  | "not_installed"
+  | "unknown_model"
+  | "busy"
+  | "startup_failed"
+  | "port_unavailable"
+  | "crashed"
+  | "not_running"
+  | "model_mismatch"
+  | "not_allowed"
+  | "unexpected_response"
+  | "io";
+
+export interface ManagedEngineError {
+  code: ManagedErrorCode;
+  message: string;
+  neededBytes?: number;
+  availableBytes?: number;
+}
+
+export interface ManagedEngineStatus {
+  phase: ManagedEnginePhase;
+  /** Catalogue id of the model the engine was started with. */
+  modelId: string | null;
+  /** Automatic restarts since the engine was started. */
+  restarts: number;
+  error: ManagedEngineError | null;
+  /** The engine runtime itself has been downloaded. */
+  engineInstalled: boolean;
+  engineBuild: string;
+}
+
+export interface ManagedHardware {
+  os: string;
+  arch: string;
+  totalRamBytes: number;
+  cpuCores: number;
+  freeDiskBytes: number | null;
+  acceleration: "metal" | "cpu";
+  /** A managed engine build exists for this OS/architecture. */
+  engineSupported: boolean;
+  engineBuild: string;
+  engineDownloadBytes: number | null;
+}
+
+export interface ManagedModel {
+  id: string;
+  name: string;
+  description: string;
+  /** Hugging Face repository the file is pinned to (display only). */
+  source: string;
+  license: string;
+  sizeBytes: number;
+  minRamBytes: number;
+  recommendedRamBytes: number;
+  reasoning: boolean;
+  /** Downloaded and checksum-verified. */
+  installed: boolean;
+  /** Bytes of an unfinished download waiting to be resumed. */
+  partialBytes: number;
+}
+
+export interface ManagedDownload {
+  phase: "downloading" | "verifying";
+  downloaded: number;
+  total: number;
+}

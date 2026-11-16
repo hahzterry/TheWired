@@ -201,6 +201,7 @@ A space can be end-to-end encrypted (`features/spaces/e2ee/`, `docs/E2EE_SPACES.
 ### AI Engine (security contracts — do not break)
 Toggleable AI assistant in `features/ai/`. 3-tier engine (detect local Ollama/LM Studio · managed `llama-server` · cloud keys) behind one OpenAI-compatible adapter; every backend normalizes to a `ChatChunk` stream. Load-bearing rules:
 - **API keys NEVER touch Redux** — only `llmManager` (singleton) memory + the OS keychain (`secretStore`). The `aiSlice` holds non-secret config only.
+- **The managed engine's per-launch key never leaves the native process** (not Redux, not `llmManager`, not the keychain, not argv). The webview does not connect to the engine: its requests go over IPC (`llm_request`, a fixed two-route table) and Rust makes the HTTP call. Do not add a loopback HTTP scope or a runtime capability for it. The engine binds loopback, and no engine archive or model is fetched without a pinned SHA-256.
 - **The agent never signs.** Read tools auto-run (results framed untrusted via `frameUntrustedBlock`); write tools register a `PendingWrite` and are signed ONLY on human Approve in `gate/approveWrite.ts`.
 - Untrusted model output: `AIMarkdown` scheme-allowlists URLs, no `rehype-raw`; images are click-to-load. See `docs/AI_ENGINE.md`.
 
@@ -210,6 +211,16 @@ Render errors are contained by `ErrorBoundary` (`components/ui/ErrorBoundary.tsx
 - **New modal** → export it through `withModalBoundary(Inner, "label")` (`components/ui/withModalBoundary.tsx`); its fallback is a dismissible dialog.
 - **Crash log** (`lib/crash/`): a bounded, redacted ring buffer in `localStorage["wired:crashlog"]`, fed by boundaries and by global `error` / `unhandledrejection` handlers, surfaced only through "Copy diagnostics" (fallback UI + Settings → App) and `wiredDebug.crashes()`. It stays on the device. Records are built from an `Error`'s name, message and stack only and pass through `redact.ts`; never add props, state or event data to a record, and `label` must be a constant.
 - **Dev fault injection**: `wiredDebug.crash("<scope>:<label>", { id })` makes that boundary's content throw; `wiredDebug.crash()` disarms. Compiled out of production builds.
+
+### Virtualized Lists (Client)
+The long lists (space notes feed, profile tabs, media grid, space chat, DM conversation, AI conversation) mount only the rows around the viewport, through `react-virtuoso` behind two shared components in `components/virtual/`:
+- **`VirtualFeed`** — feeds. Scrolls inside the feed's existing scroll container, so headers and load-more controls scroll with it. Rows are spaced by its `gap` prop (padding, never margins: the virtualizer measures the row box).
+- **`VirtualMessageList`** — chat-style lists. Opens on the newest row (or `initialRow`), follows appends only while the reader is at the bottom, keeps the reader's place when rows arrive above.
+- **New long list** → use one of the two; keep each row keyed by its stable id and wrapped in `ItemBoundary`. Do not add render-caps or IntersectionObserver sentinels.
+- **Rows unmount when scrolled away.** State a reader set on purpose (a draft, an open composer, an expanded thread) goes through `useRetainedState(key, initial)`, not `useState`; it is kept per account. Inline players in a row use `SmartVideo` / `InlineAudio`, which come back paused at the position they were left at (`useResumePlayback`), never a bare `<video>` / `<audio>`.
+- **The list components decide nothing while rendering.** Follow / missed-append / prepend bookkeeping is derived from the last committed row keys and committed in effects, so a render React replays or discards changes nothing. Keep it that way: no ref writes and no layout reads in their render.
+- **Scroll restore** is `useAnchoredScrollRestore` with `scrollToAnchor` (the saved card is usually not in the DOM); mark each card with `data-feed-anchor`. Code that keeps re-scrolling a virtual list for a while (a restore loop) calls `markProgrammaticScroll` (`lib/virtual/viewportAnchor.ts`) so the at-rest anchor keeper makes no corrections of its own meanwhile.
+- **Tests** have no layout: wrap in `VirtualViewport` and await `virtualListSettled()` (`src/__tests__/helpers/virtualList.tsx`). See `docs/KNOWN_ISSUES.md` #1 for the design and measurements.
 
 ### Code Splitting (Client)
 The startup bundle is the shell plus the landing view (space sidebar, chat / notes / media channels). Everything else is a lazy chunk: every other route, the music and AI sections, sidebar bodies per mode, right-panel tabs, the playback bar, the call view, onboarding, and the heavy modals. `client/src/__tests__/bundleHygiene.test.ts` fails on a static import that would undo this.
@@ -239,6 +250,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 - **`keystore.rs`** -- key + signing: `keystore_get_public_key`, `keystore_sign_event`, `keystore_has_key`, `keystore_get_secret_key`, `keystore_delete_key`, `keystore_import_key`, `keystore_generate_key`, `keystore_clear_active`; **multi-account**: `keystore_list_accounts`, `keystore_switch_account`; **NIP-44 v2**: `keystore_nip44_encrypt/_decrypt`; **transport secrets** (bunker URIs / NWC / LLM keys): `keystore_set_secret`, `keystore_get_secret`, `keystore_delete_secret`.
 - **`relay.rs`** -- embedded SQLite relay: `relay_start`, `relay_stop`, `relay_status`, `relay_stats`, `relay_reset`.
 - **`tunnel.rs` / `cloudflared.rs`** -- Cloudflare tunnel: `tunnel_start`, `tunnel_stop`, `tunnel_status`, `tunnel_named_identity`, `tunnel_set_custom`.
+- **`llm.rs`** (+ `llm/`) -- managed AI engine (`llama-server` child process): `llm_hardware_info`, `llm_models_list`, `llm_model_download`, `llm_download_cancel`, `llm_model_delete`, `llm_engine_ensure`, `llm_server_start`, `llm_server_stop`, `llm_server_status`, `llm_request`, `llm_request_cancel`. Every new command must also be added to `app_commands.rs` and `capabilities/app-commands.json` (`ipc_acl_tests.rs` enforces it).
 
 ## Coding Conventions
 
@@ -263,6 +275,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 ## Dependencies of Note
 
 - `lru-cache` -- event dedup (`dedup.ts`) and other bounded caches; construct with `new LRUCache({ max })`
+- `react-virtuoso` -- list virtualization, used only through `components/virtual/` (`VirtualFeed`, `VirtualMessageList`); the plain `Virtuoso` component is MIT, its `VirtuosoMessageList` add-on is a paid product and is not used. Pinned to an exact version: the chat lists' bottom pin relies on it scrolling only through the element's `scrollBy` / `scrollTo`, which `virtualizerScrollContract.test.tsx` checks on every update
 - `hls.js` -- check `Hls.isSupported()` before use; Safari has native HLS
 - `idb` -- typed IndexedDB wrapper; schema in `client/src/lib/db/database.ts`
 - `nostr-tools` -- protocol utils + NIP-46 `BunkerSigner`. NOTE: `./nip04`/`./nip47` are not exported subpaths; import `nip04`/`nip47` from the package root.

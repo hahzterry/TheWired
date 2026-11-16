@@ -40,7 +40,9 @@ const FEATURES: FeatureRow[] = [
   {
     id: FEATURE_AI,
     label: "AI",
-    description: `An AI chat tab. Connect a local engine (Ollama, LM Studio) or your own API keys (Claude, OpenAI, OpenRouter, Deepseek, Kimi). Conversations stay on this device; ${
+    description: `An AI chat tab. ${
+      IS_TAURI ? "Run a model on this machine with the built-in engine, connect" : "Connect"
+    } a local engine (Ollama, LM Studio) or your own API keys (Claude, OpenAI, OpenRouter, Deepseek, Kimi). Conversations stay on this device; ${
       IS_TAURI
         ? "keys are stored in your OS keychain."
         : "keys stay in memory for this session unless you opt into persistent storage in Settings → Security."
