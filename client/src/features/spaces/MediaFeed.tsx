@@ -765,6 +765,17 @@ interface MediaRow {
 
 const rowKey = (row: MediaRow) => `row-${row.index}`;
 
+/**
+ * Namespace for the remembered heights of a grid's rows. Rows are keyed by
+ * position (`row-N`), so the scope has to say whose rows they are: the
+ * channel and tab (`positionKey`) and the column count. Without the first,
+ * every grid with the same column count would start from the heights another
+ * channel's rows measured.
+ */
+export function mediaHeightScope(positionKey: string | null, columns: number): string {
+  return `media:${positionKey ?? "-"}:${columns}`;
+}
+
 /** The row that holds the tile with this key, or -1. */
 export function rowIndexOfTile(rows: readonly { items: { key: string }[] }[], tileKey: string): number {
   return rows.findIndex((row) => row.items.some((item) => item.key === tileKey));
@@ -970,7 +981,7 @@ export function MediaFeed() {
               renderItem={renderRow}
               scrollParent={scrollEl}
               listKey={`${positionKey ?? "media"}:${columns}`}
-              heightScope={`media:${columns}`}
+              heightScope={mediaHeightScope(positionKey, columns)}
               estimatedItemHeight={rowHeightEstimate}
               gap={GRID_GAP}
               initialAnchor={

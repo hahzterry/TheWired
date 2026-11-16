@@ -3,7 +3,7 @@
  * current column count and only the rows around the viewport are mounted.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { VirtuosoMockContext } from "react-virtuoso";
 import type { NostrEvent } from "@/types/nostr";
 import { renderWithProviders } from "@/__tests__/helpers/renderWithProviders";
@@ -52,17 +52,23 @@ vi.mock("@/lib/media/mediaGrant", () => ({ useMediaGrant: () => 0 }));
 vi.mock("@/lib/media/eventMedia", () => ({ tokenizeEventMediaUrl: (url: string) => url }));
 vi.mock("@/components/content/RichContent", () => ({ RichContent: () => null }));
 vi.mock("@/features/media/EnhancedVideoPlayer", () => ({ EnhancedVideoPlayer: () => null }));
+// The real height memory, with the lookups a grid makes when it opens recorded.
+vi.mock("@/lib/virtual/itemHeights", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/virtual/itemHeights")>();
+  return { ...actual, initialHeightEstimates: vi.fn(actual.initialHeightEstimates) };
+});
 
 import { MediaFeed, rowIndexOfTile } from "../MediaFeed";
+import { initialHeightEstimates, resetItemHeightsForTests } from "@/lib/virtual/itemHeights";
 
-function renderFeed() {
+function renderFeed(channelId = "space-1:media") {
   return renderWithProviders(
     <VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}>
       <MediaFeed />
     </VirtuosoMockContext.Provider>,
     {
       preloadedState: {
-        spaces: { list: [], activeSpaceId: "space-1", activeChannelId: "space-1:media" },
+        spaces: { list: [], activeSpaceId: "space-1", activeChannelId: channelId },
       } as never,
     },
   );
@@ -82,6 +88,8 @@ beforeEach(() => {
   fixture.meta = { isRefreshing: false, isLoadingMore: false, hasMore: true, loadMoreError: null };
   fixture.loadMore.mockReset();
   fixture.explodeUrl = null;
+  resetItemHeightsForTests();
+  vi.mocked(initialHeightEstimates).mockClear();
 });
 
 afterEach(() => {
@@ -114,6 +122,31 @@ describe("MediaFeed (virtualized grid)", () => {
     expect(rows[0].className).toContain("lg:grid-cols-4");
     // The row is anchored by its first tile, for scroll restoration.
     expect(rows[1].getAttribute("data-feed-anchor")).toBe(`pic-${columns}:img`);
+  });
+
+  it("starts another channel's grid without the row heights this one measured", async () => {
+    stubColumns(4);
+    fixture.setCount(40);
+    const lookups = vi.mocked(initialHeightEstimates);
+    const remembered = () => lookups.mock.results[lookups.mock.results.length - 1]?.value as number[] | undefined;
+
+    // The grid's rows are keyed by position, so "row-0" exists in every grid.
+    const first = renderFeed("space-1:media");
+    expect(remembered()).toBeUndefined();
+    // Once its rows are measured they are remembered: reopening finds them.
+    await waitFor(() => {
+      first.unmount();
+      const again = renderFeed("space-1:media");
+      try {
+        expect(remembered()).toBeDefined();
+      } finally {
+        again.unmount();
+      }
+    });
+
+    // Same width, same column count, another channel: nothing to go on.
+    renderFeed("space-1:other-media");
+    expect(remembered()).toBeUndefined();
   });
 
   it("opens the expanded view when a tile is clicked", () => {
