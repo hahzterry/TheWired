@@ -3,11 +3,6 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure
 import type { UnsignedEvent } from "@/types/nostr";
 import type { Space } from "@/types/space";
 
-// The publish guard fails closed while the account's record of encrypted
-// spaces is not loaded (docs/E2EE_SPACES.md §6.1). When local storage doesn't
-// answer (an IndexedDB open blocked by another tab), that refusal must be
-// prompt and explained, never a hang, and posting must recover on its own.
-
 const h = vi.hoisted(() => ({
   sk: null as Uint8Array | null,
   signed: [] as unknown[],
@@ -63,6 +58,10 @@ import {
 // answer (an IndexedDB open blocked by another tab), plain spaces work as
 // usual, encrypted ones still refuse plaintext, and the keyring's own read of
 // its record is bounded and recovers on its own.
+//
+// No assertion here depends on wall-clock time or scheduler timing: the
+// record's wait is driven with fake timers (setTimeout only, so IndexedDB
+// is untouched), and posting is shown not to wait by never reading storage.
 
 const HOST = "wss://space.example";
 const PLAIN = "plainspace";
@@ -115,6 +114,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const release of h.release) release(undefined);
   _setRecordReadTimeoutForTest();
   store.dispatch(resetAll());
@@ -123,11 +123,9 @@ afterEach(() => {
 });
 
 describe("posting while local storage doesn't answer", () => {
-  it("posts into a plain space at once, without reading storage", async () => {
+  it("posts into a plain space without reading storage", async () => {
     h.read = "hang";
-    const started = Date.now();
     await expect(signAndPublish(chat(PLAIN, "hello"), [HOST])).resolves.toMatchObject({ kind: 9, content: "hello" });
-    expect(Date.now() - started).toBeLessThan(TIMEOUT);
     expect(h.reads).toBe(0);
     expect(published).toHaveLength(1);
   });
@@ -149,25 +147,74 @@ describe("posting while local storage doesn't answer", () => {
   });
 });
 
+/** Settle-state of a promise, readable synchronously after microtasks. */
+function track(p: Promise<unknown>): { settled: () => "pending" | "resolved" | "rejected"; error: () => unknown } {
+  let state: "pending" | "resolved" | "rejected" = "pending";
+  let error: unknown;
+  p.then(
+    () => { state = "resolved"; },
+    (e) => { state = "rejected"; error = e; },
+  );
+  return { settled: () => state, error: () => error };
+}
+
 describe("the keyring's record read", () => {
-  it("gives up within the timeout instead of hanging", async () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  it("gives up when the wait runs out, not before, instead of hanging", async () => {
     h.read = "hang";
-    const started = Date.now();
-    await expect(ensureSpaceE2eeRecord()).rejects.toBeInstanceOf(SpaceE2eeRecordUnavailableError);
-    expect(Date.now() - started).toBeLessThan(TIMEOUT + 500);
+    const attempt = track(ensureSpaceE2eeRecord());
+    await vi.advanceTimersByTimeAsync(TIMEOUT - 1);
+    expect(attempt.settled()).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempt.settled()).toBe("rejected");
+    expect(attempt.error()).toBeInstanceOf(SpaceE2eeRecordUnavailableError);
     expect(selectSpaceE2eeLoaded(store.getState())).toBe(false);
   });
 
   it("starts a fresh read on the next attempt instead of joining the stuck one", async () => {
     h.read = "hang";
-    await expect(ensureSpaceE2eeRecord()).rejects.toBeInstanceOf(SpaceE2eeRecordUnavailableError);
-    await expect(ensureSpaceE2eeRecord()).rejects.toBeInstanceOf(SpaceE2eeRecordUnavailableError);
+    const first = track(ensureSpaceE2eeRecord());
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect(first.settled()).toBe("rejected");
+    const second = track(ensureSpaceE2eeRecord());
     expect(h.reads).toBe(2);
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect(second.settled()).toBe("rejected");
+  });
+
+  it("starts a fresh read even when retried from inside the refusal", async () => {
+    // The edge a clock comparison got wrong: a retry made the moment the
+    // first attempt is refused must not join the read that just ran out.
+    h.read = "hang";
+    const retried = track(ensureSpaceE2eeRecord().catch(() => ensureSpaceE2eeRecord()));
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect(h.reads).toBe(2);
+    expect(retried.settled()).toBe("pending");
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect(retried.settled()).toBe("rejected");
+  });
+
+  it("joins the read in flight while its wait runs, and refuses every caller together", async () => {
+    h.read = "hang";
+    const first = track(ensureSpaceE2eeRecord());
+    await vi.advanceTimersByTimeAsync(TIMEOUT / 2);
+    const second = track(ensureSpaceE2eeRecord());
+    expect(h.reads).toBe(1);
+    await vi.advanceTimersByTimeAsync(TIMEOUT / 2 - 1);
+    expect([first.settled(), second.settled()]).toEqual(["pending", "pending"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect([first.settled(), second.settled()]).toEqual(["rejected", "rejected"]);
   });
 
   it("loads the record when storage answers late", async () => {
     h.read = "hang";
-    await expect(ensureSpaceE2eeRecord()).rejects.toBeInstanceOf(SpaceE2eeRecordUnavailableError);
+    const attempt = track(ensureSpaceE2eeRecord());
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect(attempt.settled()).toBe("rejected");
+    vi.useRealTimers();
     h.read = "answer";
     for (const release of h.release.splice(0)) release(undefined);
     await vi.waitFor(() => expect(selectSpaceE2eeLoaded(store.getState())).toBe(true));
@@ -177,6 +224,7 @@ describe("the keyring's record read", () => {
     h.read = "fail";
     await expect(ensureSpaceE2eeRecord()).rejects.toBeInstanceOf(SpaceE2eeRecordUnavailableError);
     h.read = "answer";
+    vi.useRealTimers();
     await expect(ensureSpaceE2eeRecord()).resolves.toBeUndefined();
     expect(h.reads).toBe(2);
   });

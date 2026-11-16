@@ -73,12 +73,17 @@ export class SpaceE2eeRecordUnavailableError extends Error {
 interface Read {
   account: string;
   promise: Promise<void>;
-  startedAt: number;
+  /** Set when the read's wait ran out. A stale read may never settle (a
+   *  blocked IndexedDB open), so it is never joined again. A fact set by the
+   *  same timer that refuses its callers, never a clock comparison: by the
+   *  time a caller sees the refusal, the read is already stale. */
+  stale: boolean;
+  /** Resolves when the wait runs out. */
+  expired: Promise<void>;
 }
 
-/** The read in flight, if any. Joined only while it is younger than the wait:
- *  an older one may never settle (a blocked IndexedDB open), so the next
- *  attempt starts a fresh read instead of queueing behind it. */
+/** The read in flight, if any. Joined only until its wait runs out; after
+ *  that the next attempt starts a fresh read instead of queueing behind it. */
 let loading: Read | null = null;
 
 /** Is the logged-in account's record in the store? */
@@ -100,8 +105,17 @@ function startRead(account: string): Read {
       store.dispatch(hydrateSpaceE2ee({ account, spaces: sanitizeSpaceE2eeRecord(raw) }));
     }
   })();
-  const read: Read = { account, promise, startedAt: Date.now() };
+  let expire!: () => void;
+  const expired = new Promise<void>((resolve) => {
+    expire = resolve;
+  });
+  const read: Read = { account, promise, stale: false, expired };
+  const timer = setTimeout(() => {
+    read.stale = true;
+    expire();
+  }, readTimeoutMs);
   const clear = () => {
+    clearTimeout(timer);
     if (loading === read) loading = null;
   };
   promise.then(clear, clear);
@@ -123,23 +137,17 @@ export function ensureSpaceE2eeRecord(): Promise<void> {
   if (!account) return Promise.resolve();
   if (isSpaceE2eeRecordLoaded()) return Promise.resolve();
 
-  const now = Date.now();
-  if (!loading || loading.account !== account || now - loading.startedAt >= readTimeoutMs) {
+  if (!loading || loading.account !== account || loading.stale) {
     loading = startRead(account);
   }
   const read = loading;
 
   return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new SpaceE2eeRecordUnavailableError());
-    }, Math.max(0, readTimeoutMs - (now - read.startedAt)));
+    // Whichever comes first settles the caller; the other is a no-op.
+    read.expired.then(() => reject(new SpaceE2eeRecordUnavailableError()));
     read.promise.then(
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
+      () => resolve(),
       (err: unknown) => {
-        clearTimeout(timer);
         if (err instanceof Error && err.message !== "account storage is not ready") {
           reject(new SpaceE2eeRecordUnavailableError());
           return;
