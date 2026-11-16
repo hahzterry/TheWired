@@ -4,7 +4,15 @@
  * collaborators (relay manager, subscription manager, signers, IndexedDB
  * state, persistence listeners, feature bootstraps).
  *
- * The logs are the contract. They pin
+ * These are characterization traces, not a specification. They were recorded
+ * from the code as it was, to prove that moving it changed nothing, so they
+ * pin what the login path does, right or wrong. A log that changes means
+ * behaviour changed. In a refactor that is a failure. In a fix or a feature it
+ * is expected: re-record with `vitest -u` and read the diff, which is the
+ * behaviour change. A log marked `KNOWN DEFECT` records behaviour that is
+ * wrong today; fixing the defect is supposed to change it.
+ *
+ * They pin
  *  - login with each signer type (NIP-07, OS keychain, NIP-46 bunker),
  *  - session restore (multi-account, legacy, unavailable signer, re-entrancy),
  *  - the bootstrap order: what is hydrated from cache, what is subscribed,
@@ -1592,6 +1600,10 @@ describe("cleanup and logout — teardown order", () => {
     await settle();
     take();
     performCleanup();
+    // KNOWN DEFECT: no line here removes the `relayManager.onReconnect`
+    // listener that every login adds. The login path keeps no handle for it,
+    // so cleanup and logout leave it registered. A fix adds its removal to this
+    // log (and to the logout and account-switch logs).
     expect(take()).toMatchInlineSnapshot(`
       [
         "abandonMediaSessions()",
@@ -1702,6 +1714,10 @@ describe("account switching", () => {
     await switchAccount(ALT);
     await settle();
     const lines = take();
+    // KNOWN DEFECT: the `relayManager.onReconnect()` in this log is the second
+    // listener, added on top of the first account's, which the cleanup above it
+    // did not remove. After N logins one reconnect replays the publish outbox
+    // N times. A fix shows the first listener being removed before this line.
     expect(lines.slice(0, lines.findIndex((l) => l.startsWith("dispatch identity/login")) + 1)).toMatchInlineSnapshot(`
       [
         "getUserState("session")",

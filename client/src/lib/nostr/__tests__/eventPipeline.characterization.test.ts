@@ -3,12 +3,20 @@
  * recorded as ordered traces of every store dispatch and every call it makes
  * on its injected dependencies and feature hooks.
  *
- * The traces are the contract. They pin
+ * These are characterization traces, not a specification. They were recorded
+ * from the code as it was, to prove that moving it changed nothing, so they
+ * pin what the pipeline does, right or wrong:
  *  - the stage order (validate → dedup → verify → dispatch → index → notify → flush),
  *  - burst batching and the flush order,
  *  - the `indexEvent` routing of every kind it handles,
  *  - which failures unmark an event from the dedup LRU so a redelivery retries,
  *  - how a gift wrap leaves the normal path and how its rumor is routed.
+ *
+ * A trace that changes means behaviour changed. In a refactor that is a
+ * failure. In a fix or a feature it is expected: re-record with `vitest -u`
+ * and read the diff, which is the behaviour change. A trace marked
+ * `KNOWN DEFECT` records behaviour that is wrong today; fixing the defect is
+ * supposed to change it.
  *
  * Each test builds its own pipeline with `createEventPipeline`, so the dedup
  * LRU and the burst buffer start empty; the store is the app's.
@@ -323,6 +331,9 @@ describe("pipeline stages — validate → dedup → verify → dispatch", () =>
     const { pipeline } = harness();
     take();
     await pipeline.processIncomingEvent(ev(1063), "local");
+    // KNOWN DEFECT: a kind the client has no `indexEvent` case for is not
+    // dropped. It is added to the entity store and counted for its relay, with
+    // no index pointing at it, so nothing renders it. A fix changes this trace.
     expect(take()).toMatchInlineSnapshot(`
       [
         "verify("event:#1")",
@@ -1031,6 +1042,11 @@ describe("indexEvent routing, kind by kind", () => {
     take();
     await pipeline.processIncomingEvent(modDelete, WS);
     pipeline.flushEventPipeline();
+    // KNOWN DEFECT ("deferred"): a kind 9005 that is deferred (or not
+    // authorized) is unmarked for a retry, but only after `events/addEvents`
+    // has already put it in the entity store and the relay count has gone up.
+    // The handler's comment says it is dropped. A fix leaves "deferred" with
+    // the verify line only.
     expect({ deferred, redelivered: take() }).toMatchInlineSnapshot(`
       {
         "deferred": [
