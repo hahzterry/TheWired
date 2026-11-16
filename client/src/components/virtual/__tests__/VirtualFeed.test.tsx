@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen } from "@testing-library/react";
-import { createRef, useState } from "react";
+import { StrictMode, createRef, useState } from "react";
 import { VirtuosoMockContext } from "react-virtuoso";
 import {
   VirtualFeed,
@@ -10,6 +10,7 @@ import {
 } from "../VirtualFeed";
 import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 import { rememberItemHeight, resetItemHeightsForTests } from "@/lib/virtual/itemHeights";
+import { FIRST_ITEM_BASE } from "@/lib/virtual/prependShift";
 
 interface Row {
   id: string;
@@ -226,6 +227,105 @@ describe("VirtualFeed", () => {
     rerender(<Harness items={[{ id: "new" }, ...first]} renderItem={(row) => <Card row={row} />} />);
     // Existing cards were moved, not remounted.
     expect(mounts).toEqual(["row-0", "row-1", "row-2", "new"]);
+  });
+});
+
+/**
+ * A row added at the head of a feed. Whether the reader keeps their place or
+ * sees the row push in depends on where they are, and has to come out the
+ * same however many times React renders the change (Strict Mode renders
+ * everything twice).
+ */
+describe("VirtualFeed rows added at the head", () => {
+  const virtualIndexOf = (text: string) =>
+    Number(screen.getByText(text).closest("[data-item-index]")!.getAttribute("data-item-index"));
+
+  /** Put the top of the list `px` above the top of its scroll parent. */
+  function scrollListUp(px: number) {
+    const scroller = screen.getByTestId("scroller");
+    const wrapper = scroller.firstElementChild as HTMLElement;
+    const rect = (top: number) => ({ top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top, toJSON() {} });
+    vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(rect(0) as DOMRect);
+    vi.spyOn(wrapper, "getBoundingClientRect").mockReturnValue(rect(-px) as DOMRect);
+    act(() => void scroller.dispatchEvent(new Event("scroll")));
+  }
+
+  it("Strict Mode: a reader further down keeps their place, the index moving by exactly the rows added", () => {
+    const first = rows(3);
+    const { rerender } = render(
+      <StrictMode>
+        <Harness items={first} />
+      </StrictMode>,
+    );
+    scrollListUp(500);
+    rerender(
+      <StrictMode>
+        <Harness items={[{ id: "new-1" }, ...first]} />
+      </StrictMode>,
+    );
+    // The rows on screen keep their indexes (so they do not move); the new
+    // row took the index above them.
+    expect(virtualIndexOf("row-0")).toBe(FIRST_ITEM_BASE);
+    expect(virtualIndexOf("row-2")).toBe(FIRST_ITEM_BASE + 2);
+    // Each arrival is counted once.
+    rerender(
+      <StrictMode>
+        <Harness items={[{ id: "new-3" }, { id: "new-2" }, { id: "new-1" }, ...first]} />
+      </StrictMode>,
+    );
+    expect(virtualIndexOf("row-0")).toBe(FIRST_ITEM_BASE);
+    expect(virtualIndexOf("row-2")).toBe(FIRST_ITEM_BASE + 2);
+  });
+
+  it("Strict Mode: with the top of the list in view the new row pushes in", () => {
+    const first = rows(3);
+    const { rerender } = render(
+      <StrictMode>
+        <Harness items={first} />
+      </StrictMode>,
+    );
+    rerender(
+      <StrictMode>
+        <Harness items={[{ id: "new-1" }, ...first]} />
+      </StrictMode>,
+    );
+    expect(virtualIndexOf("new-1")).toBe(FIRST_ITEM_BASE);
+    expect(virtualIndexOf("row-0")).toBe(FIRST_ITEM_BASE + 1);
+  });
+
+  it("goes back to pushing rows in once the reader returns to the top", () => {
+    const first = rows(3);
+    const { rerender } = render(<Harness items={first} />);
+    scrollListUp(500);
+    scrollListUp(0);
+    rerender(<Harness items={[{ id: "new-1" }, ...first]} />);
+    expect(virtualIndexOf("new-1")).toBe(FIRST_ITEM_BASE);
+    expect(virtualIndexOf("row-0")).toBe(FIRST_ITEM_BASE + 1);
+  });
+
+  it("does not measure the page while rendering", () => {
+    const first = rows(3);
+    const { rerender } = render(<Harness items={first} />);
+    const scroller = screen.getByTestId("scroller");
+    let rendering = false;
+    let measuredInRender = 0;
+    const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (rendering && (this === scroller || this === scroller.firstElementChild)) measuredInRender++;
+      return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON() {} } as DOMRect;
+    });
+    rerender(
+      <Harness
+        items={[{ id: "new-1" }, ...first]}
+        renderItem={(row) => {
+          // Rows render inside the list's own render pass.
+          rendering = true;
+          queueMicrotask(() => (rendering = false));
+          return <div data-testid="row">{row.id}</div>;
+        }}
+      />,
+    );
+    spy.mockRestore();
+    expect(measuredInRender).toBe(0);
   });
 });
 

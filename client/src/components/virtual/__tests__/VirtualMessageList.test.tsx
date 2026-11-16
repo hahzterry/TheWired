@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { createRef } from "react";
+import { StrictMode, Suspense, createRef, startTransition, use, useState } from "react";
 import { VirtuosoMockContext } from "react-virtuoso";
 import {
   VirtualMessageList,
@@ -426,5 +426,183 @@ describe("VirtualMessageList", () => {
     expect(screen.queryByTestId("msg")).toBeNull();
     rerender(<List items={msgs(1)} />);
     expect(await screen.findByText("m0")).toBeInTheDocument();
+  });
+});
+
+/**
+ * React may render a component and then not commit that render: Strict Mode
+ * renders everything twice, and a render inside a transition is thrown away
+ * when something in it suspends, then done again later. What the list decides
+ * about a change (follow it, report it as missed, hold the rows through a
+ * prepend) has to come out the same however many times it was rendered.
+ */
+describe("VirtualMessageList under replayed and discarded renders", () => {
+  it("Strict Mode: a message appended while pinned to the bottom is followed, once", async () => {
+    const shouldFollow = vi.fn(({ atBottom }: { atBottom: boolean }) => atBottom);
+    const onMissedAppend = vi.fn();
+    const handle = createRef<VirtualMessageListHandle>();
+    const first = msgs(200);
+    const props = { shouldFollow, onMissedAppend, handleRef: handle };
+    const { container, rerender } = render(
+      <StrictMode>
+        <List items={first} {...props} />
+      </StrictMode>,
+    );
+    await settled();
+    scrollTo(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 }); // at the end
+
+    rerender(
+      <StrictMode>
+        <List items={[...first, { id: "new" }]} {...props} />
+      </StrictMode>,
+    );
+    expect(shouldFollow).toHaveBeenCalledTimes(1);
+    expect(shouldFollow.mock.calls[0][0]).toMatchObject({ atBottom: true, last: { id: "new" } });
+    expect(onMissedAppend).not.toHaveBeenCalled();
+    expect(handle.current!.isAtBottom()).toBe(true);
+    expect(await screen.findByText("new")).toBeInTheDocument();
+  });
+
+  it("Strict Mode: a message appended while up in history is reported as missed, once", async () => {
+    const onMissedAppend = vi.fn();
+    const handle = createRef<VirtualMessageListHandle>();
+    const first = msgs(200);
+    const props = { onMissedAppend, handleRef: handle };
+    const { container, rerender } = render(
+      <StrictMode>
+        <List items={first} {...props} />
+      </StrictMode>,
+    );
+    await settled();
+    scrollTo(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 });
+    scrollTo(container, { scrollTop: 1000, scrollHeight: 10_000, clientHeight: 600 });
+    rerender(
+      <StrictMode>
+        <List items={[...first, { id: "new" }]} {...props} />
+      </StrictMode>,
+    );
+    expect(onMissedAppend).toHaveBeenCalledTimes(1);
+    expect(handle.current!.isAtBottom()).toBe(false);
+  });
+
+  it("Strict Mode: history arriving above shifts the index by exactly the rows added", async () => {
+    const first = msgs(3, 100);
+    const { container, rerender } = render(
+      <StrictMode>
+        <List items={first} />
+      </StrictMode>,
+    );
+    await settled();
+    expect(virtualIndexes(container)).toEqual([FIRST_ITEM_BASE, FIRST_ITEM_BASE + 1, FIRST_ITEM_BASE + 2]);
+    rerender(
+      <StrictMode>
+        <List items={[...msgs(2, 98), ...first]} />
+      </StrictMode>,
+    );
+    expect(virtualIndexOf("m100")).toBe(FIRST_ITEM_BASE);
+    expect(virtualIndexOf("m102")).toBe(FIRST_ITEM_BASE + 2);
+    await waitFor(() => expect(virtualIndexOf("m98")).toBe(FIRST_ITEM_BASE - 2));
+    // And again: each prepend is counted once.
+    rerender(
+      <StrictMode>
+        <List items={[...msgs(3, 95), ...msgs(2, 98), ...first]} />
+      </StrictMode>,
+    );
+    expect(virtualIndexOf("m100")).toBe(FIRST_ITEM_BASE);
+    await waitFor(() => expect(virtualIndexOf("m97")).toBe(FIRST_ITEM_BASE - 3));
+  });
+
+  /**
+   * Renders the list next to a component that can suspend. Changing both in
+   * one transition makes React render the list with the new rows, throw that
+   * render away when the neighbour suspends, and render it again once the
+   * neighbour is ready.
+   */
+  function suspendingHarness(initial: Msg[], props: Omit<Partial<VirtualMessageListProps<Msg>>, "items">) {
+    const api = { set: (_items: Msg[], _wait: Promise<void> | null) => {}, renders: [] as number[] };
+    function Neighbour({ wait }: { wait: Promise<void> | null }) {
+      if (wait) use(wait);
+      return null;
+    }
+    function Harness() {
+      const [state, setState] = useState<{ items: Msg[]; wait: Promise<void> | null }>({ items: initial, wait: null });
+      api.set = (items, wait) => startTransition(() => setState({ items, wait }));
+      api.renders.push(state.items.length);
+      return (
+        <Suspense fallback={null}>
+          <List items={state.items} {...props} />
+          <Neighbour wait={state.wait} />
+        </Suspense>
+      );
+    }
+    return { api, Harness };
+  }
+
+  it("a render that was thrown away does not use up the decision to follow", async () => {
+    const handle = createRef<VirtualMessageListHandle>();
+    const onMissedAppend = vi.fn();
+    const first = msgs(200);
+    // An own send is followed from anywhere.
+    const follow = ({ last }: { last: Msg }) => last.id.startsWith("temp");
+    const { api, Harness } = suspendingHarness(first, { shouldFollow: follow, onMissedAppend, handleRef: handle });
+    const { container } = render(<Harness />);
+    await settled();
+    scrollTo(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 });
+    scrollTo(container, { scrollTop: 1000, scrollHeight: 10_000, clientHeight: 600 });
+    expect(handle.current!.isAtBottom()).toBe(false);
+
+    let ready!: () => void;
+    const wait = new Promise<void>((resolve) => (ready = resolve));
+    await act(async () => api.set([...first, { id: "temp-1" }], wait));
+    // Rendered with the new row, but nothing was committed.
+    expect(api.renders).toContain(201);
+    expect(handle.current!.isAtBottom()).toBe(false);
+
+    await act(async () => {
+      ready();
+      await wait;
+    });
+    // Committed now: the send is followed.
+    expect(handle.current!.isAtBottom()).toBe(true);
+    expect(onMissedAppend).not.toHaveBeenCalled();
+  });
+
+  it("a render that was thrown away does not lose the report of a missed message", async () => {
+    const onMissedAppend = vi.fn();
+    const first = msgs(200);
+    const { api, Harness } = suspendingHarness(first, { onMissedAppend });
+    const { container } = render(<Harness />);
+    await settled();
+    scrollTo(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 });
+    scrollTo(container, { scrollTop: 1000, scrollHeight: 10_000, clientHeight: 600 });
+
+    let ready!: () => void;
+    const wait = new Promise<void>((resolve) => (ready = resolve));
+    await act(async () => api.set([...first, { id: "new" }], wait));
+    expect(onMissedAppend).not.toHaveBeenCalled();
+    await act(async () => {
+      ready();
+      await wait;
+    });
+    expect(onMissedAppend).toHaveBeenCalledTimes(1);
+  });
+
+  it("a render that was thrown away and never done again leaves nothing behind", async () => {
+    const onMissedAppend = vi.fn();
+    const first = msgs(200);
+    const { api, Harness } = suspendingHarness(first, { onMissedAppend });
+    const { container } = render(<Harness />);
+    await settled();
+    scrollTo(container, { scrollTop: 9400, scrollHeight: 10_000, clientHeight: 600 });
+    scrollTo(container, { scrollTop: 1000, scrollHeight: 10_000, clientHeight: 600 });
+
+    // A message is rendered, the render is thrown away, and the message is
+    // gone again (deleted) before anything was committed.
+    await act(async () => api.set([...first, { id: "new" }], new Promise<void>(() => {})));
+    await act(async () => api.set(first, null));
+    expect(onMissedAppend).not.toHaveBeenCalled();
+    // The next real message is still reported, exactly once.
+    await act(async () => api.set([...first, { id: "later" }], null));
+    expect(onMissedAppend).toHaveBeenCalledTimes(1);
   });
 });

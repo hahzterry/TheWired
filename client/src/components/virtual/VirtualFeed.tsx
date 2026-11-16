@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -140,35 +141,57 @@ function VirtualFeedInner<T>({
   handleRef,
 }: VirtualFeedProps<T> & { scrollParent: HTMLElement }) {
   const virtuoso = useRef<VirtuosoHandle>(null);
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-
   const keys = useMemo(() => items.map(itemKey), [items, itemKey]);
-  const keysRef = useRef(keys);
-  keysRef.current = keys;
+
+  // The row keys and index of the last render React committed, and whether
+  // the top of the list was in view when last looked at. Both are written
+  // only outside rendering (an effect, a scroll listener); a render only
+  // reads them. React may render this component without committing that
+  // render (Strict Mode renders twice, a transition whose render suspends is
+  // thrown away and done again), so a render stores nothing itself and takes
+  // no measurements.
+  const committed = useRef<PrependState | null>(null);
+  const topInView = useRef(true);
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   // Rows arriving at the head (a new note at the top of a feed). A reader who
   // is further down keeps their place: the virtualizer is told how many rows
   // were added above, as in the chat lists. A reader who has the top of the
   // list in view gets the usual behaviour instead: the new rows push in.
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const prepend = useRef<PrependState | null>(null);
-  // Rows were added above in a render that has not been committed yet.
-  const shiftPending = useRef(false);
-  if (prepend.current === null || prepend.current.keys !== keys) {
-    let firstItemIndex = nextFirstItemIndex(prepend.current, keys);
-    if (prepend.current !== null && firstItemIndex < prepend.current.firstItemIndex) {
-      const wrapper = wrapperRef.current;
-      const topInView =
-        !wrapper || wrapper.getBoundingClientRect().top >= scrollParent.getBoundingClientRect().top - 1;
-      if (topInView) firstItemIndex = prepend.current.firstItemIndex;
-      else shiftPending.current = true;
+  let firstItemIndex: number;
+  if (committed.current === null) firstItemIndex = nextFirstItemIndex(null, keys);
+  else if (committed.current.keys === keys) firstItemIndex = committed.current.firstItemIndex;
+  else {
+    firstItemIndex = nextFirstItemIndex(committed.current, keys);
+    if (firstItemIndex < committed.current.firstItemIndex && topInView.current) {
+      firstItemIndex = committed.current.firstItemIndex;
     }
-    prepend.current = { keys, firstItemIndex };
   }
-  const firstItemIndex = prepend.current.firstItemIndex;
-  const firstItemIndexRef = useRef(firstItemIndex);
-  firstItemIndexRef.current = firstItemIndex;
+
+  // Committed with the render, before any layout effect: the latest props for
+  // handlers that outlive a render, and whether this commit added rows above.
+  const latest = useRef({ items, keys, firstItemIndex, onRangeChange });
+  const shifted = useRef(false);
+  useInsertionEffect(() => {
+    latest.current = { items, keys, firstItemIndex, onRangeChange };
+    const prev = committed.current;
+    if (prev !== null && prev.keys === keys) return;
+    shifted.current = prev !== null && firstItemIndex < prev.firstItemIndex;
+    committed.current = { keys, firstItemIndex };
+  });
+
+  // Whether the top of the list is in view: looked at when the list scrolls
+  // and after its rows change, never while rendering.
+  useLayoutEffect(() => {
+    const look = () => {
+      const wrapper = wrapperRef.current;
+      topInView.current =
+        !wrapper || wrapper.getBoundingClientRect().top >= scrollParent.getBoundingClientRect().top - 1;
+    };
+    look();
+    scrollParent.addEventListener("scroll", look, { passive: true });
+    return () => scrollParent.removeEventListener("scroll", look);
+  }, [scrollParent, keys]);
 
   // Read once: where to start, and what each row measured last time.
   const [initial] = useState(() => ({
@@ -180,7 +203,7 @@ function VirtualFeedInner<T>({
     handleRef,
     () => ({
       scrollToKey: (key, offset = 0) => {
-        const index = keysRef.current.indexOf(key);
+        const index = latest.current.keys.indexOf(key);
         if (index < 0) return null;
         if (!virtuoso.current) return false;
         markProgrammaticScroll(scrollParent, JUMP_MS);
@@ -205,11 +228,11 @@ function VirtualFeedInner<T>({
     [],
   );
   const expectShift = useViewportAnchor(scrollParent, listEl);
-  // Rows arrived above the viewport in this render: the virtualizer is about
+  // Rows arrived above the viewport in this commit: the virtualizer is about
   // to scroll by their height, which is not the reader going anywhere.
   useLayoutEffect(() => {
-    if (!shiftPending.current) return;
-    shiftPending.current = false;
+    if (!shifted.current) return;
+    shifted.current = false;
     expectShift();
   });
 
@@ -227,15 +250,13 @@ function VirtualFeedInner<T>({
   // state flag only re-runs the effect when the end comes into the window.
   const lastRenderedIndex = useRef(-1);
   const [endRendered, setEndRendered] = useState(false);
-  const onRangeChangeRef = useRef(onRangeChange);
-  onRangeChangeRef.current = onRangeChange;
   const handleRange = useCallback((range: ListRange) => {
     // The virtualizer counts from `firstItemIndex`; keep plain list positions.
-    const startIndex = range.startIndex - firstItemIndexRef.current;
-    const endIndex = range.endIndex - firstItemIndexRef.current;
+    const startIndex = range.startIndex - latest.current.firstItemIndex;
+    const endIndex = range.endIndex - latest.current.firstItemIndex;
     lastRenderedIndex.current = endIndex;
-    setEndRendered(endIndex >= itemsRef.current.length - 1);
-    onRangeChangeRef.current?.({ startIndex, endIndex });
+    setEndRendered(endIndex >= latest.current.items.length - 1);
+    latest.current.onRangeChange?.({ startIndex, endIndex });
   }, []);
   // One request per list length: the request is answered by the list growing
   // (or by `hasMore` turning false), never by asking again.
@@ -267,14 +288,14 @@ function VirtualFeedInner<T>({
 
   const itemContent = useCallback(
     (virtualIndex: number, item: T) => {
-      const index = virtualIndex - firstItemIndexRef.current;
+      const index = virtualIndex - firstItemIndex;
       return (
         // Padding, not margin: the virtualizer measures the row's box, and a
         // margin would fall outside it. A row must never measure zero.
         <div style={{ paddingTop: index > 0 ? gap : 0, minHeight: 1 }}>{renderItem(item, index, intro)}</div>
       );
     },
-    [renderItem, gap, intro],
+    [renderItem, gap, intro, firstItemIndex],
   );
 
   return (

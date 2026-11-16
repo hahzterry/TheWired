@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -236,55 +237,68 @@ function VirtualMessageListInner<T>({
   // within the same frame.
   const virtualizerDelta = useRef(0);
 
+  // The row keys and index of the last render React committed. Written only
+  // in the commit phase (below); a render only reads it. React may render
+  // this component and never commit that render (Strict Mode renders twice,
+  // a transition whose render suspends is thrown away and done again), so
+  // nothing a render works out may be stored by the render itself.
+  const committed = useRef<PrependState | null>(null);
+
   // Rows arriving at the head: tell the virtualizer how many, so the rows on
   // screen stay where they are. Worked out during render because the new
-  // index has to reach the virtualizer together with the new rows.
-  const prepend = useRef<PrependState | null>(null);
-  // Rows were added above in a render that has not been committed yet.
-  const shiftPending = useRef(false);
-  // Whether the row that just arrived at the tail should be followed.
-  const followNext = useRef(false);
-  const missedAppend = useRef(false);
-  if (prepend.current === null || prepend.current.keys !== keys) {
-    const prevKeys = prepend.current?.keys ?? [];
-    const firstItemIndex = nextFirstItemIndex(prepend.current, keys);
-    if (prepend.current !== null && firstItemIndex < prepend.current.firstItemIndex) shiftPending.current = true;
-    if (prepend.current !== null && tailAppended(prevKeys, keys)) {
-      const follow = shouldFollow
-        ? shouldFollow({ atBottom: nearBottom.current, last: items[items.length - 1] })
-        : nearBottom.current;
-      followNext.current = follow;
-      missedAppend.current = !follow;
-    } else {
-      followNext.current = false;
-    }
-    prepend.current = { keys, firstItemIndex };
-  }
-  keysRef.current = keys;
-  const firstItemIndex = prepend.current.firstItemIndex;
+  // index has to reach the virtualizer together with the new rows, and from
+  // the committed state alone, so every render of the same rows agrees.
+  const firstItemIndex =
+    committed.current === null
+      ? nextFirstItemIndex(null, keys)
+      : committed.current.keys === keys
+        ? committed.current.firstItemIndex
+        : nextFirstItemIndex(committed.current, keys);
   const firstItemIndexRef = useRef(firstItemIndex);
-  firstItemIndexRef.current = firstItemIndex;
+
+  // What this commit changed, decided once per commit. It is decided before
+  // any layout effect runs (an insertion effect does): the virtualizer reads
+  // `followOutput` from its own layout effect, which runs before this
+  // component's.
+  const change = useRef({ shifted: false, follow: false, missed: false });
+  // The caller's latest callbacks and options, for handlers that outlive a
+  // render. Also committed here, not written while rendering.
+  const latest = useRef({ onMissedAppend, onAtBottomChange, onScroll, onContentResize, stickToBottom });
+  useInsertionEffect(() => {
+    latest.current = { onMissedAppend, onAtBottomChange, onScroll, onContentResize, stickToBottom };
+    firstItemIndexRef.current = firstItemIndex;
+    keysRef.current = keys;
+    const prev = committed.current;
+    if (prev !== null && prev.keys === keys) return;
+    const appended = prev !== null && tailAppended(prev.keys, keys);
+    const follow =
+      appended &&
+      (shouldFollow ? shouldFollow({ atBottom: nearBottom.current, last: items[items.length - 1] }) : nearBottom.current);
+    change.current = {
+      shifted: prev !== null && firstItemIndex < prev.firstItemIndex,
+      follow,
+      missed: appended && !follow,
+    };
+    committed.current = { keys, firstItemIndex };
+  });
+
+  // The virtualizer asks this when the row count grows; answering "auto" makes
+  // it go to the new last row once that row has been rendered and measured.
+  const followOutput = useCallback(() => (change.current.follow ? ("auto" as const) : false), []);
 
   // After the commit: go to a followed row, or report a missed one.
-  const onMissedAppendRef = useRef(onMissedAppend);
-  onMissedAppendRef.current = onMissedAppend;
   useLayoutEffect(() => {
-    if (followNext.current) {
-      followNext.current = false;
+    const { follow, missed } = change.current;
+    change.current.follow = false;
+    change.current.missed = false;
+    if (follow) {
       nearBottom.current = true;
       stuck.current = true;
       markProgrammaticScroll(scrollerRef.current, JUMP_MS);
       virtuoso.current?.scrollToIndex({ index: "LAST", align: "end" });
     }
-    if (missedAppend.current) {
-      missedAppend.current = false;
-      onMissedAppendRef.current?.();
-    }
-  }, [keys]);
-
-  // The virtualizer asks this when the row count grows; answering "auto" makes
-  // it go to the new last row once that row has been rendered and measured.
-  const followOutput = useCallback(() => (followNext.current ? ("auto" as const) : false), []);
+    if (missed) latest.current.onMissedAppend?.();
+  });
 
   const rendered = useRef<{ startIndex: number; endIndex: number } | null>(null);
   const handleRange = useCallback((range: ListRange) => {
@@ -295,19 +309,13 @@ function VirtualMessageListInner<T>({
     };
   }, []);
 
-  const onAtBottomChangeRef = useRef(onAtBottomChange);
-  onAtBottomChangeRef.current = onAtBottomChange;
   const setAtBottom = useCallback((at: boolean) => {
     nearBottom.current = at;
     if (at !== reportedAtBottom.current) {
       reportedAtBottom.current = at;
-      onAtBottomChangeRef.current?.(at);
+      latest.current.onAtBottomChange?.(at);
     }
   }, []);
-  const onScrollRef = useRef(onScroll);
-  onScrollRef.current = onScroll;
-  const stickToBottomRef = useRef(stickToBottom);
-  stickToBottomRef.current = stickToBottom;
   const handleScroll = useCallback(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -327,11 +335,11 @@ function VirtualMessageListInner<T>({
     // Holding the end, yet the virtualizer has just moved the list away from
     // it: it corrects its offset when rows above are measured again (after
     // the window is resized, say) and does not know the list is pinned.
-    if (stuck.current && !near && byVirtualizer < -1 && stickToBottomRef.current) {
+    if (stuck.current && !near && byVirtualizer < -1 && latest.current.stickToBottom) {
       el.scrollTop = el.scrollHeight;
       lastScrollTop.current = el.scrollTop;
     }
-    onScrollRef.current?.(el, byVirtualizer);
+    latest.current.onScroll?.(el, byVirtualizer);
   }, [atBottomThreshold, setAtBottom]);
 
   const attachScroller = useCallback(
@@ -368,11 +376,11 @@ function VirtualMessageListInner<T>({
   // content above it changes height.
   const isPinned = useCallback(() => stuck.current, []);
   const expectShift = useViewportAnchor(elements.scroller, elements.list, isPinned);
-  // Rows arrived above the viewport in this render: the virtualizer is about
+  // Rows arrived above the viewport in this commit: the virtualizer is about
   // to scroll by their height, which is not the reader going anywhere.
   useLayoutEffect(() => {
-    if (!shiftPending.current) return;
-    shiftPending.current = false;
+    if (!change.current.shifted) return;
+    change.current.shifted = false;
     expectShift();
   });
 
@@ -380,16 +388,14 @@ function VirtualMessageListInner<T>({
   // reply banner) moves the end of the list without the content changing:
   // stay on the newest row then too. And callers that pin the list themselves
   // (the AI stream) hear about every height change of the content.
-  const onContentResizeRef = useRef(onContentResize);
-  onContentResizeRef.current = onContentResize;
   useEffect(() => {
     const content = listRef.current;
     const scroller = scrollerRef.current;
     if (!mounted || !content || !scroller || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        if (entry.target === content) onContentResizeRef.current?.(scroller);
-        else if (stickToBottomRef.current && stuck.current) scroller.scrollTop = scroller.scrollHeight;
+        if (entry.target === content) latest.current.onContentResize?.(scroller);
+        else if (latest.current.stickToBottom && stuck.current) scroller.scrollTop = scroller.scrollHeight;
       }
     });
     observer.observe(content);
@@ -441,11 +447,10 @@ function VirtualMessageListInner<T>({
 
   const computeKey = useCallback((_index: number, item: T) => itemKey(item), [itemKey]);
   const itemContent = useCallback(
-    // A row must never measure zero. `index` is the row's plain list position.
-    (index: number, item: T) => (
-      <div style={{ minHeight: 1 }}>{renderItem(item, index - firstItemIndexRef.current)}</div>
-    ),
-    [renderItem],
+    // A row must never measure zero. The virtualizer counts from
+    // `firstItemIndex`; the row gets its plain list position.
+    (index: number, item: T) => <div style={{ minHeight: 1 }}>{renderItem(item, index - firstItemIndex)}</div>,
+    [renderItem, firstItemIndex],
   );
 
   const context = useMemo<ListContext>(
