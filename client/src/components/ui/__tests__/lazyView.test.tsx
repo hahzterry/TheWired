@@ -245,7 +245,7 @@ describe("lazy fallbacks", () => {
     act(() => {
       vi.advanceTimersByTime(LAZY_SPINNER_DELAY_MS);
     });
-    expect(screen.getByRole("status", { name: "Loading music" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading music");
   });
 
   it("ModalLoading draws nothing for a fast load, then a dismissible backdrop", () => {
@@ -257,7 +257,7 @@ describe("lazy fallbacks", () => {
     act(() => {
       vi.advanceTimersByTime(LAZY_SPINNER_DELAY_MS);
     });
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Loading" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);

@@ -79,20 +79,31 @@ describe("ColorPicker", () => {
 });
 
 describe("Spinner", () => {
-  it("is a status named Loading by default", () => {
+  it("is a status whose text content says Loading (text is what a live region announces)", () => {
     render(<Spinner />);
-    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Loading");
+    expect(status).not.toHaveAttribute("aria-label");
+    // The text is visually hidden, so the spinner looks the same.
+    expect(status.querySelector("span")).toHaveClass("sr-only");
   });
 
   it("takes a specific label", () => {
     render(<Spinner label="Sending" />);
-    expect(screen.getByRole("status", { name: "Sending" })).toBeTruthy();
+    expect(screen.getByRole("status")).toHaveTextContent("Sending");
   });
 
   it('is hidden from assistive tech with label=""', () => {
     const { container } = render(<Spinner label="" />);
     expect(screen.queryByRole("status")).toBeNull();
     expect(container.firstElementChild).toHaveAttribute("aria-hidden", "true");
+    expect(container.firstElementChild).toBeEmptyDOMElement();
+  });
+
+  it("keeps its size and caller classes on the one element", () => {
+    const { container } = render(<Spinner size="lg" className="text-red-500" />);
+    expect(container.children).toHaveLength(1);
+    expect(container.firstElementChild).toHaveClass("h-8", "w-8", "animate-spin", "text-red-500");
   });
 });
 

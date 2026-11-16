@@ -18,8 +18,9 @@ function LoadingMark({ delayMs, label }: { delayMs: number; label: string }) {
   const shown = useDelayed(delayMs);
   if (!shown) return null;
   return (
-    <span role="status" aria-label={label} className="animate-fade-in">
-      <Spinner />
+    <span className="animate-fade-in">
+      {/* The spinner is the status region and carries the label as text. */}
+      <Spinner label={label} />
     </span>
   );
 }
@@ -65,8 +66,8 @@ export function ModalLoading({ onClose, delayMs = LAZY_SPINNER_DELAY_MS }: Modal
   const shown = useDelayed(delayMs);
   if (!shown) return null;
   return (
-    <Modal open onClose={onClose}>
-      <span role="status" aria-label="Loading" data-lazy-fallback="modal">
+    <Modal open onClose={onClose} label="Loading">
+      <span data-lazy-fallback="modal">
         <Spinner size="lg" />
       </span>
     </Modal>

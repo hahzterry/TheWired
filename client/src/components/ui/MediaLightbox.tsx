@@ -201,9 +201,9 @@ export function MediaLightbox(props: MediaLightboxProps) {
       {zoom !== 1 && (
         <div
           role="status"
-          aria-label={`Zoom ${Math.round(zoom * 100)}%`}
           className="absolute left-4 top-4 z-10 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/70"
         >
+          <span className="sr-only">Zoom </span>
           {Math.round(zoom * 100)}%
         </div>
       )}

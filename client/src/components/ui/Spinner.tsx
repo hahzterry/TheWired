@@ -17,13 +17,16 @@ export function Spinner({ size = "md", className, label = "Loading" }: SpinnerPr
   return (
     <div
       role={label ? "status" : undefined}
-      aria-label={label || undefined}
       aria-hidden={label ? undefined : true}
       className={cn(
         "animate-spin rounded-full border-2 border-primary/20 border-t-primary",
         sizeStyles[size],
         className,
       )}
-    />
+    >
+      {/* A live region announces its text content; a bare aria-label on an
+          empty element is not read out. */}
+      {label && <span className="sr-only">{label}</span>}
+    </div>
   );
 }

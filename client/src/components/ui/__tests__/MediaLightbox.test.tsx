@@ -56,7 +56,8 @@ describe("MediaLightbox semantics", () => {
     const user = userEvent.setup();
     render(<MediaLightbox src={SRCS[0]} onClose={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Zoom in" }));
-    expect(screen.getByRole("status", { name: "Zoom 150%" })).toBeTruthy();
+    // The live region carries its message as text content, which is what gets announced.
+    expect(screen.getByRole("status")).toHaveTextContent("Zoom 150%");
     expect(screen.getByRole("button", { name: "Reset zoom" })).toBeTruthy();
   });
 });
