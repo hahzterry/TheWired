@@ -203,6 +203,16 @@ Render errors are contained by `ErrorBoundary` (`components/ui/ErrorBoundary.tsx
 - **Crash log** (`lib/crash/`): a bounded, redacted ring buffer in `localStorage["wired:crashlog"]`, fed by boundaries and by global `error` / `unhandledrejection` handlers, surfaced only through "Copy diagnostics" (fallback UI + Settings → App) and `wiredDebug.crashes()`. It stays on the device. Records are built from an `Error`'s name, message and stack only and pass through `redact.ts`; never add props, state or event data to a record, and `label` must be a constant.
 - **Dev fault injection**: `wiredDebug.crash("<scope>:<label>", { id })` makes that boundary's content throw; `wiredDebug.crash()` disarms. Compiled out of production builds.
 
+### Virtualized Lists (Client)
+The long lists (space notes feed, profile tabs, media grid, space chat, DM conversation, AI conversation) mount only the rows around the viewport, through `react-virtuoso` behind two shared components in `components/virtual/`:
+- **`VirtualFeed`** — feeds. Scrolls inside the feed's existing scroll container, so headers and load-more controls scroll with it. Rows are spaced by its `gap` prop (padding, never margins: the virtualizer measures the row box).
+- **`VirtualMessageList`** — chat-style lists. Opens on the newest row (or `initialRow`), follows appends only while the reader is at the bottom, keeps the reader's place when rows arrive above.
+- **New long list** → use one of the two; keep each row keyed by its stable id and wrapped in `ItemBoundary`. Do not add render-caps or IntersectionObserver sentinels.
+- **Rows unmount when scrolled away.** State a reader set on purpose (a draft, an open composer, an expanded thread) goes through `useRetainedState(key, initial)`, not `useState`; it is kept per account. Inline players in a row use `SmartVideo` / `InlineAudio`, which come back paused at the position they were left at (`useResumePlayback`), never a bare `<video>` / `<audio>`.
+- **The list components decide nothing while rendering.** Follow / missed-append / prepend bookkeeping is derived from the last committed row keys and committed in effects, so a render React replays or discards changes nothing. Keep it that way: no ref writes and no layout reads in their render.
+- **Scroll restore** is `useAnchoredScrollRestore` with `scrollToAnchor` (the saved card is usually not in the DOM); mark each card with `data-feed-anchor`. Code that keeps re-scrolling a virtual list for a while (a restore loop) calls `markProgrammaticScroll` (`lib/virtual/viewportAnchor.ts`) so the at-rest anchor keeper makes no corrections of its own meanwhile.
+- **Tests** have no layout: wrap in `VirtualViewport` and await `virtualListSettled()` (`src/__tests__/helpers/virtualList.tsx`). See `docs/KNOWN_ISSUES.md` #1 for the design and measurements.
+
 ### Code Splitting (Client)
 The startup bundle is the shell plus the landing view (space sidebar, chat / notes / media channels). Everything else is a lazy chunk: every other route, the music and AI sections, sidebar bodies per mode, right-panel tabs, the playback bar, the call view, onboarding, and the heavy modals. `client/src/__tests__/bundleHygiene.test.ts` fails on a static import that would undo this.
 - **New route, panel or overlay** → `lazyView(() => import(...), <PanelLoading />)` (`components/ui/lazyView.tsx`). Routes go in `app/lazyRoutes.tsx`, which exports drop-ins with the Suspense fallback built in. The fallback must fill the same slot as the view (`PanelLoading` does; its spinner is delayed so a fast load shows none).
@@ -255,6 +265,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 ## Dependencies of Note
 
 - `lru-cache` -- event dedup (`dedup.ts`) and other bounded caches; construct with `new LRUCache({ max })`
+- `react-virtuoso` -- list virtualization, used only through `components/virtual/` (`VirtualFeed`, `VirtualMessageList`); the plain `Virtuoso` component is MIT, its `VirtuosoMessageList` add-on is a paid product and is not used. Pinned to an exact version: the chat lists' bottom pin relies on it scrolling only through the element's `scrollBy` / `scrollTo`, which `virtualizerScrollContract.test.tsx` checks on every update
 - `hls.js` -- check `Hls.isSupported()` before use; Safari has native HLS
 - `idb` -- typed IndexedDB wrapper; schema in `client/src/lib/db/database.ts`
 - `nostr-tools` -- protocol utils + NIP-46 `BunkerSigner`. NOTE: `./nip04`/`./nip47` are not exported subpaths; import `nip04`/`nip47` from the package root.

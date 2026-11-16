@@ -82,7 +82,11 @@ export const DMMessage = memo(function DMMessage({
     return isMediaOnly(splitMessageSegments(parseContent(displayContent, message.emojiTags)));
   }, [displayContent, message.isDeleted, message.attachment, message.emojiTags]);
 
+  // The context menu (a portal with all its items) is mounted on first use
+  // rather than with every message: in a virtualized list rows mount as they
+  // scroll in, and a closed menu was a large part of the cost of each one.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menuMounted, setMenuMounted] = useState(false);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const bubbleRef = useRef<HTMLDivElement>(null);
 
@@ -112,8 +116,16 @@ export const DMMessage = memo(function DMMessage({
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    setCtxMenu({ x: e.clientX, y: e.clientY });
-  }, []);
+    const at = { x: e.clientX, y: e.clientY };
+    if (menuMounted) {
+      setCtxMenu(at);
+      return;
+    }
+    // First use: mount it closed, then open it on the next frame so it fades
+    // in the same way as every later time.
+    setMenuMounted(true);
+    requestAnimationFrame(() => setCtxMenu(at));
+  }, [menuMounted]);
 
   const displayName = getDisplayName(profile, message.senderPubkey);
 
@@ -295,20 +307,22 @@ export const DMMessage = memo(function DMMessage({
           </div>
         )}
       </div>
-      <DMMessageContextMenu
-        open={!!ctxMenu}
-        onClose={() => setCtxMenu(null)}
-        position={ctxMenu ?? { x: 0, y: 0 }}
-        partnerPubkey={partnerPubkey}
-        wrapId={message.wrapId}
-        content={message.attachment ? message.attachment.url : displayContent}
-        isOwnMessage={isMe}
-        canEdit={canEdit}
-        onEdit={() => onEdit?.(message)}
-        onDeleteForEveryone={() => onDeleteForEveryone?.(message)}
-        onReply={onReply ? () => onReply(message) : undefined}
-        onReact={canReact ? () => setShowReactionPicker(true) : undefined}
-      />
+      {menuMounted && (
+        <DMMessageContextMenu
+          open={!!ctxMenu}
+          onClose={() => setCtxMenu(null)}
+          position={ctxMenu ?? { x: 0, y: 0 }}
+          partnerPubkey={partnerPubkey}
+          wrapId={message.wrapId}
+          content={message.attachment ? message.attachment.url : displayContent}
+          isOwnMessage={isMe}
+          canEdit={canEdit}
+          onEdit={() => onEdit?.(message)}
+          onDeleteForEveryone={() => onDeleteForEveryone?.(message)}
+          onReply={onReply ? () => onReply(message) : undefined}
+          onReact={canReact ? () => setShowReactionPicker(true) : undefined}
+        />
+      )}
     </div>
   );
 });

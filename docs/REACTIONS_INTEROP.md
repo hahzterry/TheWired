@@ -29,7 +29,7 @@ rumors dropped), so either client can ship ahead of the other.
   `spaceChannelRoutes.ts`) and the background host sub (`groupSubscriptions.ts`).
   `splitChatFilters` (`filterBuilder.ts`) keeps reactions in their own filter so
   they don't consume the 50-message page. Note engagement subs
-  (`useNoteEngagementSub.ts`, `engagementCollector.tsx`) carry a kind-5 leg whose
+  (`engagementCollector.tsx`) carry a kind-5 leg whose
   `#e` unions note ids with already-known reaction ids (a kind 5 references the
   reaction, not the note; coverage converges as the sub re-fires).
 - **Pipeline** — kind 7 folds into `reactionsSlice` (shape-based, `h` ignored);

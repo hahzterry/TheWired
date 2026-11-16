@@ -12,20 +12,152 @@ is here.
 
 ## Deferred — Client performance
 
-### 1. List virtualization (Phase 5b)
+### 1. List virtualization (SHIPPED)
 
-**Why deferred:** Adding `react-virtuoso` to the feeds is a *scroll/UX* change —
-variable item heights, chat reverse-scroll, scroll restoration, and replacing the
-`LoadMoreSentinel` IntersectionObserver with `endReached`/`startReached`. Its
-correctness can't be validated by unit tests, and a regression would hurt the
-core experience more than the original perf issue. With dispatch batching (P1),
-reactions out of the entity store (P3), and stable list selectors (P5a), the
-re-render storms it targeted are already gone — so it's now polish, best done
-with the app running + manual QA.
+The long lists render through `react-virtuoso`: only the rows around the
+viewport are mounted. Chosen over a headless virtualizer because it already
+does what these lists need and would otherwise be hand-written: measured
+variable heights, a scroll parent that is not the list itself (profile page),
+prepending without moving the viewport, and opening on a given row.
 
-**Where:** `NotesFeed.tsx`, `MediaFeed.tsx`, the space chat message list, and the
-profile `FeedTab` (`ProfilePage.tsx`). When done, drive the engagement collector
-from Virtuoso's `rangeChanged` instead of the per-card observer.
+**What is virtualized**
+
+| List | Component | Shared piece |
+|---|---|---|
+| Space notes feed | `NotesFeed.tsx` | `VirtualFeed` |
+| Profile tabs (Notes, Reposts, Replies, Media, Reads) | `ProfilePage.tsx` | `VirtualFeed` |
+| Media grid | `MediaFeed.tsx` | `VirtualFeed`, one row of tiles per item |
+| Space chat | `ChatView.tsx` | `VirtualMessageList` |
+| DM conversation | `DMConversation.tsx` | `VirtualMessageList` |
+| AI conversation | `AIMessageList.tsx` | `VirtualMessageList` |
+
+**How it holds together** (`client/src/components/virtual/`, `client/src/lib/virtual/`)
+
+- **Feeds** scroll inside the scroll container they always had
+  (`customScrollParent`), so a composer or profile header above and the
+  load-more control below scroll with them. The render-caps and their reveal
+  sentinels are gone; the profile's local paging is driven by the list
+  reporting that its last row is rendered. The relay "Load more" button keeps
+  its loading, error and retry states.
+- **Scroll restoration is anchor-based everywhere** (`useAnchoredScrollRestore`,
+  now also for the space feeds, per channel and media filter tab). The saved
+  card is usually not in the DOM of a virtualized list, so the hook asks the
+  list to bring it in and then re-pins as before. Row heights measured during
+  the session are remembered (`itemHeights.ts`) and handed back as starting
+  estimates.
+- **Message lists** open on the newest row or the unread divider, follow a row
+  appended at the tail only while the reader is at the bottom, and keep the
+  reader's place when older rows arrive above: the number of rows added at the
+  head is worked out from the row keys (`prependShift.ts`) and handed to the
+  virtualizer. The bottom pin is released by the reader moving up, not by the
+  list correcting its own offset right after a resize.
+- **Scroll anchoring at rest** (`viewportAnchor.ts`). The virtualizer turns the
+  browser's scroll anchoring off and only compensates while the list is being
+  scrolled up. Once scrolling has been quiet for a moment, `ViewportAnchor`
+  remembers the row at the top of the viewport and puts it back when rows
+  above it change height (media arriving late, AI bubbles dropping their
+  action row during a stream). It never undoes a scroll: any scroll is the new
+  place. The one scroll it holds through is the virtualizer making room for
+  rows added above, which the list announces. It also answers the virtualizer:
+  a correction that scrolls the list up looks to the virtualizer like the
+  reader scrolling up, and for a moment it then compensates for size changes
+  above the viewport itself, on top of the keeper (a reader scrolled up in an
+  AI conversation moved by up to 240 px when a reply started, on a production
+  bundle only; dev builds order the two differently). The keeper hears each
+  of those `scrollBy` calls as it is made and puts its row back before the
+  frame is painted.
+- **Engagement** follows the rendered range (`useEngagementRange`) instead of
+  an observer per card or the first 100 notes, so notes far down a feed get
+  their counts. Stored engagement is fetched once per note (a one-shot request
+  that closes on EOSE); one live subscription covers the notes rendered right
+  now and is replaced as that set changes, so a note stays live for as long as
+  it is on screen. Its un-react leg is re-issued as reaction ids become known.
+- **Card state survives unmounting** (`useRetainedState`): reply and quote
+  drafts, open composers, expanded threads, hidden media. Kept per account:
+  the next account to look at the same note does not find it.
+- **Inline video and audio** stop when their card leaves the rendered window
+  (the element is gone) and come back paused at the position they were left
+  at (`useResumePlayback`, in `SmartVideo` and `InlineAudio`). The music
+  player is a single element outside the lists and is not affected.
+- Every row keeps its `ItemBoundary` and its stable key.
+
+**Measured** (headless Chrome, 1400×900, before = the commit this branched
+from, same identity and content, runs back to back):
+
+Elements in the document with the list at rest, and rows mounted:
+
+| List | Elements (before → after) | Rows mounted |
+|---|---|---|
+| Space notes feed, 500 notes | 35,689 → 711 | 30+ per reveal → 5 |
+| Profile feed, 50 to 250 notes | 1,871 → 881 at the top; 18,005 → 872 after scrolling through 250 | 20 per page → 7 |
+| Media grid, 650 tiles | 2,919 → 770 | 30+ per reveal → 7 rows |
+| Space chat, 3,050 messages | 134,808 → 936 | 3,050 → 17 |
+| DM conversation, 2,000 messages | 96,872 → 838 | 2,000 → 23 |
+| AI conversation, 200 messages | 10,695 → 1,249 | 200 → 7 |
+
+Opening the list (dev builds; median of 3, the DM row is the first open):
+
+| List | Content on screen after | Long tasks in the first 4 s |
+|---|---|---|
+| Space chat, 3,050 messages | 2,464 → 140 ms | 377 → 0 ms |
+| DM conversation, 2,000 messages (first open) | 1,570 → 162 ms | 2,076 → 68 ms |
+| Space notes feed, 500 loaded | 55 → 133 ms | 0 → 54 ms |
+
+Scripted scroll of 1,200 frames at 60 px per frame (down and up), 4× CPU
+throttle. Chat and DM on production bundles of both:
+
+| List | Mean frame (up / down) | Worst frame | Long tasks |
+|---|---|---|---|
+| Space chat | 120.5 / 94.0 → 25.9 / 21.2 ms | 2,000 → 50 ms | 1,207 (126.6 s) → 0 |
+| DM conversation | 41.8 / 40.2 → 33.3 / 33.3 ms | 1,217 → 34 ms | 142 (13.5 s) → 0 |
+
+The feeds on dev builds, which overstates the cost of mounting a row (the
+local test stack went away before the feeds could be measured on production
+bundles):
+
+| List | Mean frame | p95 frame | Long tasks |
+|---|---|---|---|
+| Space notes feed | 26.8 → 18.6 ms | 67 → 33 ms | 57 (4.3 s) → 1 (0.05 s) |
+| Profile feed | 17.7 → 19.4 ms | 17 → 33 ms | 3 (0.7 s) → 9 (0.5 s) |
+| Media grid | 22.8 → 30.1 ms | 33 → 100 ms | 16 (6.8 s) → 176 (17.1 s) |
+
+Without the throttle every list holds 16.7 ms frames on both; the worst frame
+goes from 50–133 ms to 17–33 ms on the feeds. The media grid is the one place
+that got worse in a measurement: rows of four tiles now mount while scrolling
+in both directions, where the old render-cap mounted each tile once and kept
+it. On a dev build under a 4× throttle that costs more than it saves. A CPU
+profile of the dev build shows React's development-only checks dominating row
+mounts, so the dev figure overstates it, but the grid was not measured on a
+production bundle.
+
+**Trade-offs and what is not covered**
+
+- Rows outside the window are unmounted. State a row keeps in plain `useState`
+  is lost when it scrolls far away; the state readers set on purpose goes
+  through `useRetainedState`. New per-row state that must survive needs the
+  same.
+- An inline video or audio no longer keeps playing once its card is far
+  outside the viewport, and a video sent to picture-in-picture or fullscreen
+  from the browser's own controls closes when that happens. Before, the
+  element stayed mounted and kept playing out of sight.
+- The chat lists tell the virtualizer's scrolls from the reader's by wrapping
+  `scrollBy` / `scrollTo` on the scroller. That relies on how `react-virtuoso`
+  is built, so the dependency is pinned to an exact version and
+  `virtualizerScrollContract.test.tsx` fails if a version scrolls another way.
+- A smooth scroll only animates to a row that is rendered or close to it. A
+  jump to a far message or a far "scroll to bottom" goes straight there.
+- A feed opened at the very top lets new rows push in, as before. Further
+  down, a new row at the top no longer moves what the reader is looking at.
+- Find-in-page and anything else that walks the DOM only sees mounted rows.
+- Live QA was done in Chromium. The desktop app's WebKit webview has not been
+  exercised with these lists.
+- In tests there is no layout: wrap the list in `VirtuosoMockContext`
+  (`src/__tests__/helpers/virtualList.tsx`), and wait for
+  `virtualListSettled()` before querying by role in a list that opens on a
+  given row.
+- The feed indices are still capped (500 per space feed and media index, 1000
+  per author), and the chat subscription still asks for one page: a list only
+  gets as long as what the client holds.
 
 ### 2. Unmemoized `articles` selector → re-render warning
 
@@ -79,7 +211,9 @@ never reproduced with these accounts.
   mount is cheap and data streams in, or stop rendering closed modals
   (`CreateSpaceModal`, `CreateAlbumModal`, `UploadTrackModal` render on every
   shell update).
-- The feed's first page mounts in one go — list virtualization (#1).
+- The feed's first paint. Since list virtualization (#1) it mounts only the
+  cards in the window instead of a page of 30; the switch has not been
+  re-measured since.
 - `performLogin` hydration is shared with cold start (#9).
 
 ### 4. Relay connection noise from outbox fan-out (SHIPPED)
@@ -162,7 +296,7 @@ window come back; a sub that only wants events newer than "now" can miss what
 arrived in that gap.
 
 **Not covered:** refresh on a saturated relay still waits for a slot, as it
-always did. The profile page's `LoadMoreSentinel` (`useProfileNotes`) is a
+always did. The profile page's older-notes fetch (`useProfileNotes`) is a
 separate path and still uses plain subscriptions. Which standing subs win the
 slots when an account is over the cap is still decided in insertion order —
 see #8.
@@ -235,7 +369,8 @@ pass during first render (`qw`).
 
 **Where:** `performLogin` (`lib/nostr/login/performLogin.ts`) initial subscribe/hydrate path + the first feed render +
 engagement collector setup. Likely wants heavy first-render work deferred
-(idle/chunked scheduling), and overlaps the deferred list virtualization (#1) and
+(idle/chunked scheduling). List virtualization (#1) has since cut the first feed
+render down to the cards in the window; re-measure before going further. Overlaps
 the broader event-storm work (`project_app_freeze_investigation`). Re-measure with
 `wiredDebug` to attribute the stall (IDB hydration vs render vs sub setup) before
 optimizing.

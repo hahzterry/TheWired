@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
+import { VirtuosoMockContext } from "react-virtuoso";
 import type { NostrEvent } from "@/types/nostr";
 import { renderWithProviders } from "@/__tests__/helpers/renderWithProviders";
 import { getCrashRecords, resetCrashLogForTests } from "@/lib/crash/crashLog";
@@ -38,11 +39,9 @@ vi.mock("../useFeedPagination", () => ({
     loadMore: () => {},
   }),
 }));
-vi.mock("../useNoteEngagementSub", () => ({ useNoteEngagementSub: () => {} }));
+vi.mock("@/features/profile/engagementCollector", () => ({ useEngagementRange: () => () => {} }));
 vi.mock("../FeedToolbar", () => ({ FeedToolbar: () => null }));
 vi.mock("../LoadMoreButton", () => ({ LoadMoreButton: () => null }));
-vi.mock("@/components/ui/RevealSentinel", () => ({ RevealSentinel: () => null }));
-vi.mock("@/hooks/useScrollRestore", () => ({ useScrollRestore: () => ({ current: null }) }));
 vi.mock("@/hooks/usePlaybackBarSpacing", () => ({
   usePlaybackBarSpacing: () => ({ scrollPaddingClass: "" }),
 }));
@@ -70,6 +69,16 @@ vi.mock("../notes/NoteFooter", () => ({
 
 import { NotesFeed } from "../NotesFeed";
 
+/** The feed is virtualized; jsdom has no layout, so give it a viewport that
+ *  fits the three notes. */
+function renderFeed() {
+  return renderWithProviders(
+    <VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 200 }}>
+      <NotesFeed />
+    </VirtuosoMockContext.Provider>,
+  );
+}
+
 describe("NotesFeed error containment", () => {
   beforeEach(() => {
     fixture.explodeId = null;
@@ -83,14 +92,14 @@ describe("NotesFeed error containment", () => {
   });
 
   it("renders every note when nothing throws", () => {
-    renderWithProviders(<NotesFeed />);
+    renderFeed();
     for (const n of [1, 2, 3]) expect(screen.getByText(`body of note ${n}`)).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("a throwing note card leaves the rest of the feed mounted", () => {
     fixture.explodeId = "note-2";
-    renderWithProviders(<NotesFeed />);
+    renderFeed();
 
     expect(screen.getByText("body of note 1")).toBeInTheDocument();
     expect(screen.getByText("body of note 3")).toBeInTheDocument();
@@ -112,7 +121,7 @@ describe("NotesFeed error containment", () => {
 
   it("retry brings the card back once it can render", () => {
     fixture.explodeId = "note-2";
-    renderWithProviders(<NotesFeed />);
+    renderFeed();
     expect(screen.queryByText("body of note 2")).toBeNull();
 
     fixture.explodeId = null;

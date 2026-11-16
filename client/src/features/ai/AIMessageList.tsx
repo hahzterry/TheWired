@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
 import { useAppSelector } from "@/store/hooks";
 import {
@@ -8,8 +8,16 @@ import {
 } from "@/store/slices/aiSlice";
 import { AIMessageBubble } from "./AIMessageBubble";
 import { PendingWriteCard } from "./gate/PendingWriteCard";
-import { isAtBottom, nextStick } from "./scrollFollow";
+import { isAtBottom, nextStick, BOTTOM_PX } from "./scrollFollow";
 import { ItemBoundary } from "@/components/ui/ErrorBoundary";
+import { VirtualMessageList, type VirtualMessageListHandle } from "@/components/virtual/VirtualMessageList";
+
+/** One row: a chat message, or a write waiting for approval (after the messages). */
+type AIRow =
+  | { kind: "message"; key: string; id: string; isLast: boolean }
+  | { kind: "write"; key: string; id: string };
+
+const aiRowKey = (row: AIRow) => row.key;
 
 export function AIMessageList({ conversationId }: { conversationId: string }) {
   const messageIds = useAppSelector(selectMessageIdsForConversation(conversationId));
@@ -18,8 +26,18 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
     selectPendingWriteIdsForConversation(conversationId),
   );
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
+  // The list is virtualized: only the rows around the viewport are mounted.
+  const listRef = useRef<VirtualMessageListHandle>(null);
+  const rows = useMemo<AIRow[]>(
+    () => [
+      ...messageIds.map(
+        (id, i): AIRow => ({ kind: "message", key: `m:${id}`, id, isLast: i === messageIds.length - 1 }),
+      ),
+      ...pendingWriteIds.map((id): AIRow => ({ kind: "write", key: `w:${id}`, id })),
+    ],
+    [messageIds, pendingWriteIds],
+  );
+
   // Whether we're auto-following the bottom. Released when the user scrolls up,
   // re-attached when they return to the bottom (or hit the jump button).
   const stick = useRef(true);
@@ -29,8 +47,8 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
   const lastTop = useRef(0);
   const [showJump, setShowJump] = useState(false);
 
-  const scrollToBottom = () => {
-    const el = scrollRef.current;
+  const scrollToBottom = useCallback(() => {
+    const el = listRef.current?.scroller();
     if (!el) return;
     programmatic.current = true;
     el.scrollTop = el.scrollHeight;
@@ -40,46 +58,57 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
     requestAnimationFrame(() => {
       programmatic.current = false;
     });
-  };
-
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const top = el.scrollTop;
-    if (programmatic.current) {
-      lastTop.current = top;
-      return; // ignore our own scrolling (no feedback loop)
-    }
-    const m = {
-      top,
-      lastTop: lastTop.current,
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-    };
-    stick.current = nextStick(stick.current, m);
-    lastTop.current = top;
-    setShowJump(!isAtBottom(m));
-  };
-
-  // Follow content growth while stuck. A ResizeObserver catches every height
-  // change — streamed text, images loading, code blocks, expanded reasoning,
-  // pending-write cards — not just message-count/length, so it never lags.
-  useEffect(() => {
-    const content = contentRef.current;
-    if (!content || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => {
-      if (stick.current) scrollToBottom();
-    });
-    ro.observe(content);
-    return () => ro.disconnect();
   }, []);
 
-  // Switching conversations: re-attach to the bottom and jump there.
+  const onScroll = useCallback(
+    (el: HTMLElement, byVirtualizer: number) => {
+      const top = el.scrollTop;
+      if (programmatic.current) {
+        lastTop.current = top;
+        return; // ignore our own scrolling (no feedback loop)
+      }
+      // Only the reader can release the follow. The list also scrolls itself
+      // (rows being measured, the window resizing): what it moved is taken
+      // out, so an upward correction is not read as the reader pulling away.
+      const m = {
+        top,
+        lastTop: lastTop.current + byVirtualizer,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      };
+      const byReader = top - m.lastTop;
+      stick.current = nextStick(stick.current, m);
+      lastTop.current = top;
+      if (stick.current && !isAtBottom(m) && byVirtualizer !== 0 && Math.abs(byReader) < 1) {
+        // Attached, and the list moved itself away from the end: go back.
+        scrollToBottom();
+        return;
+      }
+      setShowJump(!isAtBottom(m));
+    },
+    [scrollToBottom],
+  );
+
+  // Follow content growth while stuck. The list reports every height change of
+  // its content — streamed text, images loading, code blocks, expanded
+  // reasoning, pending-write cards, rows being measured — not just
+  // message-count/length, so it never lags.
+  const onContentResize = useCallback(() => {
+    if (stick.current) scrollToBottom();
+  }, [scrollToBottom]);
+
+  // A new row (the question, the reply starting, a pending write) is followed
+  // in the same frame while attached; its growth after that is followed by
+  // the resize handler above.
+  const followNewRow = useCallback(() => stick.current, []);
+
+  // Switching conversations: re-attach to the bottom and jump there. (The list
+  // itself is rebuilt per conversation and opens on its newest row.)
   useEffect(() => {
     stick.current = true;
     setShowJump(false);
     requestAnimationFrame(scrollToBottom);
-  }, [conversationId]);
+  }, [conversationId, scrollToBottom]);
 
   const jumpToBottom = () => {
     stick.current = true;
@@ -87,26 +116,41 @@ export function AIMessageList({ conversationId }: { conversationId: string }) {
     setShowJump(false);
   };
 
+  const renderRow = useCallback(
+    (row: AIRow) =>
+      row.kind === "message" ? (
+        <ItemBoundary id={row.id} label="ai-message" noun="message" className="mx-4 my-2">
+          <AIMessageBubble messageId={row.id} conversationId={conversationId} isLast={row.isLast} />
+        </ItemBoundary>
+      ) : (
+        <ItemBoundary id={row.id} label="ai-pending-write" noun="request" className="mx-4 my-2">
+          <PendingWriteCard id={row.id} />
+        </ItemBoundary>
+      ),
+    [conversationId],
+  );
+
   return (
     <div className="relative flex-1 overflow-hidden">
-      <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-        <div ref={contentRef} className="mx-auto max-w-3xl py-4">
-          {messageIds.map((id, i) => (
-            <ItemBoundary key={id} id={id} label="ai-message" noun="message" className="mx-4 my-2">
-              <AIMessageBubble
-                messageId={id}
-                conversationId={conversationId}
-                isLast={i === messageIds.length - 1}
-              />
-            </ItemBoundary>
-          ))}
-          {pendingWriteIds.map((id) => (
-            <ItemBoundary key={id} id={id} label="ai-pending-write" noun="request" className="mx-4 my-2">
-              <PendingWriteCard id={id} />
-            </ItemBoundary>
-          ))}
-        </div>
-      </div>
+      <VirtualMessageList
+        handleRef={listRef}
+        items={rows}
+        itemKey={aiRowKey}
+        renderItem={renderRow}
+        listKey={conversationId}
+        className="h-full"
+        testId="ai-message-list"
+        contentClassName="mx-auto max-w-3xl"
+        atBottomThreshold={BOTTOM_PX}
+        shouldFollow={followNewRow}
+        stickToBottom={false}
+        onScroll={onScroll}
+        onContentResize={onContentResize}
+        heightScope="ai"
+        estimatedItemHeight={120}
+        paddingTop={16}
+        paddingBottom={16}
+      />
 
       {showJump && (
         <button
