@@ -193,7 +193,7 @@ Spaces run in three modes side-by-side, gated by one client predicate (`features
 ### AI Engine (security contracts — do not break)
 Toggleable AI assistant in `features/ai/`. 3-tier engine (detect local Ollama/LM Studio · managed `llama-server` · cloud keys) behind one OpenAI-compatible adapter; every backend normalizes to a `ChatChunk` stream. Load-bearing rules:
 - **API keys NEVER touch Redux** — only `llmManager` (singleton) memory + the OS keychain (`secretStore`). The `aiSlice` holds non-secret config only.
-- **The managed engine's per-launch key** follows the same rule: `llmManager` memory only (never Redux, never the keychain, never argv). The engine binds loopback, and no engine archive or model is fetched without a pinned SHA-256.
+- **The managed engine's per-launch key never leaves the native process** (not Redux, not `llmManager`, not the keychain, not argv). The webview does not connect to the engine: its requests go over IPC (`llm_request`, a fixed two-route table) and Rust makes the HTTP call. Do not add a loopback HTTP scope or a runtime capability for it. The engine binds loopback, and no engine archive or model is fetched without a pinned SHA-256.
 - **The agent never signs.** Read tools auto-run (results framed untrusted via `frameUntrustedBlock`); write tools register a `PendingWrite` and are signed ONLY on human Approve in `gate/approveWrite.ts`.
 - Untrusted model output: `AIMarkdown` scheme-allowlists URLs, no `rehype-raw`; images are click-to-load. See `docs/AI_ENGINE.md`.
 
@@ -242,7 +242,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 - **`keystore.rs`** -- key + signing: `keystore_get_public_key`, `keystore_sign_event`, `keystore_has_key`, `keystore_get_secret_key`, `keystore_delete_key`, `keystore_import_key`, `keystore_generate_key`, `keystore_clear_active`; **multi-account**: `keystore_list_accounts`, `keystore_switch_account`; **NIP-44 v2**: `keystore_nip44_encrypt/_decrypt`; **transport secrets** (bunker URIs / NWC / LLM keys): `keystore_set_secret`, `keystore_get_secret`, `keystore_delete_secret`.
 - **`relay.rs`** -- embedded SQLite relay: `relay_start`, `relay_stop`, `relay_status`, `relay_stats`, `relay_reset`.
 - **`tunnel.rs` / `cloudflared.rs`** -- Cloudflare tunnel: `tunnel_start`, `tunnel_stop`, `tunnel_status`, `tunnel_named_identity`, `tunnel_set_custom`.
-- **`llm.rs`** (+ `llm/`) -- managed AI engine (`llama-server` child process): `llm_hardware_info`, `llm_models_list`, `llm_model_download`, `llm_download_cancel`, `llm_model_delete`, `llm_engine_ensure`, `llm_server_start`, `llm_server_stop`, `llm_server_status`, `llm_server_connection`. Every new command must also be added to `app_commands.rs` and `capabilities/app-commands.json` (`ipc_acl_tests.rs` enforces it).
+- **`llm.rs`** (+ `llm/`) -- managed AI engine (`llama-server` child process): `llm_hardware_info`, `llm_models_list`, `llm_model_download`, `llm_download_cancel`, `llm_model_delete`, `llm_engine_ensure`, `llm_server_start`, `llm_server_stop`, `llm_server_status`, `llm_request`, `llm_request_cancel`. Every new command must also be added to `app_commands.rs` and `capabilities/app-commands.json` (`ipc_acl_tests.rs` enforces it).
 
 ## Coding Conventions
 
