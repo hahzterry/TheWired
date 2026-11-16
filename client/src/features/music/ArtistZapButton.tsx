@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Zap } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Modal } from "@/components/ui/Modal";
+import { ModalBoundary } from "@/components/ui/ModalBoundary";
 import { useProfile } from "@/features/profile/useProfile";
 import { useZap } from "../wallet/WalletProvider";
 import { getZapTargets, type ZapArtist, type ZappableMusicItem } from "./musicZapTargets";
@@ -57,14 +58,16 @@ export function useArtistZap(item: ZapMusicItem): ArtistZapState {
         : "Zap artist";
 
   const picker = pickerOpen ? (
-    <ArtistZapPicker
-      artists={targets}
-      onClose={() => setPickerOpen(false)}
-      onPick={(pk) => {
-        setPickerOpen(false);
-        openZap({ recipientPubkey: pk });
-      }}
-    />
+    <ModalBoundary label="artist-zap-picker" onClose={() => setPickerOpen(false)}>
+      <ArtistZapPicker
+        artists={targets}
+        onClose={() => setPickerOpen(false)}
+        onPick={(pk) => {
+          setPickerOpen(false);
+          openZap({ recipientPubkey: pk });
+        }}
+      />
+    </ModalBoundary>
   ) : null;
 
   return { onZap, label, count: targets.length, picker };

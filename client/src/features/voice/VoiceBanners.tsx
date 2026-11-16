@@ -1,7 +1,7 @@
 import { AlertTriangle, RefreshCw, ShieldAlert, Volume2, WifiOff, X } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { setMediaError, setE2EEError } from "@/store/slices/voiceSlice";
-import { resumeAudioPlayback } from "@/lib/webrtc/livekitClient";
+import { resumeAudioPlayback } from "@/lib/webrtc/livekit";
 import { retryMicrophone } from "./voiceService";
 
 /**

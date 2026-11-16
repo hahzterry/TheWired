@@ -1,4 +1,5 @@
 import type { AppDispatch, RootState } from "../index";
+import type { SpaceMember, SpaceRole } from "../../types/space";
 import { setMembers } from "../slices/spaceConfigSlice";
 import { updateSpaceMembers } from "../slices/spacesSlice";
 import { fetchAllMemberRoles } from "../../lib/api/roles";
@@ -22,6 +23,39 @@ const log = createLogger("spaces");
  *
  * Plus IDB write-through, so a cold reload paints correctly without waiting for refetch.
  */
+
+function sameList(a: readonly string[] | undefined, b: readonly string[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function sameRole(a: SpaceRole, b: SpaceRole): boolean {
+  return (
+    a.id === b.id &&
+    a.spaceId === b.spaceId &&
+    a.name === b.name &&
+    a.position === b.position &&
+    a.color === b.color &&
+    a.isDefault === b.isDefault &&
+    a.isAdmin === b.isAdmin &&
+    sameList(a.permissions, b.permissions)
+  );
+}
+
+/** Same members in the same order with the same roles. Field by field, no
+ *  allocation, and it stops at the first difference: this runs once per joined
+ *  space right after login, on the main thread. */
+function sameMembers(a: readonly SpaceMember[] | undefined, b: readonly SpaceMember[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.pubkey !== y.pubkey || x.joinedAt !== y.joinedAt || x.roles.length !== y.roles.length) return false;
+    for (let r = 0; r < x.roles.length; r++) if (!sameRole(x.roles[r], y.roles[r])) return false;
+  }
+  return true;
+}
 
 /** Per-spaceId in-flight promise dedup. Multiple concurrent callers share one fetch. */
 const inFlight = new Map<string, Promise<void>>();
@@ -71,8 +105,20 @@ export function syncSpaceMembers(spaceId: string) {
           `members synced for ${spaceId.slice(0, 8)}…: ${members.length} members, ${named}/${members.length} have a cached name (rest will render a hash until their kind:0 loads)`,
         );
 
-        dispatch(setMembers({ spaceId, members }));
-        dispatch(updateSpaceMembers({ spaceId, members: pubkeys }));
+        // Only touch the store when the fetch actually changed something. After
+        // a login or account switch every joined space revalidates the roster
+        // it just hydrated from IndexedDB, and the answer is nearly always
+        // "same as before": dispatching it anyway replaced `spaces.list` and
+        // the member arrays once per space, re-rendering the whole shell for
+        // each response (the bulk of the post-switch long tasks).
+        const state = getState();
+        if (!sameMembers(state.spaceConfig.members[spaceId], members)) {
+          dispatch(setMembers({ spaceId, members }));
+        }
+        const current = state.spaces.list.find((s) => s.id === spaceId)?.memberPubkeys;
+        if (!sameList(current, pubkeys)) {
+          dispatch(updateSpaceMembers({ spaceId, members: pubkeys }));
+        }
 
         // Write-through to IDB. Best-effort: persistence failure must not fail the dispatch.
         saveMembers(spaceId, members).catch((err) => {

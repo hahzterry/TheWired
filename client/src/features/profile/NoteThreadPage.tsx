@@ -21,6 +21,7 @@ import { eventsSelectors } from "../../store/slices/eventsSlice";
 import { subscriptionManager } from "../../lib/nostr/subscriptionManager";
 import { PROFILE_RELAYS } from "../../lib/nostr/constants";
 import type { NostrEvent } from "../../types/nostr";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 function formatTime(unixSeconds: number): string {
   const d = new Date(unixSeconds * 1000);
@@ -138,7 +139,9 @@ export function NoteThreadPage({ noteId }: NoteThreadPageProps) {
 
       {/* Main note — expanded view */}
       <div className="px-6 py-5 border-b border-border">
-        <RootNoteExpanded event={event} />
+        <ItemBoundary id={event.id} label="thread-root" noun="note">
+          <RootNoteExpanded event={event} />
+        </ItemBoundary>
       </div>
 
       {/* Replies */}
@@ -150,12 +153,13 @@ export function NoteThreadPage({ noteId }: NoteThreadPageProps) {
         )}
         <div className="flex flex-col gap-3">
           {replies.map((reply, i) => (
-            <ReplyCard
-              key={reply.id}
-              event={reply}
-              index={i + 1}
-              animationDelay={i < 15 ? i * 40 : undefined}
-            />
+            <ItemBoundary key={reply.id} id={reply.id} label="thread-reply" noun="reply">
+              <ReplyCard
+                event={reply}
+                index={i + 1}
+                animationDelay={i < 15 ? i * 40 : undefined}
+              />
+            </ItemBoundary>
           ))}
         </div>
         {replies.length === 0 && (

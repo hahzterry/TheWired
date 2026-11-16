@@ -44,7 +44,8 @@ import { initialProfileTab } from "./profileSection";
 import { useZap } from "../wallet/WalletProvider";
 import { useProfileFeed } from "./useProfileNotes";
 import { useMutualFollow } from "./useMutualFollow";
-import { EngagementCollectorProvider } from "./engagementCollector";
+import { useEngagementRange } from "./engagementCollector";
+import { VirtualFeed, type VirtualFeedHandle, type VirtualFeedRange } from "@/components/virtual/VirtualFeed";
 import { PROFILE_RELAYS } from "../../lib/nostr/constants";
 import { ProfileNoteCard } from "./NoteCard";
 import { ArticleCard } from "../longform/ArticleCard";
@@ -73,6 +74,7 @@ import type { ProfileTab } from "./profileSettings";
 import type { ProfileFeedItem } from "./useProfileNotes";
 import type { LongFormArticle } from "../../types/media";
 import { createLogger, shortKey } from "../../lib/debug/logger";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
 
 const feedLog = createLogger("feed");
 
@@ -182,12 +184,25 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
     [pubkey, activeTab],
   );
 
+  // The feed tabs are virtualized inside this page's scroller, so the saved
+  // card is usually not in the DOM when the page is reopened: the list is asked
+  // to bring it in, then the usual re-pinning takes over.
+  const feedRef = useRef<VirtualFeedHandle>(null);
   const { containerRef, capture: captureScroll } = useAnchoredScrollRestore({
     key: `${pubkey}:${activeTab}`,
     read: readScroll,
     write: writeScroll,
     cardAttr: "data-feed-anchor",
+    scrollToAnchor: (id, offset) => feedRef.current?.scrollToKey(id, offset) ?? false,
   });
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const attachScroller = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef(node);
+      setScrollEl(node);
+    },
+    [containerRef],
+  );
 
   const handleTabChange = useCallback((newTab: Tab) => {
     feedLog.debug(`tab change  ${activeTab} → ${newTab}  pubkey=${shortKey(pubkey)}`);
@@ -209,8 +224,8 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
   // Scroll restoration is handled by useAnchoredScrollRestore above (anchor-based,
   // re-pins as media loads) — see containerRef on the scroll container below.
 
-  // Engagement is fetched per-card as notes scroll into view — see FeedTab's
-  // EngagementCollectorProvider + ProfileNoteCard's useEngagementReporter.
+  // Engagement is fetched per note as it comes into the rendered window — see
+  // FeedTab's useEngagementRange.
 
   // Derive friend request status for this user
   const friendStatus = useMemo(() => {
@@ -323,13 +338,25 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
     { id: "showcase", label: "Library", icon: Music2 },
   ];
 
+  // What every virtualized tab needs: the page scroller, the handle the scroll
+  // restore drives, and the card to start on.
+  const savedScroll = readScroll();
+  const virtual: FeedVirtualProps = {
+    scrollParent: scrollEl,
+    feedRef,
+    listKey: `${pubkey}:${activeTab}`,
+    initialAnchor: savedScroll?.anchorId
+      ? { key: savedScroll.anchorId, offset: savedScroll.anchorOffset ?? 0 }
+      : null,
+  };
+
   // Own profile always shows all tabs; other profiles respect their display settings
   const tabs = isMe
     ? allTabs
     : allTabs.filter((t) => profileDisplaySettings.visibleTabs.includes(t.id as ProfileTab));
 
   return (
-    <div ref={containerRef} className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${scrollPaddingClass}`}>
+    <div ref={attachScroller} className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${scrollPaddingClass}`}>
       {lightboxSrc && (
         <MediaLightbox src={lightboxSrc} alt={displayName} onClose={() => setLightboxSrc(null)} />
       )}
@@ -765,6 +792,7 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
               emptyIcon={<FileText size={32} className="text-faint" />}
               emptyText="No notes yet"
               label="notes"
+              virtual={virtual}
             />
           </>
         )}
@@ -778,6 +806,7 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
             emptyIcon={<Repeat2 size={32} className="text-faint" />}
             emptyText="No reposts yet"
             label="reposts"
+            virtual={virtual}
           />
         )}
         {activeTab === "replies" && (
@@ -791,6 +820,7 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
             emptyIcon={<MessageSquare size={32} className="text-faint" />}
             emptyText="No replies yet"
             label="replies"
+            virtual={virtual}
           />
         )}
         {activeTab === "media" && (
@@ -803,6 +833,7 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
             emptyIcon={<ImageIcon size={32} className="text-faint" />}
             emptyText="No media posts yet"
             label="media"
+            virtual={virtual}
           />
         )}
         {activeTab === "reads" && (
@@ -826,6 +857,7 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
               loading={!feed.articlesEose && feed.articles.length === 0}
               hasMore={feed.hasMoreArticles}
               onLoadMore={feed.loadMoreArticles}
+              virtual={virtual}
             />
           </>
         )}
@@ -836,39 +868,31 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
   );
 }
 
-/** IntersectionObserver sentinel for auto-loading next page */
-function LoadMoreSentinel({ onIntersect, label }: { onIntersect: () => void; label?: string }) {
-  const sentinelRef = useRef<HTMLDivElement>(null);
-  const fireCount = useRef(0);
-
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) {
-          fireCount.current++;
-          // Log the trigger — confirms the infinite-scroll behaviour the user
-          // suspects. The count makes it obvious if the sentinel is firing
-          // rapidly (e.g., during a heavy render the observer can re-fire
-          // while the new page bumps the scroll height).
-          feedLog.debug(`LoadMoreSentinel triggered  ${label ?? "(unlabeled)"} fire#${fireCount.current}`);
-          onIntersect();
-        }
-      },
-      { rootMargin: "200px" },
-    );
-
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [onIntersect, label]);
-
-  return <div ref={sentinelRef} className="h-1" />;
+/** What a virtualized profile tab needs from the page. */
+export interface FeedVirtualProps {
+  /** The page's scroll container (banner, header and tabs scroll with the feed). */
+  scrollParent: HTMLElement | null;
+  feedRef: React.Ref<VirtualFeedHandle>;
+  /** `<pubkey>:<tab>` — a new key is a new list. */
+  listKey: string;
+  /** Card to start on when returning to this tab. */
+  initialAnchor: { key: string; offset: number } | null;
 }
 
+/** Height guess for a profile note card that was never measured. */
+const PROFILE_NOTE_HEIGHT_ESTIMATE = 240;
+/** Height guess for an article card. */
+const ARTICLE_HEIGHT_ESTIMATE = 150;
+/** Space between cards (the old `gap-3`). */
+const CARD_GAP = 12;
+/** Cards that fade in on first paint. */
+const INTRO_CARDS = 15;
+
+const feedItemKey = (item: ProfileFeedItem) => item.event.id;
+const articleKey = (article: LongFormArticle) => article.eventId;
+
 /** Generic feed tab for Notes/Replies/Media with pagination */
-function FeedTab({
+export function FeedTab({
   items,
   loading,
   eoseReceived,
@@ -880,6 +904,7 @@ function FeedTab({
   emptyIcon,
   emptyText,
   label,
+  virtual,
 }: {
   items: ProfileFeedItem[];
   loading: boolean;
@@ -892,7 +917,46 @@ function FeedTab({
   emptyIcon: React.ReactNode;
   emptyText: string;
   label?: string;
+  virtual: FeedVirtualProps;
 }) {
+  // Engagement follows the rendered range: each note is fetched once, in feed
+  // order, the first time it comes into the window.
+  const reportVisible = useEngagementRange(PROFILE_RELAYS, virtual.listKey);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const handleRange = useCallback(
+    ({ startIndex, endIndex }: VirtualFeedRange) => {
+      reportVisible(
+        itemsRef.current.slice(startIndex, endIndex + 1).map((item) => item.event.id),
+        startIndex,
+      );
+    },
+    [reportVisible],
+  );
+
+  // The next local page is revealed while the last card is rendered (this was
+  // an IntersectionObserver sentinel before the feed was virtualized).
+  const revealMore = useCallback(() => {
+    feedLog.debug(`feed end reached  ${label ?? "(unlabeled)"}`);
+    onLoadMore?.();
+  }, [onLoadMore, label]);
+
+  const renderCard = useCallback(
+    (item: ProfileFeedItem, i: number, intro: boolean) => (
+      <ItemBoundary id={item.event.id} label="profile-note" noun="note">
+        <ProfileNoteCard
+          item={item}
+          index={i}
+          anchorId={item.event.id}
+          showThreadContext={showThreadContext}
+          animate={intro && i < INTRO_CARDS}
+          animationDelay={i < INTRO_CARDS ? i * 40 : undefined}
+        />
+      </ItemBoundary>
+    ),
+    [showThreadContext],
+  );
+
   if (loading && items.length === 0) {
     return (
       <div className="flex justify-center py-8">
@@ -911,23 +975,22 @@ function FeedTab({
   }
 
   return (
-    <EngagementCollectorProvider relayUrls={PROFILE_RELAYS}>
     <div className="flex flex-col gap-3">
-      {items.map((item, i) => (
-        <ProfileNoteCard
-          key={item.event.id}
-          item={item}
-          index={i}
-          anchorId={item.event.id}
-          showThreadContext={showThreadContext}
-          animationDelay={i < 15 ? i * 40 : undefined}
-        />
-      ))}
-
-      {/* Auto-load next page when sentinel is visible */}
-      {hasMore && onLoadMore && (
-        <LoadMoreSentinel onIntersect={onLoadMore} label={label} />
-      )}
+      <VirtualFeed
+        handleRef={virtual.feedRef}
+        items={items}
+        itemKey={feedItemKey}
+        renderItem={renderCard}
+        scrollParent={virtual.scrollParent}
+        listKey={virtual.listKey}
+        heightScope="profile"
+        estimatedItemHeight={PROFILE_NOTE_HEIGHT_ESTIMATE}
+        gap={CARD_GAP}
+        initialAnchor={virtual.initialAnchor}
+        onRangeChange={handleRange}
+        hasMore={hasMore}
+        onLoadMore={onLoadMore ? revealMore : undefined}
+      />
 
       {/* Fetching more from relay indicator */}
       {fetchingMore && (
@@ -954,23 +1017,42 @@ function FeedTab({
         </div>
       )}
     </div>
-    </EngagementCollectorProvider>
   );
 }
 
 /** Reads tab for kind:30023 articles with pagination */
-function ReadsTab({
+export function ReadsTab({
   articles,
   loading,
   hasMore,
   onLoadMore,
+  virtual,
 }: {
   articles: LongFormArticle[];
   loading: boolean;
   hasMore?: boolean;
   onLoadMore?: () => void;
+  virtual: FeedVirtualProps;
 }) {
   const navigate = useNavigate();
+
+  const renderArticle = useCallback(
+    (article: LongFormArticle, i: number, intro: boolean) => (
+      <div
+        data-feed-anchor={article.eventId}
+        className={intro ? "animate-fade-in-up" : undefined}
+        style={intro ? { animationDelay: `${Math.min(i, 15) * 40}ms` } : undefined}
+      >
+        <ItemBoundary id={article.eventId} label="article-card" noun="article">
+          <ArticleCard
+            article={article}
+            onClick={() => navigate(`/article/${article.eventId}`)}
+          />
+        </ItemBoundary>
+      </div>
+    ),
+    [navigate],
+  );
 
   if (loading) {
     return (
@@ -990,24 +1072,19 @@ function ReadsTab({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {articles.map((article, i) => (
-        <div
-          key={article.eventId}
-          data-feed-anchor={article.eventId}
-          className="animate-fade-in-up"
-          style={{ animationDelay: `${Math.min(i, 15) * 40}ms` }}
-        >
-          <ArticleCard
-            article={article}
-            onClick={() => navigate(`/article/${article.eventId}`)}
-          />
-        </div>
-      ))}
-
-      {hasMore && onLoadMore && (
-        <LoadMoreSentinel onIntersect={onLoadMore} label="reads" />
-      )}
-    </div>
+    <VirtualFeed
+      handleRef={virtual.feedRef}
+      items={articles}
+      itemKey={articleKey}
+      renderItem={renderArticle}
+      scrollParent={virtual.scrollParent}
+      listKey={virtual.listKey}
+      heightScope="profile-reads"
+      estimatedItemHeight={ARTICLE_HEIGHT_ESTIMATE}
+      gap={CARD_GAP}
+      initialAnchor={virtual.initialAnchor}
+      hasMore={hasMore}
+      onLoadMore={onLoadMore}
+    />
   );
 }

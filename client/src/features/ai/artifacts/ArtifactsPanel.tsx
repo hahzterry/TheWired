@@ -18,6 +18,7 @@ import type { AIArtifactType } from "@/types/ai";
 import { ArtifactRenderer } from "./ArtifactRenderer";
 import { ArtifactActions } from "./ArtifactActions";
 import { AIPublishMenu } from "../publish/AIPublishMenu";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 const ICONS: Record<AIArtifactType, typeof FileText> = {
   document: FileText,
@@ -74,7 +75,15 @@ export function ArtifactsPanel() {
             </ArtifactActions>
           </div>
           <div className="flex-1 overflow-y-auto p-3">
-            <ArtifactRenderer artifact={artifact} />
+            <ErrorBoundary
+              variant="inline"
+              scope="item"
+              label="ai-artifact"
+              noun="artifact"
+              resetKeys={[artifact.id, artifact.content]}
+            >
+              <ArtifactRenderer artifact={artifact} />
+            </ErrorBoundary>
           </div>
         </>
       ) : (

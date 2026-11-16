@@ -1,6 +1,7 @@
 import { useState, useRef, useMemo } from "react";
 import { X, Upload, Music } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadAudio, uploadCoverArt } from "@/lib/api/music";
 import { buildAlbumEvent, buildTrackEvent, buildPrivateTrackEvent } from "./musicEventBuilder";
@@ -13,6 +14,8 @@ import { VisibilityPicker } from "./VisibilityPicker";
 import { ExportToggle } from "./ExportToggle";
 import { readAudioMetadata } from "./trackFileParser";
 import { parseFilename } from "./trackFileParser";
+import { isTagReaderLoadError } from "./tagReaderError";
+import { TagReaderNotice } from "./TagReaderNotice";
 import { useProfile } from "@/features/profile/useProfile";
 import type { EmbeddedCoverArt } from "./trackFileParser";
 import type { MusicVisibility } from "@/types/music";
@@ -42,7 +45,7 @@ interface UploadTrackModalProps {
   defaultChannelId?: string;
 }
 
-export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibility, defaultSpaceId, defaultChannelId }: UploadTrackModalProps) {
+function UploadTrackModalInner({ open, onClose, defaultAlbumRef, defaultVisibility, defaultSpaceId, defaultChannelId }: UploadTrackModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const allAlbums = useAppSelector((s) => s.music.albums);
   const isMine = useIsMine();
@@ -76,6 +79,9 @@ export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibi
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The file's tags were not read because the reader did not load (not: the file has none). */
+  const [tagsUnread, setTagsUnread] = useState(false);
+  const [readingTags, setReadingTags] = useState(false);
   const [collaborators, setCollaborators] = useState<string[]>([]);
   const [embeddedCover, setEmbeddedCover] = useState<EmbeddedCoverArt | null>(null);
   const { profile: myProfile } = useProfile(pubkey);
@@ -99,6 +105,7 @@ export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibi
     setFileDuration(null);
     setCoverFile(null);
     setError(null);
+    setTagsUnread(false);
     setCollaborators([]);
     setEmbeddedCover(null);
     if (audioInputRef.current) audioInputRef.current.value = "";
@@ -115,21 +122,40 @@ export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibi
     }
     setError(null);
     setAudioFile(file);
+    setTagsUnread(false);
 
-    if (file) {
-      // Auto-fill metadata from ID3 tags
-      const meta = await readAudioMetadata(file);
-      const fromFilename = parseFilename(file.name);
-      if (!title) setTitle(meta.title || fromFilename.title);
-      if (!artist) setArtist(meta.artist || fromFilename.artist);
-      if (!genre && meta.genre) setGenre(meta.genre);
-      setFileDuration(meta.duration ?? null);
+    if (file) await fillFromFile(file);
+  };
 
-      // Extract embedded cover art
-      if (meta.coverArt && !coverFile) {
-        setEmbeddedCover(meta.coverArt);
-        setCoverFile(meta.coverArt.file);
-      }
+  /** Auto-fill the form from the file's tags, falling back to its name. Also the notice's "Try again". */
+  const fillFromFile = async (file: File) => {
+    let meta: Awaited<ReturnType<typeof readAudioMetadata>> = {};
+    setReadingTags(true);
+    try {
+      meta = await readAudioMetadata(file);
+      setTagsUnread(false);
+    } catch (err) {
+      // The reader did not load. Fill what the filename gives and say so: the
+      // upload still works, but nobody should think the file had no tags.
+      if (!isTagReaderLoadError(err)) throw err;
+      setTagsUnread(true);
+    } finally {
+      setReadingTags(false);
+    }
+
+    const fromFilename = parseFilename(file.name);
+    // A field still holding the filename's guess is not the user's own text,
+    // so a retry that does read the tags may replace it.
+    const untouched = (value: string, guess: string) => !value || value === guess;
+    if (untouched(title, fromFilename.title)) setTitle(meta.title || fromFilename.title);
+    if (untouched(artist, fromFilename.artist)) setArtist(meta.artist || fromFilename.artist);
+    if (!genre && meta.genre) setGenre(meta.genre);
+    setFileDuration(meta.duration ?? null);
+
+    // Extract embedded cover art
+    if (meta.coverArt && !coverFile) {
+      setEmbeddedCover(meta.coverArt);
+      setCoverFile(meta.coverArt.file);
     }
   };
 
@@ -262,6 +288,12 @@ export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibi
                 </>
               )}
             </button>
+            {tagsUnread && audioFile && (
+              <TagReaderNotice onRetry={() => void fillFromFile(audioFile)} retrying={readingTags}>
+                The file's tags (title, artist, cover, length) couldn't be read, so only its name was used. Check your
+                connection and try again, or reload the app if it keeps failing.
+              </TagReaderNotice>
+            )}
           </div>
 
           {/* Title */}
@@ -439,3 +471,5 @@ export function UploadTrackModal({ open, onClose, defaultAlbumRef, defaultVisibi
     </Modal>
   );
 }
+
+export const UploadTrackModal = withModalBoundary(UploadTrackModalInner, "upload-track");

@@ -11,7 +11,7 @@ import { uploadContextKey, type UploadContext } from "@ishtarservices/core";
 import { uploadWithContext } from "@/lib/media/uploadPlan";
 import { ArticleToolbar } from "./ArticleToolbar";
 import { ArticleVisibilityPicker } from "./ArticleVisibilityPicker";
-import { ArticleMarkdown } from "./ArticleMarkdown";
+import { LazyArticleMarkdown } from "./LazyArticleMarkdown";
 import { CoverImageField } from "./CoverImageField";
 import { TagsInput } from "./TagsInput";
 import { useArticleDraftAutosave } from "./useArticleDraft";
@@ -492,7 +492,7 @@ export function ArticleEditor({
             )}
             <div className="mt-6">
               {content.trim() ? (
-                <ArticleMarkdown content={content} />
+                <LazyArticleMarkdown content={content} />
               ) : (
                 <p className="text-sm text-muted">Your formatted article will appear here.</p>
               )}

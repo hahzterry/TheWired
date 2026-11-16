@@ -2,6 +2,7 @@ import { useMemo, memo, useRef, useEffect, useState } from "react";
 import { Search, X, MessageCircle, Users, Clock, Check } from "lucide-react";
 import { createRoom } from "./dmService";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Avatar } from "@/components/ui/Avatar";
 import { useUserSearch } from "@/features/search/useUserSearch";
 import { useProfile } from "@/features/profile/useProfile";
@@ -17,7 +18,7 @@ interface NewDMModalProps {
   onSelect: (pubkey: string) => void;
 }
 
-export function NewDMModal({ open, onClose, onSelect }: NewDMModalProps) {
+function NewDMModalInner({ open, onClose, onSelect }: NewDMModalProps) {
   const { query, setQuery, results, isSearching } = useUserSearch();
   const myPubkey = useAppSelector((s) => s.identity.pubkey);
   const contacts = useDMContacts();
@@ -370,3 +371,5 @@ const PersonItem = memo(function PersonItem({
     </button>
   );
 });
+
+export const NewDMModal = withModalBoundary(NewDMModalInner, "new-dm");

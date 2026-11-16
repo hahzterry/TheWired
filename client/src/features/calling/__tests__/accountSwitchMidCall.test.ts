@@ -133,6 +133,10 @@ const LATE_JOINER = "d".repeat(64);
 const SPACE = "space1";
 const CHANNEL = "video1";
 
+vi.mock("@/lib/webrtc/e2ee/support", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/webrtc/e2ee/support")>()),
+  e2eeSupported: () => true,
+}));
 vi.mock("livekit-client", () => ({
   Room: h.FakeRoom,
   RoomEvent: {
@@ -162,7 +166,6 @@ vi.mock("livekit-client", () => ({
     protected onSetEncryptionKey() {}
   },
   createKeyMaterialFromBuffer: async () => ({}),
-  isE2EESupported: () => true,
   Track: {
     Source: { Microphone: "microphone", Camera: "camera", ScreenShare: "screen_share" },
     Kind: { Audio: "audio", Video: "video" },

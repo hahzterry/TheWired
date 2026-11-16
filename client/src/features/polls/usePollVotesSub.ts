@@ -4,7 +4,8 @@ import { EVENT_KINDS } from "../../types/nostr";
 
 const BATCH_LIMIT = 100;
 /** Wait for the visible-poll set to settle before issuing one REQ — polls
- *  stream in incrementally, same churn concern as useNoteEngagementSub. */
+ *  stream in incrementally, and one REQ per arrival would churn through dozens
+ *  of subscriptions and trip relay subscription caps. */
 const VOTES_DEBOUNCE_MS = 300;
 
 /**

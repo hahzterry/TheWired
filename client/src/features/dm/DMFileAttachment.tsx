@@ -14,6 +14,7 @@ import {
   SmartVideo,
   boundedMediaSize,
 } from "@/components/media";
+import { InlineAudio } from "@/components/media/InlineAudio";
 
 /** Tauri's HTTP plugin bypasses CORS in the desktop app; the plain browser
  *  preview has no `invoke` bridge, so fall back to window.fetch there. */
@@ -142,7 +143,7 @@ export function DMFileAttachment({ meta, author, isMe, autoLoad }: DMFileAttachm
     // Same cards as chat media: sized from the rumor's `dim`, lightbox / play.
     if (isImage) return <SmartImage url={state.objectUrl} dim={meta.dim} density="chat" />;
     if (isVideo) return <SmartVideo url={state.objectUrl} dim={meta.dim} density="chat" />;
-    if (isAudio) return <audio src={state.objectUrl} controls className="w-64 max-w-full" />;
+    if (isAudio) return <InlineAudio src={state.objectUrl} className="w-64 max-w-full" />;
     return (
       <a
         href={state.objectUrl}

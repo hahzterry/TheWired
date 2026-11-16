@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { X, Search, Check, ListMusic, Disc3 } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { selectLibraryTracks, selectLibraryAlbums } from "@/features/music/musicSelectors";
 import { getTrackImage } from "@/features/music/trackImage";
@@ -26,7 +27,7 @@ interface ShowcasePickerModalProps {
 
 type PickerTab = "tracks" | "albums";
 
-export function ShowcasePickerModal({ open, onClose }: ShowcasePickerModalProps) {
+function ShowcasePickerModalInner({ open, onClose }: ShowcasePickerModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const albums = useAppSelector((s) => s.music.albums);
 
@@ -241,3 +242,5 @@ export function ShowcasePickerModal({ open, onClose }: ShowcasePickerModalProps)
     </Modal>
   );
 }
+
+export const ShowcasePickerModal = withModalBoundary(ShowcasePickerModalInner, "showcase-picker");

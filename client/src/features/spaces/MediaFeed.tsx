@@ -24,16 +24,22 @@ import { tokenizeEventMediaUrl } from "../../lib/media/eventMedia";
 import { useMediaGrant } from "../../lib/media/mediaGrant";
 import { matchEmbed, type EmbedMatch, type EmbedPlatform } from "../../lib/content/embedPatterns";
 import { downloadMedia } from "../../components/ui/MediaLightbox";
-import { useScrollRestore } from "../../hooks/useScrollRestore";
+import { useAnchoredScrollRestore } from "../../hooks/useAnchoredScrollRestore";
+import { readFeedScroll, writeFeedScroll } from "../../hooks/feedScrollMemory";
+import { MEDIA_GRID_COLUMNS, toRows, useGridColumns } from "../../hooks/useGridColumns";
 import { useFeedPagination } from "./useFeedPagination";
 import { FeedToolbar } from "./FeedToolbar";
 import { LoadMoreButton } from "./LoadMoreButton";
-import { RevealSentinel } from "../../components/ui/RevealSentinel";
+import { VirtualFeed, type VirtualFeedHandle } from "../../components/virtual/VirtualFeed";
+import { ItemBoundary } from "@/components/ui/ErrorBoundary";
+import { ModalBoundary } from "@/components/ui/ModalBoundary";
 
 const feedLog = createLogger("feed");
 
-/** How many tiles to add to the rendered window each time the sentinel is hit. */
-const RENDER_PAGE = 30;
+/** Space between tiles and between rows (the grid's `gap-4`). */
+const GRID_GAP = 16;
+/** Height of a tile's footer (author + two caption lines), for row estimates. */
+const TILE_FOOTER_ESTIMATE = 76;
 
 /** Wait this long after a video tile enters the near-viewport band before
  *  acquiring a load slot — a tile flung past in less than this never loads, so
@@ -749,6 +755,32 @@ function TabButton({
   );
 }
 
+/** One line of the grid: `columns` tiles, the last row possibly fewer. */
+interface MediaRow {
+  /** Position of the row; rows are keyed by position so a tile that stays in
+   *  its row when the feed grows is moved, not remounted. */
+  index: number;
+  items: MediaItem[];
+}
+
+const rowKey = (row: MediaRow) => `row-${row.index}`;
+
+/**
+ * Namespace for the remembered heights of a grid's rows. Rows are keyed by
+ * position (`row-N`), so the scope has to say whose rows they are: the
+ * channel and tab (`positionKey`) and the column count. Without the first,
+ * every grid with the same column count would start from the heights another
+ * channel's rows measured.
+ */
+export function mediaHeightScope(positionKey: string | null, columns: number): string {
+  return `media:${positionKey ?? "-"}:${columns}`;
+}
+
+/** The row that holds the tile with this key, or -1. */
+export function rowIndexOfTile(rows: readonly { items: { key: string }[] }[], tileKey: string): number {
+  return rows.findIndex((row) => row.items.some((item) => item.key === tileKey));
+}
+
 // ── Main component ───────────────────────────────────────────────
 
 export function MediaFeed() {
@@ -761,11 +793,6 @@ export function MediaFeed() {
   const activeChannelId = useAppSelector((s) => s.spaces.activeChannelId);
   const [activeItem, setActiveItem] = useState<MediaItem | null>(null);
   const [filter, setFilter] = useState<FilterTab>("all");
-  // Cap how many tiles are actually rendered; grow it as the user scrolls. This
-  // keeps the DOM (and per-event-batch re-render cost) bounded no matter how many
-  // media items the feed holds, and makes tab switches cheap (resets to one page).
-  const [renderLimit, setRenderLimit] = useState(RENDER_PAGE);
-  const scrollRef = useScrollRestore(activeChannelId);
   const { meta, refresh, loadMore } = useFeedPagination("media");
   // The media channel only subscribes to dedicated media kinds (20/21/22/34235),
   // so note-derived media + embeds only appear once kind:1 notes are fetched and
@@ -818,17 +845,52 @@ export function MediaFeed() {
     return allItems.filter((m) => m.type === "embed");
   }, [allItems, filter]);
 
-  // Switching tabs starts a fresh render window (don't render hundreds at once).
-  useEffect(() => {
-    setRenderLimit(RENDER_PAGE);
-  }, [filter]);
-
-  const visibleItems = useMemo(
-    () => filteredItems.slice(0, renderLimit),
-    [filteredItems, renderLimit],
+  // The grid is virtualized row by row: the tiles are cut into rows of as many
+  // columns as the CSS grid shows at this width, and only the rows around the
+  // viewport are mounted. Each row is its own one-line grid with the same
+  // classes as before, so tile sizes and stretching are unchanged.
+  const columns = useGridColumns(MEDIA_GRID_COLUMNS);
+  const rows = useMemo<MediaRow[]>(
+    () => toRows(filteredItems, columns).map((items, index) => ({ index, items })),
+    [filteredItems, columns],
   );
-  const hasMoreLocal = renderLimit < filteredItems.length;
-  const revealMore = useCallback(() => setRenderLimit((n) => n + RENDER_PAGE), []);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const feedRef = useRef<VirtualFeedHandle>(null);
+
+  // Position is remembered per channel and filter tab as the tile at the top
+  // of the viewport. Changing the column count re-runs the restore, so the
+  // same tile stays on screen when the window or sidebar changes the grid.
+  const positionKey = activeChannelId ? `${activeChannelId}:${filter}` : null;
+  const { containerRef } = useAnchoredScrollRestore({
+    key: positionKey ? `${positionKey}:${columns}` : null,
+    read: () => readFeedScroll(positionKey),
+    write: (pos) => writeFeedScroll(positionKey, pos),
+    cardAttr: "data-feed-anchor",
+    scrollToAnchor: (tileKey, offset) => {
+      const row = rowIndexOfTile(rowsRef.current, tileKey);
+      if (row < 0) return null;
+      return feedRef.current?.scrollToKey(`row-${row}`, offset) ?? false;
+    },
+  });
+  const attachScroller = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef(node);
+      setScrollEl(node);
+    },
+    [containerRef],
+  );
+  const savedPosition = readFeedScroll(positionKey);
+  const savedRow = savedPosition?.anchorId ? rowIndexOfTile(rows, savedPosition.anchorId) : -1;
+
+  // A row is about as tall as a tile is wide, plus the footer.
+  const contentWidth = scrollEl ? scrollEl.clientWidth - 32 : 0;
+  const rowHeightEstimate =
+    contentWidth > 0
+      ? Math.round((contentWidth - GRID_GAP * (columns - 1)) / columns) + TILE_FOOTER_ESTIMATE
+      : 280;
 
   const imageCount = allItems.filter((m) => m.type === "image").length;
   const videoCount = allItems.filter((m) => m.type === "video").length;
@@ -840,6 +902,28 @@ export function MediaFeed() {
     feedLog.debug(`media: expand ${item.type}`, videoLoadQueue.stats());
     setActiveItem(item);
   }, []);
+
+  const renderRow = useCallback(
+    (row: MediaRow) => (
+      <div
+        data-feed-anchor={row.items[0]?.key}
+        className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4"
+      >
+        {row.items.map((item) => (
+          <ItemBoundary key={item.key} id={item.key} label="media-tile" noun="media">
+            {item.type === "embed" ? (
+              <EmbedThumbnail item={item} onClick={() => handleExpand(item)} />
+            ) : item.type === "video" ? (
+              <VideoThumbnail item={item} onClick={() => handleExpand(item)} />
+            ) : (
+              <ImageThumbnail item={item} onClick={() => handleExpand(item)} />
+            )}
+          </ItemBoundary>
+        ))}
+      </div>
+    ),
+    [handleExpand],
+  );
 
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden">
@@ -881,7 +965,7 @@ export function MediaFeed() {
       </FeedToolbar>
 
       {/* Grid */}
-      <div ref={scrollRef} className={`flex-1 overflow-y-auto p-4 ${scrollPaddingClass}`}>
+      <div ref={attachScroller} className={`flex-1 overflow-y-auto p-4 ${scrollPaddingClass}`}>
         {filteredItems.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-muted">
@@ -890,42 +974,26 @@ export function MediaFeed() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {visibleItems.map((item) => {
-                if (item.type === "embed") {
-                  return (
-                    <EmbedThumbnail
-                      key={item.key}
-                      item={item}
-                      onClick={() => handleExpand(item)}
-                    />
-                  );
-                }
-                if (item.type === "video") {
-                  return (
-                    <VideoThumbnail
-                      key={item.key}
-                      item={item}
-                      onClick={() => handleExpand(item)}
-                    />
-                  );
-                }
-                return (
-                  <ImageThumbnail
-                    key={item.key}
-                    item={item}
-                    onClick={() => handleExpand(item)}
-                  />
-                );
-              })}
-            </div>
-            {/* Reveal more rendered tiles as you approach the end; once the whole
-                fetched set is shown, fall back to fetching more from the relay. */}
-            {hasMoreLocal && <RevealSentinel onReach={revealMore} />}
+            <VirtualFeed
+              handleRef={feedRef}
+              items={rows}
+              itemKey={rowKey}
+              renderItem={renderRow}
+              scrollParent={scrollEl}
+              listKey={`${positionKey ?? "media"}:${columns}`}
+              heightScope={mediaHeightScope(positionKey, columns)}
+              estimatedItemHeight={rowHeightEstimate}
+              gap={GRID_GAP}
+              initialAnchor={
+                savedRow >= 0 ? { key: `row-${savedRow}`, offset: savedPosition?.anchorOffset ?? 0 } : null
+              }
+            />
+            {/* Everything fetched is in the grid; older media comes from the relay. */}
             <LoadMoreButton
               isLoading={meta.isLoadingMore}
-              hasMore={!hasMoreLocal && meta.hasMore}
+              hasMore={meta.hasMore}
               onLoadMore={loadMore}
+              error={meta.loadMoreError}
             />
           </>
         )}
@@ -934,13 +1002,19 @@ export function MediaFeed() {
       {/* Expanded media — overlay so the grid (and its scroll position) stays mounted */}
       {activeItem && (
         <div className="absolute inset-0 z-30 flex flex-col bg-background">
-          {activeItem.type === "embed" ? (
-            <ExpandedEmbedView item={activeItem} onClose={() => setActiveItem(null)} />
-          ) : activeItem.type === "video" ? (
-            <ExpandedVideoView item={activeItem} onClose={() => setActiveItem(null)} />
-          ) : (
-            <ExpandedImageView item={activeItem} onClose={() => setActiveItem(null)} />
-          )}
+          <ModalBoundary
+            contained
+            label="media-expanded"
+            onClose={() => setActiveItem(null)}
+          >
+            {activeItem.type === "embed" ? (
+              <ExpandedEmbedView item={activeItem} onClose={() => setActiveItem(null)} />
+            ) : activeItem.type === "video" ? (
+              <ExpandedVideoView item={activeItem} onClose={() => setActiveItem(null)} />
+            ) : (
+              <ExpandedImageView item={activeItem} onClose={() => setActiveItem(null)} />
+            )}
+          </ModalBoundary>
         </div>
       )}
     </div>

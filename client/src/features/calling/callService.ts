@@ -49,8 +49,8 @@ import {
   setScreenShareEnabled,
   addRoomListener,
   getLivekitRoom,
-} from "@/lib/webrtc/livekitClient";
-import { e2eeSupported, E2EEUnsupportedError } from "@/lib/webrtc/e2ee/session";
+} from "@/lib/webrtc/livekit";
+import { e2eeSupported, E2EEUnsupportedError } from "@/lib/webrtc/e2ee/support";
 import { describeMediaError } from "@/lib/webrtc/mediaDevices";
 import { createLogger } from "@/lib/debug/logger";
 import {
