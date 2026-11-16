@@ -1,4 +1,15 @@
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { useEscapeLayer, useModalFocus } from "./layer";
 
@@ -6,10 +17,10 @@ interface ModalProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
-  /** Accessible name. Without `label` / `labelledBy` the first heading inside
-   *  the dialog (h1–h3 or `[data-dialog-title]`) names it. */
+  /** Accessible name for a dialog with no visible title. A dialog with a
+   *  visible title renders it with `<ModalTitle>` instead. */
   label?: string;
-  /** id of the element that names the dialog. */
+  /** id of the element that names the dialog, when it is neither of the above. */
   labelledBy?: string;
   /** id of the element that describes the dialog. */
   describedBy?: string;
@@ -17,37 +28,44 @@ interface ModalProps {
   role?: "dialog" | "alertdialog";
 }
 
-const TITLE = "h1,h2,h3,[data-dialog-title]";
+interface TitleRegistry {
+  register: (id: string) => void;
+  unregister: (id: string) => void;
+}
+
+/** Lets a `<ModalTitle>` tell the dialog it is in which element names it. */
+const ModalTitleContext = createContext<TitleRegistry | null>(null);
+
+type TitleTag = "h1" | "h2" | "h3" | "h4" | "p" | "div" | "span";
+
+interface ModalTitleProps extends HTMLAttributes<HTMLElement> {
+  /** Element to render. Defaults to `h2`. */
+  as?: TitleTag;
+}
 
 /**
- * Name the dialog after its first heading when the caller gave no name.
- * Re-checked on DOM changes: multi-step dialogs swap their heading.
+ * The visible title of a dialog. Renders a heading (styling is the caller's)
+ * and names the surrounding `<Modal>` after it. The dialog learns its name
+ * from this declaration, not by searching its content, so a heading that
+ * happens to come first (a note, an article, a profile name) is never
+ * mistaken for the title.
  */
-function useHeadingLabel(
-  containerRef: RefObject<HTMLElement | null>,
-  enabled: boolean,
-): string | undefined {
-  const fallbackId = `${useId()}-title`;
-  const [id, setId] = useState<string>();
+export function ModalTitle({ as: Tag = "h2", id, children, ...rest }: ModalTitleProps) {
+  const registry = useContext(ModalTitleContext);
+  const ownId = useId();
+  const titleId = id ?? ownId;
 
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!enabled || !container) {
-      setId(undefined);
-      return;
-    }
-    const sync = () => {
-      const heading = container.querySelector<HTMLElement>(TITLE);
-      if (heading && !heading.id) heading.id = fallbackId;
-      setId(heading?.id);
-    };
-    sync();
-    const observer = new MutationObserver(sync);
-    observer.observe(container, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, [enabled, containerRef, fallbackId]);
+  useLayoutEffect(() => {
+    if (!registry) return;
+    registry.register(titleId);
+    return () => registry.unregister(titleId);
+  }, [registry, titleId]);
 
-  return id;
+  return (
+    <Tag id={titleId} {...rest}>
+      {children}
+    </Tag>
+  );
 }
 
 export function Modal({
@@ -65,7 +83,14 @@ export function Modal({
   // child autoFocus), Tab stays inside, and focus returns to the opener on close.
   const isTop = useEscapeLayer(open, onClose);
   useModalFocus(containerRef, open, isTop);
-  const headingId = useHeadingLabel(containerRef, open && !label && !labelledBy);
+
+  // Titles mounted inside this dialog, oldest first. A multi-step dialog
+  // mounts the next step's title before the previous one unmounts.
+  const [titleIds, setTitleIds] = useState<string[]>([]);
+  const register = useCallback((id: string) => setTitleIds((ids) => [...ids, id]), []);
+  const unregister = useCallback((id: string) => setTitleIds((ids) => ids.filter((other) => other !== id)), []);
+  const registry = useMemo(() => ({ register, unregister }), [register, unregister]);
+  const titleId = titleIds[titleIds.length - 1];
 
   if (!open) return null;
 
@@ -78,7 +103,7 @@ export function Modal({
         role={role}
         aria-modal="true"
         aria-label={label}
-        aria-labelledby={label ? undefined : (labelledBy ?? headingId)}
+        aria-labelledby={label ? undefined : (labelledBy ?? titleId)}
         aria-describedby={describedBy}
         tabIndex={-1}
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in-up outline-none"
@@ -86,7 +111,7 @@ export function Modal({
         {/* Backdrop: sits behind the content, so a press on it is a press
             outside the dialog. Keyboard users have Escape. */}
         <div role="presentation" className="absolute inset-0 -z-10" onMouseDown={onClose} />
-        {children}
+        <ModalTitleContext.Provider value={registry}>{children}</ModalTitleContext.Provider>
       </div>
     </div>,
     document.body,

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { useState } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Modal } from "../Modal";
+import { Modal, ModalTitle } from "../Modal";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { PopoverMenu, PopoverMenuItem } from "../PopoverMenu";
 
@@ -149,36 +149,67 @@ describe("Modal keyboard journey (real Tab presses)", () => {
 });
 
 describe("Modal accessible name", () => {
-  it("is named by its first heading when the caller gives no label", async () => {
+  it("is named by the title it is given with <ModalTitle>", () => {
     render(
       <Modal open onClose={() => {}}>
         <div>
-          <h2>Create space</h2>
+          <ModalTitle className="text-lg">Create space</ModalTitle>
           <button>ok</button>
         </div>
       </Modal>,
     );
-    expect(await screen.findByRole("dialog", { name: "Create space" })).toBeTruthy();
+    const dialog = screen.getByRole("dialog", { name: "Create space" });
+    const title = screen.getByRole("heading", { level: 2, name: "Create space" });
+    expect(title).toHaveClass("text-lg");
+    expect(dialog.getAttribute("aria-labelledby")).toBe(title.id);
   });
 
-  it("keeps an existing heading id instead of overwriting it", async () => {
+  it("is not named by a heading that merely comes first in its content", () => {
+    // A note, an article or a profile name rendered inside a dialog.
     render(
       <Modal open onClose={() => {}}>
-        <div>
-          <h3 id="my-title">Invite</h3>
-        </div>
+        <article>
+          <h1>GM, this is my note</h1>
+          <h2 id="content-heading">A section of someone's article</h2>
+        </article>
+        <button>Close</button>
       </Modal>,
     );
-    const dialog = await screen.findByRole("dialog", { name: "Invite" });
-    expect(dialog.getAttribute("aria-labelledby")).toBe("my-title");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).not.toHaveAttribute("aria-labelledby");
+    expect(dialog).not.toHaveAccessibleName();
+    // Content is left exactly as rendered: no ids written onto it.
+    expect(screen.getByRole("heading", { level: 1 })).not.toHaveAttribute("id");
+    expect(screen.getByRole("heading", { level: 2 })).toHaveAttribute("id", "content-heading");
   });
 
-  it("follows the heading when a multi-step dialog swaps it", async () => {
+  it("uses the title, not content headings around it", () => {
+    render(
+      <Modal open onClose={() => {}}>
+        <h1>Someone's display name</h1>
+        <ModalTitle as="h3">Share profile</ModalTitle>
+        <h2>About</h2>
+      </Modal>,
+    );
+    expect(screen.getByRole("dialog", { name: "Share profile" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Share profile" })).toBeTruthy();
+  });
+
+  it("keeps an id the caller put on the title", () => {
+    render(
+      <Modal open onClose={() => {}}>
+        <ModalTitle id="my-title">Invite</ModalTitle>
+      </Modal>,
+    );
+    expect(screen.getByRole("dialog", { name: "Invite" }).getAttribute("aria-labelledby")).toBe("my-title");
+  });
+
+  it("follows the title when a multi-step dialog swaps it", async () => {
     function Steps() {
       const [step, setStep] = useState(1);
       return (
         <div>
-          {step === 1 ? <h2 key="a">Step one</h2> : <h2 key="b">Step two</h2>}
+          {step === 1 ? <ModalTitle key="a">Step one</ModalTitle> : <ModalTitle key="b">Step two</ModalTitle>}
           <button onClick={() => setStep(2)}>next</button>
         </div>
       );
@@ -188,37 +219,71 @@ describe("Modal accessible name", () => {
         <Steps />
       </Modal>,
     );
-    expect(await screen.findByRole("dialog", { name: "Step one" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Step one" })).toBeTruthy();
     fireEvent.click(screen.getByText("next"));
-    expect(await screen.findByRole("dialog", { name: "Step two" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Step two" })).toBeTruthy();
   });
 
-  it("prefers an explicit label, then labelledBy, over the heading", async () => {
-    const { rerender } = render(
-      <Modal open onClose={() => {}} label="Settings">
-        <h2>Ignored</h2>
+  it("drops the reference when the title unmounts", () => {
+    function Optional() {
+      const [shown, setShown] = useState(true);
+      return (
+        <div>
+          {shown && <ModalTitle>Temporary</ModalTitle>}
+          <button onClick={() => setShown(false)}>hide</button>
+        </div>
+      );
+    }
+    render(
+      <Modal open onClose={() => {}}>
+        <Optional />
       </Modal>,
     );
-    const dialog = screen.getByRole("dialog", { name: "Settings" });
-    expect(dialog.hasAttribute("aria-labelledby")).toBe(false);
+    expect(screen.getByRole("dialog", { name: "Temporary" })).toBeTruthy();
+    fireEvent.click(screen.getByText("hide"));
+    expect(screen.getByRole("dialog")).not.toHaveAttribute("aria-labelledby");
+  });
+
+  it("names a title-less dialog with the label prop, which wins over a title", () => {
+    const { rerender } = render(
+      <Modal open onClose={() => {}} label="Settings">
+        <button>only</button>
+      </Modal>,
+    );
+    expect(screen.getByRole("dialog", { name: "Settings" })).not.toHaveAttribute("aria-labelledby");
+
+    rerender(
+      <Modal open onClose={() => {}} label="Settings">
+        <ModalTitle>Ignored</ModalTitle>
+      </Modal>,
+    );
+    expect(screen.getByRole("dialog", { name: "Settings" })).not.toHaveAttribute("aria-labelledby");
 
     rerender(
       <Modal open onClose={() => {}} labelledBy="custom">
-        <h2>Ignored</h2>
+        <ModalTitle>Ignored</ModalTitle>
         <p id="custom">Custom name</p>
       </Modal>,
     );
     expect(screen.getByRole("dialog", { name: "Custom name" })).toBeTruthy();
   });
 
-  it("has no dangling aria-labelledby when there is no heading", async () => {
+  it("a title in a nested dialog names that dialog only", () => {
     render(
       <Modal open onClose={() => {}}>
-        <button>only</button>
+        <ModalTitle>Outer</ModalTitle>
+        <Modal open onClose={() => {}}>
+          <ModalTitle>Inner</ModalTitle>
+        </Modal>
       </Modal>,
     );
-    await waitFor(() => expect(screen.getByText("only")).toHaveFocus());
-    expect(screen.getByRole("dialog").hasAttribute("aria-labelledby")).toBe(false);
+    expect(screen.getByRole("dialog", { name: "Outer" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Inner" })).toBeTruthy();
+  });
+
+  it("<ModalTitle> outside a dialog is just a heading", () => {
+    render(<ModalTitle as="h3">Standalone</ModalTitle>);
+    expect(screen.getByRole("heading", { level: 3, name: "Standalone" })).toBeTruthy();
   });
 });
 

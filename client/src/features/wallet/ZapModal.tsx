@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Zap, X, Loader2, Check } from "lucide-react";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Avatar } from "../../components/ui/Avatar";
@@ -111,10 +111,10 @@ function ZapModalInner({
     <Modal open onClose={onClose}>
       <div className="w-full max-w-sm rounded-2xl border-gradient card-glass p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-lg font-bold text-heading">
+          <ModalTitle className="flex items-center gap-2 text-lg font-bold text-heading">
             <Zap size={18} className="text-yellow-400" />
             Send a Zap
-          </h2>
+          </ModalTitle>
           <button
             onClick={onClose}
             className="text-muted hover:text-heading transition-colors"

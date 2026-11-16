@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { X, Search, Check, ListMusic, Disc3 } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { selectLibraryTracks, selectLibraryAlbums } from "@/features/music/musicSelectors";
@@ -91,7 +91,7 @@ function ShowcasePickerModalInner({ open, onClose }: ShowcasePickerModalProps) {
       <div className="w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden rounded-2xl border border-border card-glass shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-3">
-          <h2 className="text-lg font-semibold text-heading">Add to Library</h2>
+          <ModalTitle className="text-lg font-semibold text-heading">Add to Library</ModalTitle>
           <button onClick={onClose} className="text-soft hover:text-heading">
             <X size={18} />
           </button>

@@ -17,9 +17,10 @@ import { Button } from "../Button";
 import { ColorPicker } from "../ColorPicker";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ImageUpload } from "../ImageUpload";
+import { ModalLoading, PanelLoading } from "../LazyFallbacks";
 import { MagicCard } from "../MagicCard";
 import { MediaLightbox } from "../MediaLightbox";
-import { Modal } from "../Modal";
+import { Modal, ModalTitle } from "../Modal";
 import { PopoverMenu, PopoverMenuItem, PopoverMenuSeparator } from "../PopoverMenu";
 import { RevealSentinel } from "../RevealSentinel";
 import { ShimmerButton } from "../ShimmerButton";
@@ -70,11 +71,11 @@ describe("the axe helper itself", () => {
 });
 
 describe("axe: dialogs", () => {
-  it("Modal named by its heading", async () => {
+  it("Modal named by its title", async () => {
     render(
       <Modal open onClose={() => {}}>
         <div>
-          <h2>Create space</h2>
+          <ModalTitle>Create space</ModalTitle>
           <label htmlFor="n">Name</label>
           <input id="n" />
           <button>Create</button>
@@ -82,6 +83,12 @@ describe("axe: dialogs", () => {
       </Modal>,
     );
     await screen.findByRole("dialog", { name: "Create space" });
+    await expectNoAxeViolations();
+  });
+
+  it("the loading and error dialogs that have no visible title are named too", async () => {
+    render(<ModalLoading onClose={() => {}} delayMs={0} />);
+    expect(screen.getByRole("dialog", { name: "Loading" })).toBeTruthy();
     await expectNoAxeViolations();
   });
 
@@ -255,6 +262,7 @@ describe("axe: display primitives", () => {
   it("Spinner: labelled and silent", async () => {
     render(
       <>
+        <PanelLoading label="Loading settings" delayMs={0} />
         <Spinner />
         <Spinner size="sm" label="Sending" />
         <Spinner label="" />

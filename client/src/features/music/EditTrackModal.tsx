@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo } from "react";
 import { X } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadCoverArt } from "@/lib/api/music";
@@ -161,7 +161,7 @@ function EditTrackModalInner({ track, onClose }: EditTrackModalProps) {
     <Modal open={true} onClose={onClose}>
       <div className="w-full max-w-md max-h-[90vh] rounded-2xl border border-border card-glass shadow-xl flex flex-col">
         <div className="shrink-0 flex items-center justify-between p-6 pb-0 mb-4">
-          <h2 className="text-lg font-semibold text-heading">Edit Track</h2>
+          <ModalTitle className="text-lg font-semibold text-heading">Edit Track</ModalTitle>
           <button onClick={onClose} className="text-soft hover:text-heading">
             <X size={18} />
           </button>

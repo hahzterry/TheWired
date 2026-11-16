@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, Settings, Hash, Shield, Users, Gavel, Bell, Rss, UserPlus, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Modal } from "../../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { GeneralTab } from "./GeneralTab";
 import { ChannelsTab } from "./ChannelsTab";
@@ -69,7 +69,7 @@ function SpaceSettingsModalInner({ open, onClose, spaceId }: SpaceSettingsModalP
         {/* Tab navigation */}
         <div className="flex w-44 shrink-0 flex-col border-r border-border bg-surface/50">
           <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-            <h2 className="text-sm font-bold text-heading">Settings</h2>
+            <ModalTitle className="text-sm font-bold text-heading">Settings</ModalTitle>
             <button
               onClick={onClose}
               className="rounded-full p-1 text-soft hover:bg-card-hover hover:text-heading transition-colors"

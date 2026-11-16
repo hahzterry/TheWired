@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, Folder, FolderPlus, Check, ChevronLeft } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { selectFolders } from "./musicSelectors";
@@ -32,7 +32,7 @@ function AddToFolderModalInner({ open, onClose, onBack, itemAddrId }: AddToFolde
                   <ChevronLeft size={18} />
                 </button>
               )}
-              <h2 className="text-lg font-semibold text-heading">Add to folder</h2>
+              <ModalTitle className="text-lg font-semibold text-heading">Add to folder</ModalTitle>
             </div>
             <button onClick={onClose} className="text-soft hover:text-heading" aria-label="Close">
               <X size={18} />

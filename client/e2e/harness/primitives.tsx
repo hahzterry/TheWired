@@ -14,7 +14,7 @@ import { ColorPicker } from "../../src/components/ui/ColorPicker";
 import { ConfirmDialog } from "../../src/components/ui/ConfirmDialog";
 import { ImageUpload } from "../../src/components/ui/ImageUpload";
 import { MediaLightbox } from "../../src/components/ui/MediaLightbox";
-import { Modal } from "../../src/components/ui/Modal";
+import { Modal, ModalTitle } from "../../src/components/ui/Modal";
 import { PopoverMenu, PopoverMenuItem, PopoverMenuSeparator } from "../../src/components/ui/PopoverMenu";
 import { ShimmerButton } from "../../src/components/ui/ShimmerButton";
 import { Spinner } from "../../src/components/ui/Spinner";
@@ -47,7 +47,7 @@ function ModalDemo() {
       </span>
       <Modal open={open} onClose={() => setOpen(false)}>
         <div data-testid="modal-panel" className="w-full max-w-sm rounded-2xl card-glass p-6 shadow-2xl">
-          <h2 className="mb-2 text-base font-bold text-heading">Rename space</h2>
+          <ModalTitle className="mb-2 text-base font-bold text-heading">Rename space</ModalTitle>
           <label htmlFor="harness-name" className="block text-sm text-heading">
             Name
           </label>

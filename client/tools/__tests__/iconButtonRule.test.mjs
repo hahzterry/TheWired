@@ -1,4 +1,3 @@
-// @vitest-environment node
 /**
  * Runs the real linter (same config as `pnpm lint:a11y`) over small fixtures,
  * so the local rule is tested the way it is used, and a linter upgrade that
@@ -83,6 +82,36 @@ describe("wired-a11y/icon-button-has-name", () => {
 
   it("ignores non-button elements", () => {
     expect(lint(withIcons(`<div><X /></div>`))).toEqual([]);
+  });
+});
+
+describe("wired-a11y/modal-has-name", () => {
+  const MODAL_RULE = "wired-a11y(modal-has-name)";
+  const withModal = (jsx, imports = "Modal") =>
+    `import { ${imports} } from "@/components/ui/Modal";\nexport const Fixture = (props: { rest: object }) => (${jsx});\n`;
+
+  it("flags a Modal with neither a title nor a label", () => {
+    expect(lint(withModal(`<Modal open onClose={() => {}}><h2>Looks like a title</h2></Modal>`))).toEqual([MODAL_RULE]);
+  });
+
+  it("accepts a ModalTitle in the same file", () => {
+    expect(
+      lint(withModal(`<Modal open onClose={() => {}}><ModalTitle>Create space</ModalTitle></Modal>`, "Modal, ModalTitle")),
+    ).toEqual([]);
+  });
+
+  it.each(["label", "labelledBy"])("accepts the %s prop", (prop) => {
+    expect(lint(withModal(`<Modal open onClose={() => {}} ${prop}="x"><p>body</p></Modal>`))).toEqual([]);
+  });
+
+  it("skips a Modal with a spread (the name may come through it)", () => {
+    expect(lint(withModal(`<Modal open onClose={() => {}} {...props.rest}><p>body</p></Modal>`))).toEqual([]);
+  });
+
+  it("reports every unnamed Modal in a file without a title", () => {
+    expect(
+      lint(withModal(`<><Modal open onClose={() => {}}><p>a</p></Modal><Modal open onClose={() => {}}><p>b</p></Modal></>`)),
+    ).toEqual([MODAL_RULE, MODAL_RULE]);
   });
 });
 

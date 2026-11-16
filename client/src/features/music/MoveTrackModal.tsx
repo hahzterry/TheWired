@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { X, ChevronLeft } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { buildTrackEvent, buildAlbumEvent } from "./musicEventBuilder";
@@ -199,7 +199,7 @@ function MoveTrackModalInner({ track, onClose, onBack }: MoveTrackModalProps) {
                 <ChevronLeft size={18} />
               </button>
             )}
-            <h2 className="text-lg font-semibold text-heading">Move Track</h2>
+            <ModalTitle className="text-lg font-semibold text-heading">Move Track</ModalTitle>
           </div>
           <button onClick={onClose} className="text-soft hover:text-heading">
             <X size={18} />

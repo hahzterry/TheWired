@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
-import { Modal } from "./Modal";
+import { Modal, ModalTitle } from "./Modal";
 import { Button } from "./Button";
 
 interface ConfirmDialogProps {
@@ -17,7 +17,6 @@ interface ConfirmDialogProps {
 export function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onClose }: ConfirmDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const titleId = useId();
   const bodyId = useId();
 
   async function handleConfirm() {
@@ -38,11 +37,10 @@ export function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfi
       open={open}
       onClose={busy ? () => {} : onClose}
       role="alertdialog"
-      labelledBy={titleId}
       describedBy={bodyId}
     >
       <div className="w-full max-w-sm rounded-2xl card-glass p-6 shadow-2xl">
-        <h2 id={titleId} className="mb-2 text-base font-bold text-heading">{title}</h2>
+        <ModalTitle className="mb-2 text-base font-bold text-heading">{title}</ModalTitle>
         <div id={bodyId} className="text-sm text-soft">{body}</div>
         {error && <p role="alert" className="mt-3 text-xs text-red-400">{error}</p>}
         <div className="mt-5 flex justify-end gap-2">

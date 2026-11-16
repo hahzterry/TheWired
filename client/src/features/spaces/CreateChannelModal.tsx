@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useSpaceChannels } from "./useSpaceChannels";
 import { CategorySelect, categoryChoiceError, choiceForCategory, type CategoryChoice } from "./CategorySelect";
@@ -92,7 +92,7 @@ function CreateChannelModalBody({ open, onClose, spaceId, defaultCategoryId }: C
     <Modal open={open} onClose={onClose}>
       <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl card-glass p-8 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-heading">Create Channel</h2>
+          <ModalTitle className="text-lg font-bold text-heading">Create Channel</ModalTitle>
           <button
             onClick={onClose}
             aria-label="Close"

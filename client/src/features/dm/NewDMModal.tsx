@@ -1,7 +1,7 @@
 import { useMemo, memo, useRef, useEffect, useState } from "react";
 import { Search, X, MessageCircle, Users, Clock, Check } from "lucide-react";
 import { createRoom } from "./dmService";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Avatar } from "@/components/ui/Avatar";
 import { useUserSearch } from "@/features/search/useUserSearch";
@@ -103,7 +103,7 @@ function NewDMModalInner({ open, onClose, onSelect }: NewDMModalProps) {
       <div className="w-full max-w-md max-h-[90vh] rounded-2xl card-glass border border-border shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="text-sm font-semibold text-heading">{roomMode ? "New Room" : "New Message"}</h2>
+          <ModalTitle className="text-sm font-semibold text-heading">{roomMode ? "New Room" : "New Message"}</ModalTitle>
           <button
             type="button"
             onClick={() => setRoomMode((v) => !v)}

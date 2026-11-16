@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, lazy, Suspense } from "react";
 import { X, Paperclip, Smile, Loader2, Send, Repeat2, Disc3 } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { MentionAutocomplete } from "@/components/content/MentionAutocomplete";
 import { EmojiAutocomplete } from "@/components/content/EmojiAutocomplete";
@@ -319,7 +319,7 @@ function MusicPostModalInner({ open, onClose, target }: MusicPostModalProps) {
       <div className="w-[520px] max-h-[85vh] flex flex-col rounded-2xl border border-border/60 card-glass shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border/40 px-4 py-3">
-          <h2 className="text-sm font-semibold text-heading">Share {kindLabel}</h2>
+          <ModalTitle className="text-sm font-semibold text-heading">Share {kindLabel}</ModalTitle>
           <button
             onClick={onClose}
             className="rounded-lg p-1 text-muted hover:text-heading hover:bg-surface-hover transition-colors"

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Zap } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { ModalBoundary } from "@/components/ui/ModalBoundary";
 import { useProfile } from "@/features/profile/useProfile";
 import { useZap } from "../wallet/WalletProvider";
@@ -119,10 +119,10 @@ function ArtistZapPicker({
   return (
     <Modal open onClose={onClose}>
       <div className="w-full max-w-xs rounded-2xl border-gradient card-glass p-5">
-        <h3 className="mb-3 flex items-center gap-2 text-sm font-bold text-heading">
+        <ModalTitle as="h3" className="mb-3 flex items-center gap-2 text-sm font-bold text-heading">
           <Zap size={16} className="text-yellow-400" />
           Choose an artist to zap
-        </h3>
+        </ModalTitle>
         <div className="space-y-1">
           {artists.map((a) => (
             <ArtistZapRow key={a.pubkey} artist={a} onPick={() => onPick(a.pubkey)} />

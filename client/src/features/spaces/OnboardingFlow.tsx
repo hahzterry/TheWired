@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { ArrowLeft, ArrowRight, Check, ChevronRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "../../components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
@@ -186,9 +186,9 @@ function OnboardingFlowInner({
                 alt={spaceName}
                 size="lg"
               />
-              <h2 className="text-xl font-bold text-heading">
+              <ModalTitle className="text-xl font-bold text-heading">
                 Welcome to {spaceName}!
-              </h2>
+              </ModalTitle>
               {preview.welcomeMessage && (
                 <p className="text-sm text-body leading-relaxed whitespace-pre-wrap">
                   {preview.welcomeMessage}

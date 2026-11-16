@@ -19,13 +19,15 @@ All three run in CI in the `Client Tests` and `Client Accessibility` jobs.
 ### Lint
 
 The linter is [oxlint](https://oxc.rs) with its `jsx-a11y` rules, configured
-in `client/.oxlintrc.json`, plus one local rule in
+in `client/.oxlintrc.json`, plus two local rules in
 `client/tools/oxlint-plugin-wired-a11y.mjs`:
 
 - `wired-a11y/icon-button-has-name`: a `<button>` whose only content is a
   lucide icon needs `aria-label`, `aria-labelledby` or `title`. The stock rule
   cannot see this case, because it gives any child component the benefit of
   the doubt.
+- `wired-a11y/modal-has-name`: a `<Modal>` needs a `<ModalTitle>` in the same
+  file, or a `label` / `labelledBy` prop. Every dialog passes today.
 
 `client/tools/a11y-lint.mjs` runs the linter and applies the ratchet:
 
@@ -61,15 +63,20 @@ finding with its location, run `pnpm --filter @thewired/client lint:a11y --all`.
    content is on screen.
 
 The page is cut off from relays and the API during these tests, so they need
-only the dev server and see the same empty-state screens everywhere. After
+only the dev server and see the same empty-state screens everywhere. Routes,
+panels and heavy dialogs are lazy chunks, so every scan first waits until no
+Suspense fallback (`data-lazy-fallback`) is left and the screen's own content
+is visible; a scan of a loading placeholder would pass without checking
+anything. After
 fixing something, regenerate the screen baseline:
 
 ```bash
 UPDATE_A11Y_BASELINE=1 pnpm --filter @thewired/client test:e2e:a11y
 ```
 
-Locally, `WIRED_PORT=<port>` moves the dev server off 1420 and
-`PW_CHANNEL=chrome` uses an installed Chrome instead of Playwright's Chromium.
+Locally, `WIRED_PORT=<port>` moves the dev server off 1420, and
+`PW_CHANNEL=chrome` or `PW_EXECUTABLE_PATH=<binary>` uses an installed
+Chromium-based browser instead of Playwright's Chromium.
 
 ## What the lint baseline allows today
 
@@ -138,8 +145,11 @@ live in the layout.
 The primitives now do the following on their own; callers get it for free.
 
 - **Modal**: `role="dialog"`, `aria-modal`, focus moves in, Tab stays in, focus
-  returns to the opener, Escape closes only the top overlay. It names itself
-  after the first `h1`–`h3` (or `[data-dialog-title]`) inside it.
+  returns to the opener, Escape closes only the top overlay. It is named by
+  the `<ModalTitle>` rendered inside it (a heading that registers itself with
+  the dialog), or by the `label` prop when there is no visible title. It never
+  looks through its content for a heading, so a note or article shown in a
+  dialog cannot become its name.
 - **ConfirmDialog**: one `alertdialog`, named by its title, described by its body.
 - **PopoverMenu**: when its children are only `PopoverMenuItem` /
   `PopoverMenuSeparator` it is a `role="menu"` of `menuitem`s. While closed it
@@ -154,9 +164,9 @@ What callers still need to do (none of this is enforced by lint yet):
 
 | Do this | Why |
 | --- | --- |
-| Give a `Modal` without a heading a `label` | Otherwise the dialog has no name. |
+| Render a dialog's title with `<ModalTitle>` (`as="h3"` etc. to change the element); give a title-less `Modal` a `label` | Otherwise the dialog has no name. Lint enforces this. |
 | Pass `label` to `PopoverMenu` and `label` + `role` to `AnchoredPopover` | "Message actions", "Emoji picker": the popup is announced with a name. |
 | Put `aria-haspopup` and `aria-expanded` on the button that opens a menu or popover | The trigger is the caller's element; the primitive cannot set it. |
 | Pass `alt=""` to `Avatar` when the person's name is right next to it | Otherwise the name is read twice. The placeholder avatar now has the same text alternative as the image. |
-| Pass `label=""` to `Spinner` when visible text already says "Loading…" | Otherwise "Loading" is announced twice. |
+| Pass `label=""` to `Spinner` when visible text already says "Loading…" | Otherwise "Loading" is announced twice. The label is visually hidden text inside the status element, which is what a live region reads out. |
 | Menus with mixed content (a text field, a slider, a custom list) stay plain containers | `role="menu"` forbids those children; consider `AnchoredPopover` with `role="dialog"` for them. |

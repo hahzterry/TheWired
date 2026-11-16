@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Download, Plus, X, Radio } from "lucide-react";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
@@ -88,7 +88,7 @@ function AddAccountModalInner({ open, onClose }: AddAccountModalProps) {
     <Modal open={open} onClose={onClose}>
       <div className="w-full max-w-sm rounded-2xl border-gradient card-glass p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-heading">Add Account</h2>
+          <ModalTitle className="text-lg font-bold text-heading">Add Account</ModalTitle>
           <button
             onClick={onClose}
             className="text-muted hover:text-heading transition-colors"

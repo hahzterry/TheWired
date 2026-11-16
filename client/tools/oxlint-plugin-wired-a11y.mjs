@@ -1,5 +1,6 @@
 /**
- * Local accessibility rules for oxlint (loaded through `jsPlugins`).
+ * Local accessibility rules for oxlint (loaded through `jsPlugins`):
+ * `icon-button-has-name` and `modal-has-name` (documented at each rule).
  *
  * `icon-button-has-name`: a <button> (or an element with role="button") whose
  * only content is an icon has no accessible name unless it carries
@@ -103,7 +104,47 @@ const iconButtonHasName = {
   },
 };
 
+/**
+ * `modal-has-name`: a <Modal> gets its accessible name from a <ModalTitle>
+ * rendered inside it, or from its `label` / `labelledBy` prop. Without one of
+ * them the dialog is announced as just "dialog".
+ *
+ * The check is per file: a <Modal> with neither prop is accepted when the same
+ * file renders a <ModalTitle>. A dialog whose title lives in another file
+ * should pass `label`.
+ */
+const modalHasName = {
+  meta: {
+    type: "problem",
+    docs: { description: "Dialogs need an accessible name." },
+    messages: {
+      missingName:
+        "This <Modal> has no accessible name. Render its title with <ModalTitle>, or pass `label`.",
+    },
+    schema: [],
+  },
+  create(context) {
+    let rendersTitle = false;
+    const unnamed = [];
+    return {
+      JSXOpeningElement(node) {
+        if (node.name.type !== "JSXIdentifier") return;
+        if (node.name.name === "ModalTitle") rendersTitle = true;
+        if (node.name.name !== "Modal") return;
+        if (node.attributes.some((attr) => attr.type === "JSXSpreadAttribute")) return;
+        const names = node.attributes.map(attributeName);
+        if (names.includes("label") || names.includes("labelledBy")) return;
+        unnamed.push(node);
+      },
+      "Program:exit"() {
+        if (rendersTitle) return;
+        for (const node of unnamed) context.report({ node, messageId: "missingName" });
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "wired-a11y" },
-  rules: { "icon-button-has-name": iconButtonHasName },
+  rules: { "icon-button-has-name": iconButtonHasName, "modal-has-name": modalHasName },
 };

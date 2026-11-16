@@ -44,6 +44,7 @@
     "jsx-a11y/role-supports-aria-props": "error",
     "jsx-a11y/scope": "error",
     "jsx-a11y/tabindex-no-positive": "error",
-    "wired-a11y/icon-button-has-name": "error"
+    "wired-a11y/icon-button-has-name": "error",
+    "wired-a11y/modal-has-name": "error"
   }
 }

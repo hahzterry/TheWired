@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, Search, Users, Share, ChevronLeft, Music, MessageSquare, FileText, Image, Hash } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import type { Space, SpaceChannel, SpaceChannelType } from "@/types/space";
@@ -154,9 +154,9 @@ function SpacePickerModalInner({
               <button onClick={handleBack} className="text-soft hover:text-heading">
                 <ChevronLeft size={18} />
               </button>
-              <h2 className="text-lg font-semibold text-heading">
+              <ModalTitle className="text-lg font-semibold text-heading">
                 {selectedSpace.name}
-              </h2>
+              </ModalTitle>
             </div>
           ) : (
             <div className="flex items-center gap-2">
@@ -165,7 +165,7 @@ function SpacePickerModalInner({
                   <ChevronLeft size={18} />
                 </button>
               )}
-              <h2 className="text-lg font-semibold text-heading">{title}</h2>
+              <ModalTitle className="text-lg font-semibold text-heading">{title}</ModalTitle>
             </div>
           )}
           <button onClick={handleClose} className="text-soft hover:text-heading">

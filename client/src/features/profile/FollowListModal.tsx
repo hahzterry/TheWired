@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { X, Search, Users } from "lucide-react";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { FollowCard } from "./FollowCard";
 import { Spinner } from "../../components/ui/Spinner";
@@ -42,7 +42,7 @@ function FollowListModalInner({ pubkeys, loading, mode, onClose }: FollowListMod
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div className="flex items-center gap-2">
             <Users size={18} className="text-primary" />
-            <h2 className="text-lg font-semibold text-heading">{title}</h2>
+            <ModalTitle className="text-lg font-semibold text-heading">{title}</ModalTitle>
             <span className="rounded-full bg-surface-hover px-2 py-0.5 text-xs text-muted">
               {pubkeys.length}
             </span>
