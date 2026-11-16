@@ -249,7 +249,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 ## Dependencies of Note
 
 - `lru-cache` -- event dedup (`dedup.ts`) and other bounded caches; construct with `new LRUCache({ max })`
-- `react-virtuoso` -- list virtualization, used only through `components/virtual/` (`VirtualFeed`, `VirtualMessageList`); the plain `Virtuoso` component is MIT, its `VirtuosoMessageList` add-on is a paid product and is not used
+- `react-virtuoso` -- list virtualization, used only through `components/virtual/` (`VirtualFeed`, `VirtualMessageList`); the plain `Virtuoso` component is MIT, its `VirtuosoMessageList` add-on is a paid product and is not used. Pinned to an exact version: the chat lists' bottom pin relies on it scrolling only through the element's `scrollBy` / `scrollTo`, which `virtualizerScrollContract.test.tsx` checks on every update
 - `hls.js` -- check `Hls.isSupported()` before use; Safari has native HLS
 - `idb` -- typed IndexedDB wrapper; schema in `client/src/lib/db/database.ts`
 - `nostr-tools` -- protocol utils + NIP-46 `BunkerSigner`. NOTE: `./nip04`/`./nip47` are not exported subpaths; import `nip04`/`nip47` from the package root.

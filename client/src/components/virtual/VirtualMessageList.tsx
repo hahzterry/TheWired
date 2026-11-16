@@ -33,6 +33,11 @@ const END_PX = 2;
  * two on this one element is how its scrolls are told from everyone else's.
  * (An animated `scrollTo` moves nothing synchronously and so adds nothing;
  * the list's own animated jumps set the pin themselves.)
+ *
+ * This leans on how react-virtuoso is built, not on its API. The dependency
+ * is pinned to an exact version for that reason, and
+ * `__tests__/virtualizerScrollContract.test.tsx` fails if a version scrolls
+ * any other way. Update the library only together with that test passing.
  */
 function noteVirtualizerScrolls(scroller: HTMLElement, delta: { current: number }): void {
   const marked = scroller as HTMLElement & { __virtualizerScrollsNoted?: boolean };
