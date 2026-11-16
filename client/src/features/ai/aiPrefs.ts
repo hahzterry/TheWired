@@ -26,6 +26,8 @@ export interface AIPrefs {
   defaultProviderId?: string;
   /** Model used for new conversations. */
   defaultModel?: string;
+  /** Catalogue id of the built-in engine model last started (desktop). */
+  managedModelId?: string;
 }
 
 export const DEFAULT_AI_PREFS: AIPrefs = {

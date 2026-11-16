@@ -94,8 +94,10 @@ jobs:
   # ── Tauri shell (Rust) ─────────────────────────
   # Compiles the desktop shell (and the embedded relay it links) so dependency
   # bumps under client/src-tauri are checked before merge, and runs the NIP-44
-  # vectors that exercise its crypto crates. The keystore tests need an OS
-  # keychain and are left to local runs.
+  # vectors that exercise its crypto crates and the managed AI engine's tests
+  # (downloads, archive filter, supervisor, request forwarding; no model or
+  # engine binary is fetched). The keystore tests need an OS keychain and are
+  # left to local runs.
   tauri:
     name: Tauri Shell Tests
     runs-on: ubuntu-latest
@@ -119,7 +121,7 @@ jobs:
       # against an empty one, the web build is not under test here. The second
       # check builds the release configuration (`tauri build` turns on
       # custom-protocol), which compiles the `cfg(not(dev))` code paths.
-      - name: Check, and run the NIP-44 and IPC permission tests
+      - name: Check, and run the NIP-44, IPC permission and AI engine tests
         working-directory: client/src-tauri
         run: |
           mkdir -p ../dist
@@ -127,6 +129,7 @@ jobs:
           cargo check --locked --features tauri/custom-protocol
           cargo test --locked --lib nip44::
           cargo test --locked --lib ipc_acl_tests::
+          cargo test --locked --lib llm::
 
   # ── Backend Tests (Vitest + PostgreSQL) ─────────
   backend:
