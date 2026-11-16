@@ -88,6 +88,10 @@ const ME = h.ME;
 const REMOTE = "a".repeat(64);
 const room = () => h.state.lastRoom!;
 
+vi.mock("../e2ee/support", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../e2ee/support")>()),
+  e2eeSupported: () => h.supported,
+}));
 vi.mock("livekit-client", () => ({
   Room: h.FakeRoom,
   RoomEvent: {
@@ -115,7 +119,6 @@ vi.mock("livekit-client", () => ({
   Encryption_Type: { NONE: 0, GCM: 1, CUSTOM: 2 },
   BaseKeyProvider: h.BaseKeyProvider,
   createKeyMaterialFromBuffer: async () => ({}),
-  isE2EESupported: () => h.supported,
   Track: {
     Source: { Microphone: "microphone", Camera: "camera", ScreenShare: "screen_share" },
     Kind: { Audio: "audio", Video: "video" },

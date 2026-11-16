@@ -8,7 +8,14 @@ import {
 } from "react";
 import { useAppSelector } from "../../store/hooks";
 import { loadWalletsForAccount, resetWalletManager } from "./walletManager";
-import { ZapModal } from "./ZapModal";
+import { lazyModal } from "../../components/ui/lazyView";
+
+// The zap dialog (invoice, LNURL and wallet flows) loads the first time
+// someone zaps; the provider itself only has to be able to open it.
+const ZapModal = lazyModal(
+  () => import("./ZapModal").then((m) => ({ default: m.ZapModal })),
+  "zap",
+);
 import type { NostrEvent } from "../../types/nostr";
 
 export interface ZapTarget {

@@ -11,6 +11,8 @@ import { isSharedRelease } from "./sharedKey/members";
 import { editAuthorFor } from "./sharedKey/releaseEdit";
 import { selectAudioSource } from "./trackParser";
 import { readAudioMetadata } from "./trackFileParser";
+import { isTagReaderLoadError } from "./tagReaderError";
+import { TagReaderNotice } from "./TagReaderNotice";
 import type { MusicTrack } from "@/types/music";
 
 const ALLOWED_AUDIO_TYPES = new Set([
@@ -71,6 +73,9 @@ function ReplaceAudioModalInner({ track, onClose, onBack }: ReplaceAudioModalPro
   const [revisionSummary, setRevisionSummary] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The new file's length was not read because the reader did not load. */
+  const [tagsUnread, setTagsUnread] = useState(false);
+  const [readingTags, setReadingTags] = useState(false);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
   const currentUrl = selectAudioSource(track.variants);
@@ -87,12 +92,26 @@ function ReplaceAudioModalInner({ track, onClose, onBack }: ReplaceAudioModalPro
     }
     setError(null);
     setAudioFile(file);
+    setTagsUnread(false);
+    setNewDuration(undefined);
 
-    if (file) {
+    if (file) await readLength(file);
+  };
+
+  /** Read the new file's length. Also the notice's "Try again". */
+  const readLength = async (file: File) => {
+    setReadingTags(true);
+    try {
       const meta = await readAudioMetadata(file);
+      setTagsUnread(false);
       if (meta.duration) {
         setNewDuration(meta.duration);
       }
+    } catch (err) {
+      if (!isTagReaderLoadError(err)) throw err;
+      setTagsUnread(true);
+    } finally {
+      setReadingTags(false);
     }
   };
 
@@ -232,6 +251,12 @@ function ReplaceAudioModalInner({ track, onClose, onBack }: ReplaceAudioModalPro
                 </>
               )}
             </button>
+            {tagsUnread && audioFile && (
+              <TagReaderNotice onRetry={() => void readLength(audioFile)} retrying={readingTags}>
+                The new file's length couldn't be read, so the track may keep its old one. Check your connection and
+                try again, or reload the app if it keeps failing.
+              </TagReaderNotice>
+            )}
           </div>
 
           {/* Revision summary (Phase 2 prep) */}

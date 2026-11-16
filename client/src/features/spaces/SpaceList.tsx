@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { Plus, Eye, Users, BellOff, Search, X, Star, Compass } from "lucide-react";
 import { Avatar } from "../../components/ui/Avatar";
 import { useSpace } from "./useSpace";
-import { SpaceActionModal } from "./SpaceActionModal";
+import { SpaceActionModal } from "./lazyModals";
 import { SpaceContextMenu } from "./SpaceContextMenu";
 import { useAppSelector, useAppDispatch } from "../../store/hooks";
 import { setPinnedSpaceIds } from "../../store/slices/uiSlice";

@@ -203,6 +203,17 @@ Render errors are contained by `ErrorBoundary` (`components/ui/ErrorBoundary.tsx
 - **Crash log** (`lib/crash/`): a bounded, redacted ring buffer in `localStorage["wired:crashlog"]`, fed by boundaries and by global `error` / `unhandledrejection` handlers, surfaced only through "Copy diagnostics" (fallback UI + Settings → App) and `wiredDebug.crashes()`. It stays on the device. Records are built from an `Error`'s name, message and stack only and pass through `redact.ts`; never add props, state or event data to a record, and `label` must be a constant.
 - **Dev fault injection**: `wiredDebug.crash("<scope>:<label>", { id })` makes that boundary's content throw; `wiredDebug.crash()` disarms. Compiled out of production builds.
 
+### Code Splitting (Client)
+The startup bundle is the shell plus the landing view (space sidebar, chat / notes / media channels). Everything else is a lazy chunk: every other route, the music and AI sections, sidebar bodies per mode, right-panel tabs, the playback bar, the call view, onboarding, and the heavy modals. `client/src/__tests__/bundleHygiene.test.ts` fails on a static import that would undo this.
+- **New route, panel or overlay** → `lazyView(() => import(...), <PanelLoading />)` (`components/ui/lazyView.tsx`). Routes go in `app/lazyRoutes.tsx`, which exports drop-ins with the Suspense fallback built in. The fallback must fill the same slot as the view (`PanelLoading` does; its spinner is delayed so a fast load shows none).
+- **New heavy modal** → `lazyModal(() => import(...), "label")` (same file; see `features/spaces/lazyModals.tsx`). It loads on first open, stays mounted afterwards, and carries its own `ModalBoundary`, because the one from `withModalBoundary` lives inside the chunk that may fail to load.
+- Both are built on `lazyWithRetry`, so a failed chunk shows the nearest boundary's fallback with Reload, and Retry or navigating re-imports. Put a boundary close enough that a failed chunk does not take down more than its own slot.
+- **Preloading** (`lib/lazyPreload.ts`): `preloadOnIntent(view)` spreads hover/focus handlers on the control that opens a view; `app/routePreload.ts` lists what is fetched when idle after startup. Add to the idle list only what people open first.
+- **Libraries that must stay behind a dynamic import**: `hls.js` (go through `lib/media/hls.ts`), `livekit-client` (go through `lib/webrtc/livekit.ts`, see below), `music-metadata`, the markdown pipeline (`ArticleMarkdown` via `LazyArticleMarkdown`, `AIMarkdown`), `recharts`, tiptap, dnd-kit (`ChannelTreeView` loads `ChannelTreeDnd` only for people who can arrange channels).
+- **LiveKit**: feature code imports from `lib/webrtc/livekit.ts`, never from `livekitClient.ts`. The facade answers "no room" until something connects and loads the SDK on the first `connectToRoom`. Room listeners live in `lib/webrtc/roomEvents.ts`; the sync E2EE capability check is `lib/webrtc/e2ee/support.ts` (a test keeps it equal to the SDK's).
+- **Playback** is driven by `AudioEngine` in `app/Layout.tsx`, not by the (lazy) playback bar, so a track never waits for the bar's chunk.
+- `vite.config.ts` groups the startup code into four chunks (`react`, `nostr`, `vendor`, and the app shell in the entry) with Rolldown `codeSplitting` groups tagged `$initial`; lazy chunks are left to Rolldown.
+
 ### State Management (Client)
 - Redux is the single source of truth for all UI state
 - `eventsSlice` uses `createEntityAdapter` keyed by event ID
@@ -247,7 +258,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 - `hls.js` -- check `Hls.isSupported()` before use; Safari has native HLS
 - `idb` -- typed IndexedDB wrapper; schema in `client/src/lib/db/database.ts`
 - `nostr-tools` -- protocol utils + NIP-46 `BunkerSigner`. NOTE: `./nip04`/`./nip47` are not exported subpaths; import `nip04`/`nip47` from the package root.
-- `livekit-client` -- voice/video SFU client; value imports ONLY in `lib/webrtc/livekitClient.ts` (type-only elsewhere) so the SDK stays lazy-loadable
+- `livekit-client` -- voice/video SFU client; value imports ONLY in `lib/webrtc/livekitClient.ts` and its E2EE helpers (type-only elsewhere). That module is itself loaded on demand through `lib/webrtc/livekit.ts`, so the SDK is not in the startup bundle
 - `marked` + `highlight.js` -- AI chat markdown + code highlighting; `recharts` -- AI artifact charts (lazy-loaded, code-split — keep it out of the main bundle)
 - Tailwind v4 -- uses `@import "tailwindcss"` in CSS, NOT `@tailwind` directives
 - Vite Web Workers -- use `new Worker(new URL("...", import.meta.url), { type: "module" })`

@@ -2,7 +2,7 @@
 // LiveKit needs at `new Room(...)`, plus the key source for the room kind.
 // `livekitClient.ts` owns the lifecycle and forwards membership events; the
 // session never touches the Room object, so it is testable without the SDK.
-import { isE2EESupported } from "livekit-client";
+import { e2eeSupported, E2EEUnsupportedError } from "./support";
 import { NostrKeyProvider } from "./NostrKeyProvider";
 import { createE2EEWorker } from "./e2eeWorker";
 import { installCallKeys } from "./callKeys";
@@ -17,13 +17,8 @@ export type E2EEContext =
   | { kind: "call"; roomId: string; roomSecretKeyHex: string; peerPubkey: string }
   | { kind: "channel"; roomName: string };
 
-/** This WebView has neither insertable streams nor RTCRtpScriptTransform. */
-export class E2EEUnsupportedError extends Error {
-  constructor() {
-    super("End-to-end encrypted calls aren't supported on this device");
-    this.name = "E2EEUnsupportedError";
-  }
-}
+// Defined in `support.ts` (no SDK import); re-exported for existing importers.
+export { e2eeSupported, E2EEUnsupportedError };
 
 export interface E2EESession {
   readonly ctx: E2EEContext;
@@ -51,17 +46,12 @@ export interface E2EESessionDeps {
   onRemoteKeyInstalled?: (sender: string) => void;
 }
 
-/** Whether frame-level E2EE can run in this WebView. */
-export function e2eeSupported(): boolean {
-  return isE2EESupported();
-}
-
 export function createE2EESession(
   ctx: E2EEContext,
   myPubkey: string,
   deps: E2EESessionDeps = {},
 ): E2EESession {
-  if (!(deps.supported ?? isE2EESupported())) throw new E2EEUnsupportedError();
+  if (!(deps.supported ?? e2eeSupported())) throw new E2EEUnsupportedError();
   const provider = deps.provider ?? new NostrKeyProvider();
   const worker = deps.worker ?? createE2EEWorker();
   let disposed = false;
