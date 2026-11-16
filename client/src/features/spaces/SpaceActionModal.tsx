@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { X, Plus, LogIn, Globe } from "lucide-react";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { CreateSpaceModal } from "./CreateSpaceModal";
 import { JoinSpaceModal } from "./JoinSpaceModal";
@@ -53,7 +53,7 @@ function SpaceActionModalInner({ open, onClose }: SpaceActionModalProps) {
       <Modal open={open} onClose={onClose}>
         <div className="w-full max-w-sm rounded-2xl card-glass p-8 shadow-2xl">
           <div className="mb-6 flex items-center justify-between">
-            <h2 className="text-lg font-bold text-heading">Add a Space</h2>
+            <ModalTitle className="text-lg font-bold text-heading">Add a Space</ModalTitle>
             <button
               onClick={onClose}
               className="rounded-full p-1 text-soft hover:bg-card-hover hover:text-heading transition-colors"

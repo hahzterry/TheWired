@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { FOLDER_NAME_MAX, isDuplicateFolderName, isValidFolderName } from "@ishtarservices/core";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 
@@ -47,7 +47,7 @@ function FolderNameModalInner({
     <Modal open={open} onClose={onClose}>
       <div className="w-full max-w-sm rounded-2xl border border-border card-glass p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-heading">{title}</h2>
+          <ModalTitle className="text-lg font-semibold text-heading">{title}</ModalTitle>
           <button onClick={onClose} className="text-soft hover:text-heading" aria-label="Close">
             <X size={18} />
           </button>

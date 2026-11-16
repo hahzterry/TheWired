@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Zap, X } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Avatar } from "@/components/ui/Avatar";
 import { useProfile } from "@/features/profile/useProfile";
@@ -29,13 +29,13 @@ function ZapListModalInner({
     <Modal open onClose={onClose}>
       <div className="flex max-h-[70vh] w-full max-w-sm flex-col rounded-2xl border-gradient card-glass p-5">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-base font-bold text-heading">
+          <ModalTitle className="flex items-center gap-2 text-base font-bold text-heading">
             <Zap size={16} className="text-yellow-400" fill="currentColor" />
             {sats.toLocaleString()} sats
             <span className="text-sm font-normal text-muted">
               · {count} {count === 1 ? "zap" : "zaps"}
             </span>
-          </h2>
+          </ModalTitle>
           <button
             onClick={onClose}
             className="text-muted transition-colors hover:text-heading"

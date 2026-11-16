@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, Lock, Globe, Users, Feather } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { buildAnnotationEvent } from "./musicEventBuilder";
@@ -102,7 +102,7 @@ function AnnotationComposerInner({
             <Feather size={14} className="text-primary" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-heading">Add Note</p>
+            <ModalTitle as="p" className="text-sm font-medium text-heading">Add Note</ModalTitle>
             <p className="truncate text-xs text-muted">{targetName}</p>
           </div>
           <button onClick={onClose} className="rounded-lg p-1 text-muted hover:text-heading hover:bg-surface transition-colors">

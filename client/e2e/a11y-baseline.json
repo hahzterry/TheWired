@@ -1,0 +1,43 @@
+{
+  "discover": {
+    "button-name": 2,
+    "color-contrast": "any",
+    "landmark-one-main": 1,
+    "region": "any"
+  },
+  "login": {
+    "region": "any"
+  },
+  "messages": {
+    "button-name": 1,
+    "color-contrast": "any",
+    "landmark-one-main": 1,
+    "page-has-heading-one": 1,
+    "region": "any"
+  },
+  "settings": {
+    "button-name": 1,
+    "color-contrast": "any",
+    "label": 6,
+    "landmark-one-main": 1,
+    "page-has-heading-one": 1,
+    "region": "any"
+  },
+  "shell": {
+    "button-name": 1,
+    "color-contrast": "any",
+    "landmark-one-main": 1,
+    "page-has-heading-one": 1,
+    "region": "any"
+  },
+  "shell:account-menu": {
+    "button-name": 1,
+    "color-contrast": "any",
+    "landmark-one-main": 1,
+    "page-has-heading-one": 1,
+    "region": "any"
+  },
+  "shell:add-account-dialog": {
+    "button-name": 1
+  }
+}

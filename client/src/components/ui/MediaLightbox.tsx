@@ -10,6 +10,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { useState } from "react";
+import { useEscapeLayer, useModalFocus } from "./layer";
 
 type MediaLightboxProps =
   | { src: string; srcs?: undefined; startIndex?: undefined; alt?: string; onClose: () => void }
@@ -52,6 +53,11 @@ export function MediaLightbox(props: MediaLightboxProps) {
   const [dragging, setDragging] = useState(false);
   const [translate, setTranslate] = useState({ x: 0, y: 0 });
   const dragStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Escape closes the viewer only (not a dialog underneath); focus moves in,
+  // Tab stays inside, and focus returns to the thumbnail on close.
+  const isTop = useEscapeLayer(true, onClose);
+  useModalFocus(containerRef, true, isTop);
 
   const src = list[Math.min(index, list.length - 1)];
   const isGallery = list.length > 1;
@@ -78,8 +84,7 @@ export function MediaLightbox(props: MediaLightboxProps) {
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      else if (e.key === "ArrowLeft") goPrev();
+      if (e.key === "ArrowLeft") goPrev();
       else if (e.key === "ArrowRight") goNext();
     };
     window.addEventListener("keydown", handleKey);
@@ -90,7 +95,7 @@ export function MediaLightbox(props: MediaLightboxProps) {
       window.removeEventListener("keydown", handleKey);
       document.body.style.overflow = prev;
     };
-  }, [onClose, goPrev, goNext]);
+  }, [goPrev, goNext]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.stopPropagation();
@@ -129,55 +134,76 @@ export function MediaLightbox(props: MediaLightboxProps) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md animate-fade-in-up"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      ref={containerRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={alt || (isGallery ? "Image gallery" : "Image viewer")}
+      tabIndex={-1}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md animate-fade-in-up outline-none"
     >
+      {/* Backdrop: behind the image and controls, so a press on it is a press
+          outside. Keyboard users have Escape. */}
+      <div role="presentation" className="absolute inset-0 -z-10" onMouseDown={onClose} />
       {/* Controls */}
       <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
         <button
+          type="button"
           onClick={() => downloadMedia(src)}
           className="rounded-full bg-white/10 p-2 text-white/80 hover:bg-white/20 transition-colors"
           title="Download"
+          aria-label="Download"
         >
-          <Download size={18} />
+          <Download size={18} aria-hidden="true" />
         </button>
         <button
+          type="button"
           onClick={() => setZoom((z) => Math.min(5, z + 0.5))}
           className="rounded-full bg-white/10 p-2 text-white/80 hover:bg-white/20 transition-colors"
           title="Zoom in"
+          aria-label="Zoom in"
         >
-          <ZoomIn size={18} />
+          <ZoomIn size={18} aria-hidden="true" />
         </button>
         <button
+          type="button"
           onClick={() => setZoom((z) => Math.max(0.5, z - 0.5))}
           className="rounded-full bg-white/10 p-2 text-white/80 hover:bg-white/20 transition-colors"
           title="Zoom out"
+          aria-label="Zoom out"
         >
-          <ZoomOut size={18} />
+          <ZoomOut size={18} aria-hidden="true" />
         </button>
         {zoom !== 1 && (
           <button
+            type="button"
             onClick={resetView}
             className="rounded-full bg-white/10 p-2 text-white/80 hover:bg-white/20 transition-colors"
             title="Reset zoom"
+            aria-label="Reset zoom"
           >
-            <RotateCcw size={18} />
+            <RotateCcw size={18} aria-hidden="true" />
           </button>
         )}
         <button
+          type="button"
+          // First focus lands on Close, not on Download.
+          autoFocus
           onClick={onClose}
           className="rounded-full bg-white/10 p-2 text-white/80 hover:bg-white/20 transition-colors"
           title="Close"
+          aria-label="Close"
         >
-          <X size={18} />
+          <X size={18} aria-hidden="true" />
         </button>
       </div>
 
       {/* Zoom indicator */}
       {zoom !== 1 && (
-        <div className="absolute left-4 top-4 z-10 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/70">
+        <div
+          role="status"
+          className="absolute left-4 top-4 z-10 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/70"
+        >
+          <span className="sr-only">Zoom </span>
           {Math.round(zoom * 100)}%
         </div>
       )}
@@ -187,30 +213,42 @@ export function MediaLightbox(props: MediaLightboxProps) {
         <>
           {index > 0 && (
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 goPrev();
               }}
               className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/10 p-2.5 text-white/80 hover:bg-white/20 transition-colors"
               title="Previous"
+              aria-label="Previous image"
             >
-              <ChevronLeft size={22} />
+              <ChevronLeft size={22} aria-hidden="true" />
             </button>
           )}
           {index < list.length - 1 && (
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 goNext();
               }}
               className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/10 p-2.5 text-white/80 hover:bg-white/20 transition-colors"
               title="Next"
+              aria-label="Next image"
             >
-              <ChevronRight size={22} />
+              <ChevronRight size={22} aria-hidden="true" />
             </button>
           )}
-          <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/70">
-            {index + 1} / {list.length}
+          <div
+            role="status"
+            className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/70"
+          >
+            <span aria-hidden="true">
+              {index + 1} / {list.length}
+            </span>
+            <span className="sr-only">
+              Image {index + 1} of {list.length}
+            </span>
           </div>
         </>
       )}

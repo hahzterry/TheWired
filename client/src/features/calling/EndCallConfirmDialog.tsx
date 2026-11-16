@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { useStore } from "react-redux";
 import { PhoneOff } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Modal, ModalTitle } from "@/components/ui/Modal";
 import { ModalBoundary } from "@/components/ui/ModalBoundary";
 import { Button } from "@/components/ui/Button";
 import { useAppSelector } from "@/store/hooks";
@@ -115,7 +115,7 @@ function EndCallConfirmDialog({
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-400">
             <PhoneOff size={18} />
           </div>
-          <h2 className="text-lg font-bold text-heading">{copy.title}</h2>
+          <ModalTitle className="text-lg font-bold text-heading">{copy.title}</ModalTitle>
         </div>
         <p className="text-sm text-soft">{sentence}</p>
         <p className="mt-2 text-sm text-muted">

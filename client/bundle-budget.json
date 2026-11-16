@@ -1,0 +1,29 @@
+{
+  "description": "Size budget for the client production build, in bytes (raw and gzip -9). Checked by `pnpm --filter @thewired/client size` after a build. `initial:js` is the startup payload: the entry script plus every modulepreload in index.html; it is held tight so that code moving back into startup fails the check. `chunk:<name>` lines are only for lazy chunks whose name we choose (the file name of a module passed to import()). Every other lazy chunk must stay under otherChunkLimit. A line that matches nothing in the build fails. `size --update` re-records the existing lines from the current build.",
+  "limits": {
+    "initial:js": {
+      "raw": 1634304,
+      "gzip": 492544
+    },
+    "total:js": {
+      "raw": 6475776,
+      "gzip": 1880064
+    },
+    "total:css": {
+      "raw": 155648,
+      "gzip": 23552
+    },
+    "chunk:livekitClient.js": {
+      "raw": 611328,
+      "gzip": 156672
+    },
+    "chunk:hls.js": {
+      "raw": 612352,
+      "gzip": 187392
+    }
+  },
+  "otherChunkLimit": {
+    "raw": 541696,
+    "gzip": 180224
+  }
+}

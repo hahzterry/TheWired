@@ -17,6 +17,8 @@
     "dev:down:infra": "docker compose stop postgres redis meilisearch",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm --filter @thewired/client lint",
+    "size:client": "pnpm --filter @thewired/client size",
     "seed:demo": "tsx --env-file=services/backend/.env scripts/seed-demo.ts",
     "seed:reset": "tsx --env-file=services/backend/.env scripts/seed-demo.ts --reset",
     "seed:clean": "tsx --env-file=services/backend/.env scripts/seed-demo.ts --clean",

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ArrowLeft, Users, AlertCircle } from "lucide-react";
-import { Modal } from "../../components/ui/Modal";
+import { Modal, ModalTitle } from "../../components/ui/Modal";
 import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
@@ -208,9 +208,9 @@ function JoinSpaceModalInner({ open, onClose, initialCode, onImportInstead }: Jo
                 <ArrowLeft size={16} />
               </button>
             )}
-            <h2 className="text-lg font-bold text-heading">
+            <ModalTitle className="text-lg font-bold text-heading">
               {step === "success" ? "Joined!" : "Join a Space"}
-            </h2>
+            </ModalTitle>
           </div>
           <button
             onClick={handleClose}

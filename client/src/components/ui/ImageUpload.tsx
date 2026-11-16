@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useId } from "react";
 import { Upload, X, Link } from "lucide-react";
 import type { UploadContext } from "@ishtarservices/core";
 import { uploadWithContext } from "@/lib/media/uploadPlan";
@@ -66,6 +66,7 @@ export function ImageUpload({
   const [dragOver, setDragOver] = useState(false);
   const [mode, setMode] = useState<"upload" | "url">("upload");
   const fileRef = useRef<HTMLInputElement>(null);
+  const labelId = useId();
 
   const handleFile = useCallback(
     async (file: File) => {
@@ -115,10 +116,10 @@ export function ImageUpload({
         : "h-20 w-20 rounded-xl";
 
   return (
-    <div>
+    <div role="group" aria-labelledby={label ? labelId : undefined}>
       {label && (
         <div className="mb-1.5 flex items-center justify-between">
-          <label className="block text-xs font-medium text-soft">{label}</label>
+          <span id={labelId} className="block text-xs font-medium text-soft">{label}</span>
           <button
             type="button"
             onClick={() => setMode(mode === "upload" ? "url" : "upload")}
@@ -126,11 +127,11 @@ export function ImageUpload({
           >
             {mode === "upload" ? (
               <>
-                <Link size={10} /> Paste URL
+                <Link size={10} aria-hidden="true" /> Paste URL
               </>
             ) : (
               <>
-                <Upload size={10} /> Upload
+                <Upload size={10} aria-hidden="true" /> Upload
               </>
             )}
           </button>
@@ -146,6 +147,7 @@ export function ImageUpload({
             setError(null);
           }}
           placeholder="https://..."
+          aria-label={label ? `${label} URL` : "Image URL"}
           className="w-full rounded-xl bg-field border border-border px-3 py-1.5 text-sm text-heading placeholder-muted focus:border-primary focus:outline-none transition-colors"
         />
       ) : (
@@ -161,15 +163,21 @@ export function ImageUpload({
               <button
                 type="button"
                 onClick={() => onChange("")}
+                aria-label="Remove image"
                 className="absolute -top-1.5 -right-1.5 rounded-full bg-surface p-0.5 text-soft hover:text-heading border border-border transition-colors"
               >
-                <X size={12} />
+                <X size={12} aria-hidden="true" />
               </button>
             </div>
           ) : null}
 
-          {/* Drop zone */}
-          <div
+          {/* Drop zone: a real button, so it is reachable and operable from
+              the keyboard (Enter / Space open the file picker). */}
+          <button
+            type="button"
+            // A fixed name: it must not turn into the spinner's "Uploading".
+            aria-label={placeholder}
+            aria-busy={uploading}
             onDragOver={(e) => {
               e.preventDefault();
               setDragOver(true);
@@ -184,32 +192,37 @@ export function ImageUpload({
             }`}
           >
             {uploading ? (
-              <Spinner size="sm" />
+              <Spinner size="sm" label="" />
             ) : (
               <>
-                <Upload size={16} className="text-muted mb-1" />
+                <Upload size={16} className="text-muted mb-1" aria-hidden="true" />
                 <span className="text-xs text-muted text-center">
                   {placeholder}
                 </span>
               </>
             )}
-          </div>
+          </button>
 
           <input
             ref={fileRef}
             type="file"
             accept={WEB_IMAGE_TYPES.join(",")}
             className="hidden"
+            tabIndex={-1}
+            aria-hidden="true"
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) handleFile(file);
               e.target.value = "";
             }}
           />
+          <span role="status" className="sr-only">
+            {uploading ? "Uploading image" : ""}
+          </span>
         </div>
       )}
 
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+      {error && <p role="alert" className="mt-1 text-xs text-red-400">{error}</p>}
     </div>
   );
 }
