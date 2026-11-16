@@ -8,24 +8,25 @@
 
 MUST / SHOULD / MAY are RFC 2119.
 
-## 0. Open contract decisions (owner's call)
+## 0. Contract decisions
 
-Each of these changes what other clients must implement. The slice implements the
-recommendation and keeps it behind one module so it is cheap to change (§15 says where).
+Each of these changes what other clients must implement. Rows marked **decided** were settled
+by the owner; the rest are open, and the slice implements the recommendation behind one module
+so it is cheap to change (§15 says where).
 
 | # | Decision | Recommendation | Alternatives | Cost of changing later |
 |---|---|---|---|---|
 | D1 | **Scheme** | A shared symmetric **epoch key** per space, rotated on member removal ("space keys v1"). MLS (Marmot) stays the tracked upgrade behind its audit gate; the inner message format is already the one Marmot uses (an unsigned Nostr event), so only the key layer would change. | (a) NIP-17 wraps per member: no relay gating, one wrap per member per message, NIP-17 itself says to stop at 10 participants. (b) Marmot now: one MLS leaf per device, no shared history, needs a native library the web build cannot load, relay loses membership gating. | High once clients ship. This is the main decision. |
 | D2 | **Key transport** | An **in-space key grant** event (kind 4291): one event carries the epoch key wrapped to up to 80 members with a throwaway key. Rotation costs the admin **one signature** whatever the member count, and any device with the account key can re-derive its keys from the space's own relay. | NIP-17 gift wrap per member (how shared music-project keys travel). Costs one seal signature and two signer encryptions *per member* per rotation (minutes on a remote signer for 100 members), depends on each member's DM relays, and cannot be stored on a self-hosted space relay, which only accepts its own groups' events. | Medium: `spaceKeys.ts` grant codec + the grant subscription. |
-| D3 | **Kind numbers** | `4290` sealed space event, `4291` space key grant. Both unallocated in the NIPs registry and in the Marmot, NIP-171, NIP-112 and Concord drafts. | Any other free regular kinds; or write this up as a NIP draft and take numbers from review. | Low before release (two constants in `packages/shared-types/src/spaceE2ee.ts`), breaking after. |
+| D3 | **Kind numbers** — **decided** | `4290` sealed space event, `4291` space key grant. Re-checked 2026-11-16: neither appears in the NIPs README kind table or in `registry-of-kinds/schema.yaml` (whose only entries between 4000 and 4999 are 4312, 4454, 4455 and 4550), and no open NIPs pull request mentions either number. Re-check once more before the format is declared stable. | — | Breaking after release. |
 | D4 | **History for new members** | Default `epoch`: a new member reads everything since the last key change and nothing older. The creator can pick `full` (every epoch key is handed over) when creating the space. | `full` as default (parity with unencrypted spaces); or `none` (rotate on every join). | Low: a policy value inside the encrypted grant payload. |
 | D5 | **What the relay may see** | Only: space id, sender, time, size, epoch id, and who holds keys. The inner kind, channel, replies, mentions and reactions are inside the ciphertext. | Leave routing tags (`channel`, `p` mentions) in the clear so the backend can push "you were mentioned". Leaks the in-space social graph, and an outer `p` tag also grants that pubkey relay read access. | Medium: additive tags later are easy, removing them is not. |
 | D6 | **Which space modes** | All three (Platform, Decentralized A-lite, NIP-29-native). The envelope is an ordinary `h`-tagged event, so every relay that hosts the space gates it the same way. Platform spaces lose backend features (§8). | Native-only, so "encrypted" always means "no backend involved". | Low (one predicate in the create dialog). |
 | D7 | **Who may hand out and rotate keys** | The space's **key root** (whoever made the first epoch) plus the `managers` each epoch names. Clients enforce it as a signed chain (§5.4), never from the server's role list. The slice names only the root; appointing further managers is an explicit action for phase 2. | Any member may re-share the current key (faster onboarding, weaker against a server that adds a ghost member). | Medium. |
-| D11 | **How a device learns a space is encrypted** | Today: only from a key grant it has seen with the feature on (or by creating the space). Until then it treats the space as ordinary and can post plaintext there. D8 (a relay-enforced flag) is the fix and SHOULD land before this is offered beyond testing. | Carry a marker in invites and in 39000 as well; or make every client look for grants before its first post in any space. | Additive. |
-| D12 | **Who a device trusts for its first key** | Today (trust on first use): the first grant a device sees is accepted from the space's creator, or, when the creator is unknown (an imported group), from a listed admin, and only when that grant names its own signer as the key root. Those lists come from the relay or the backend, so **a relay or backend that lies about the creator, or any listed admin of a group whose creator is unknown, can hand a device with no key yet a key of its choosing**, and that device then rejects the real keys. The pinned root is shown in the space's info panel so a wrong one can be noticed. Options: **(a, recommended)** carry the key root in the invite / join link, so a joiner pins the root the inviter vouched for and the server is out of the loop; (b) show a short fingerprint of the root to compare out of band, and ask the user to confirm it before the first key is used; (c) both: the link pins it, the fingerprint lets people check later; (d) keep trust on first use as it is. (a) adds a field to invite links of all three space modes. | Medium: (a) touches the invite formats; (b) is client-only. |
+| D11 | **How a device learns a space is encrypted** | **Mostly closed by D12**: the id says so (§5.4), so this client knows from the id alone, feature on or off, before anything loads. What remains: builds from before the committed-id format, and other software that doesn't know the format, can post plaintext into an encrypted space. D8 (a relay-enforced flag) closes that server-side. | Carry a marker in 39000 as well, for other NIP-29 clients. | Additive. |
+| D12 | **Who a device trusts for its first key** — **decided** | **A space id that commits to its key root** (§5.4): an encrypted space's id is `e2e1-` + 128 bits of SHA-256 over a version tag, the root's pubkey and a random salt; every grant carries the root and the salt. A device that knows the id accepts a first key only from that root, with nothing from a server. Backend invite links also carry the id, so a server can't swap the space behind a code. | Compared: (a) root in the invite link only — covers only joins through a link (a second device or a reinstall has none), a link fragment is easily lost, and a wrong pin is silent; (b) a fingerprint the user confirms — client-only but relies on people comparing keys; (c) both; (d) keep trust on first use, where a relay or backend that lies about a space's creator can hand a keyless device a key it controls. The committed id subsumes (a) for every path, needs no user action, and leaves (b) available as the manual check (the Info panel shows the root). | Breaking after release: the id format. |
 | D13 | **Which of two same-`seq` epochs to send with** | Today (§5.3): the smaller `epochId`. An issuer can generate keys until its epoch id is small, so a fork can always win the tie. Nothing can exploit it while only the root issues keys, so the slice leaves the rule as written. Options: (a, recommended) prefer the epoch the key root issued, then the earlier `at`, then the smaller id; (b) prefer the epoch whose grant the client accepted first (not the same on every device); (c) refuse a second epoch with an existing `seq` unless the root signed it. | Low while only the root issues; a rule every client must share once managers exist. |
-| D8 | **Server-side "encrypted" flag** | Phase 2: the relay stores an `encrypted` flag per group and refuses plaintext chat kinds there; the backend gets a column for the directory badge. Not in the slice (needs a relay and a backend migration). | Client-only marker forever (what the slice does). | Additive. |
+| D8 | **Server-side "encrypted" flag** — open | Phase 2: the relay refuses plaintext content kinds in a group whose id is a committed one (it can tell from the id) and the backend shows a directory badge. Not built. Closes the remaining part of D11. | Client-only enforcement forever. | Additive. |
 | D9 | **Push for encrypted spaces** | None in v1. Phase 3: opt-in, content-free "new activity in *space*" from the envelope's metadata only. | Mention pushes via cleartext `p` tags (see D5). | Additive. |
 | D10 | **Reports to the platform operator** | Phase 3: the reporter discloses the per-message NIP-44 keys for the one reported event, so the operator can verify and read that message and nothing else (§8.4). Needs a crypto review before it ships. | Reports stay inside the space (admins hold the key); or unverifiable plaintext reports. | Additive. |
 
@@ -79,6 +80,12 @@ rumor is bound to that author, so no member can post as another member.
   that member can read. Decrypted messages are held in memory by the client; the cached epoch
   keys sit in the OS keychain (desktop).
 - **Deniability.** Messages are signed.
+- **A lying server about a space's identity.** The id of an encrypted space commits to its
+  key root (§5.4), so no relay or backend can make a device accept a first key from anyone
+  else, and invite links name the id so a server can't swap the space behind a code. What a
+  server can still do is list a *different* space that looks the same (same name and
+  picture, another id) in discovery or search; the Info panel shows each space's key root
+  for a manual check.
 - **A malicious server adding a member.** Membership is still decided by the relay or the
   backend. If it lists a ghost member, an honest admin's client will hand that member the key.
   The grant names every recipient in the clear and is signed, so clients can show every key
@@ -206,10 +213,32 @@ too.
 
 ### 5.4 Who may issue keys
 
-The server's role list is not trusted for this. Every grant payload carries:
+Nothing a server says is trusted for this.
+
+**The space id commits to the key root.** An encrypted space's id is
+
+```
+id = "e2e1-" + hex( SHA-256( "thewired-space-id-v1" || 0x00 || root || salt ) )[0..32]
+     root = the key root's pubkey (32 bytes), salt = 16 random bytes chosen at creation
+```
+
+- 128 bits of the hash (second-preimage resistance is what matters: nobody can find another
+  root and salt for an existing id), lowercase hex and `-` only, so it is a valid NIP-29 group
+  id; 37 characters.
+- The `e2e1-` prefix makes the format recognizable: **a space whose id has this form is
+  encrypted, and only such a space can be.** Grants in any other space are ignored, so a plain
+  space can never be turned into an encrypted one (and lose its history) by someone publishing
+  a grant there. Encrypting an existing plain space would be a new space.
+- Pinned in `packages/core` tests against an independent computation, and in the contract
+  fixtures.
+
+Every grant payload carries:
 
 - `root`: the space's **key root**, the pubkey that made the first epoch. It is the same in
   every epoch of a space and may always issue keys.
+- `rootSalt`: the salt that, with `root`, hashes to the space id. Root and salt are also in a
+  public `["root", <pubkey>, <salt>]` tag, checked against the id before anything is
+  decrypted; the payload must agree with the tag.
 - `managers`: who may issue the *next* epoch, and late grants of this one. Always includes
   `root`. A manager list MUST be carried forward from the chain or changed by a deliberate
   user action, never copied from the backend's or relay's role list. (The slice only ever
@@ -218,11 +247,9 @@ The server's role list is not trusted for this. Every grant payload carries:
 
 A client accepts a grant's epoch when:
 
-1. **First key for this space** (trust on first use, D12): the signer is the space's creator
-   when the client knows the creator, or one of its listed admins when it does not (an
-   imported group); **and** the payload names the signer itself as `root`. The client pins it.
-   No one can pin a root other than themselves, and a payload that merely lists the signer as
-   a manager is not enough.
+1. **First key for this space**: the grant's root and salt hash to the space id, and the
+   signer **is** that root. The client pins it. No creator or admin list from the relay or
+   the backend is consulted.
 2. **Otherwise** the payload names the pinned root, and
    - the signer is the root; or
    - the epoch **extends the chain the client holds**: `prev` is an accepted epoch, `seq` is
@@ -232,13 +259,19 @@ A client accepts a grant's epoch when:
 
 Consequences:
 
-- **Once a device holds a key**, a relay or backend that edits the role list cannot make it
-  accept a key of its choosing; it would need the root's or a manager's account key.
-- **Before that, it can** (D12). The creator and admin lists come from the relay or the
-  backend. One that names the wrong creator, or any listed admin of a group whose creator is
-  unknown, can hand a device that has no key for the space yet a first key it controls, and
-  that device then rejects the real ones. The pinned root is shown in the space's info panel
-  with its full key, so members can compare it; the invite-link option in D12 closes this.
+- A relay or backend cannot make a device accept a key of its choosing, first key included:
+  it would need the root's (or, later, a manager's) account key. Knowing the space's id is
+  enough to check, which every path that brings a space to a device provides (§5.5).
+- **The id commits to the *first* root.** A future hand-over of the root to someone else
+  must be a statement signed by the root the id commits to (and chained from it); a device
+  must never accept a new root on any server's word.
+- **Invites name the space.** A backend-backed space's invite link is
+  `…/invite/<code>/<spaceId>`: the inviter's client puts the id in the link, the joining client
+  refuses when the backend resolves the code to another space, and a link without the id is
+  refused for an encrypted space ("this link can't be checked"). The id is a path segment
+  because the public invite page and every client parser keep the path whole, while a query
+  string or fragment is dropped on the way. NIP-29-native invites are the group address
+  (`host'groupId`), which already is the id.
 - Nobody but the root can jump ahead of the chain, start a second chain or re-root the space.
 - A manager dropped at a rotation can issue nothing after it. They can still fork *from the
   last epoch they managed*, one step, which every member would hold alongside the real one;
@@ -252,6 +285,13 @@ Consequences:
   if its payload opens under the held key.
 
 ### 5.5 Multi-device and remote signers
+
+- **How a device learns its spaces' ids.** Backend-backed spaces: from the backend's list of
+  the account's spaces (the only source today). The backend can leave a space out or list a
+  look-alike, but it can't change the root behind an id it lists. NIP-29-native spaces: only
+  locally on the device that joined them; a new device must import the space again from its
+  address, which carries the id. An account-signed space list (kind 10009) would make the id
+  reach a new device without the server; it is not built.
 
 - **Another device, or a reinstall**: fetch the space's grants and decrypt your entries.
   Nothing has to be copied between devices and nobody has to be online.
@@ -348,12 +388,11 @@ stores the message under.
 event id and the `h` tag; moderator deletion is the existing kind 9005. The relay really
 removes the ciphertext row, which an encrypted tombstone could not do.
 
-**Until it knows which spaces are encrypted, a client MUST NOT publish plaintext content kinds
-into any space.** This client loads that record before anything else and refuses, with an
-explanation, while it can't (§16); the relay-enforced flag (D8) would make this unnecessary.
-
 **In an encrypted space a client MUST NOT publish plaintext content kinds** (9, 7, 1, 1068, …)
-with that space's `h` tag, and MUST ignore plaintext kind 9 it receives there. Allowed in the
+with that space's `h` tag, and MUST ignore plaintext content it receives there. A client
+decides this **from the id** (§5.4), never from stored state, so it holds with the feature
+off, before anything has loaded, and when local storage can't be read, and it never blocks a
+plain space. Allowed in the
 clear: 5, 9000–9022, 4290, 4291, 1984, 30078 layout overlays.
 
 ### 6.2 Space key grant: kind 4291
@@ -367,6 +406,7 @@ clear: 5, 9000–9022, 4290, 4291, 1984, 30078 layout overlays.
     ["h", "<spaceId>"],
     ["epoch", "<16 hex epochId>"],
     ["eph", "<throwaway pubkey, 64 hex>"],
+    ["root", "<key root pubkey, 64 hex>", "<salt, 32 hex>"],   // opens the space id (§5.4)
     ["p", "<member pubkey>", "<nip44(throwaway secret → member, hex(K)), base64>"]
     // … up to 80 p entries; more recipients = more grant events for the same epoch
   ],
@@ -377,19 +417,24 @@ clear: 5, 9000–9022, 4290, 4291, 1984, 30078 layout overlays.
 ```jsonc
 // payload
 { "v": 1, "space": "<spaceId>", "epoch": "<epochId>", "seq": 3, "prev": "<epochId>" | null,
-  "root": "<pubkey>", "managers": ["<pubkey>", …], "history": "epoch" | "full", "at": 1763000000 }
+  "root": "<pubkey>", "rootSalt": "<32 hex>", "managers": ["<pubkey>", …], "history": "epoch" | "full",
+  "at": 1763000000 }
 ```
 
 **Receiver** MUST, failing closed:
 
-1. Verify the signature; require one `h`, one `epoch`, one `eph`.
-2. From the header alone, check that the signer could issue keys (§5.4). If not, keep the
-   grant for a later retry and stop; do not ask the signer to decrypt.
+1. Verify the signature; require one `h`, one `epoch`, one `eph` and one `root` tag; require
+   that the `root` tag's pubkey and salt hash to the `h` value (§5.4). Otherwise ignore the
+   grant: a space whose id doesn't commit to a root has no keys.
+2. From the header alone, check that the signer could issue keys (§5.4): for a first key,
+   the signer is the root. If not, keep the grant for a later retry and stop; do not ask the
+   signer to decrypt.
 3. Find its own `p` entry; `K = hex-decode(nip44_decrypt(eph, entry))`; require 32 bytes.
 4. Require `epochId(K) === epoch tag`.
 5. Decrypt `content` with `grantKey(K, h)`; require `v === 1`, `space === h`,
    `epoch === epoch tag`, `seq` a non-negative integer, `seq === 0` exactly when `prev` is
-   null, `root` a pubkey, `managers` an array of pubkeys that includes `root`.
+   null, `root` and `rootSalt` equal to the `root` tag's, `managers` an array of pubkeys that
+   includes `root`.
 6. Apply the chain rule of §5.4: accept, keep for later, or reject.
 7. Store the key and the non-secret epoch record; release parked events for that epoch;
    judge the kept grants again.
@@ -498,16 +543,16 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 
 ## 12. Migration and compatibility
 
-- **Unencrypted spaces are untouched.** Nothing changes for a space without the marker,
-  whether the feature is on or off. Regression tests pin this.
-- **No in-place conversion in v1.** Encrypting an existing space would leave its plaintext
-  history on the relay and needs every member on a build that understands 4290. Phase 3 can add
-  "encrypt from now on" (marker + first epoch + relay flag); the reverse is never offered.
-- **Older builds, other clients, and this client with the feature off** see no messages in an
-  encrypted space (they do not subscribe to 4290) and, before the relay flag exists, can post
-  plaintext kind 9 there. So can a device with the feature on until the first grant reaches it
-  (a new device, a reinstall). Clients that know the space is encrypted ignore that plaintext;
-  D8 closes the gap server-side and D11 tracks it.
+- **Unencrypted spaces are untouched.** Nothing changes for a space whose id is not a
+  committed one, whether the feature is on or off. Regression tests pin this.
+- **No conversion.** An encrypted space's id commits to its root, and an existing space's id
+  doesn't, so encrypting an existing plain space means making a new space. The reverse is
+  never offered. Spaces made with earlier builds of this branch (plain-format ids) are not
+  encrypted spaces any more; the format was provisional.
+- **This client, feature on or off**, knows an encrypted space from its id and never posts
+  plaintext there. **Older builds and other clients** see no messages in an encrypted space
+  (they do not subscribe to 4290) and, before the relay flag exists, can post plaintext there;
+  clients that know the format ignore it. D8 closes this server-side; D11 tracks it.
 - **Small encrypted DM rooms** (NIP-17, ≤ 10 people) are unaffected and remain the right tool
   for ad-hoc private groups without a space.
 - **Marmot**: if adopted later, a space would switch its *key layer* (epoch keys from the MLS
@@ -546,7 +591,10 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 | Roster reconcile (late grant / rotate) | `client/src/features/spaces/e2ee/keyReconcile.ts` |
 | Roster the reconcile acts on | `client/src/features/spaces/e2ee/freshRoster.ts` |
 | Key holders as the relay serves them | `client/src/features/spaces/e2ee/freshHolders.ts` (paged with `pagedReq.ts`) |
-| Which spaces are encrypted (loaded before any key) | `client/src/features/spaces/e2ee/e2eeRecord.ts` |
+| Is a space encrypted (from its id; tiny, on the startup path) | `client/src/features/spaces/e2ee/spaceIdFormat.ts` |
+| Per-account record of roots, epochs and holders (no secrets) | `client/src/features/spaces/e2ee/e2eeRecord.ts` |
+| Invite links that name the space | `client/src/features/spaces/inviteLink.ts` |
+| Native creation: the relay hosts the group under our id | `client/src/features/spaces/e2ee/relayGroupCheck.ts` |
 | Send and receive | `client/src/features/spaces/e2ee/sealedChat.ts` |
 | Subscriptions and lifecycle | `client/src/features/spaces/e2ee/e2eeController.ts` (mounted by `useSpaceE2ee` in `App.tsx`) |
 | Pipeline seam | `client/src/lib/nostr/spaceE2eeHooks.ts` |
@@ -555,35 +603,50 @@ NIP-29-native spaces have no voice yet; nothing changes there.
 | Pipeline branch | `client/src/lib/nostr/pipeline/ingest.ts` |
 
 D2 (transport) is confined to the grant functions in `spaceKeys.ts` and the grant subscription;
-D3 to two constants; D4 to `epochsToGrant` in `keyReconcile.ts`; D5 to `sealSpaceEvent`.
+D3 to two constants; D12 to `committedSpaceId` / `readGrantHeader` and `SPACE_E2EE_ID_*`; D4 to `epochsToGrant` in `keyReconcile.ts`; D5 to `sealSpaceEvent`.
 
 ## 16. Known gaps in the slice
 
 Found while building, in live QA and in an independent review; none is hidden by the feature
 being off by default.
 
-- **A device can post plaintext into an encrypted space until it learns the space is
-  encrypted** (D11): with the feature off, or on a new device before the first grant arrives.
-  The relay-enforced flag (D8) is the fix.
+- **Software that doesn't know the id format can post plaintext into an encrypted space**
+  (older builds, other NIP-29 clients; D11). The relay-enforced flag (D8) is the fix.
 - **Only the key root issues keys.** If the creator is away, nobody is granted and nothing
   rotates. Appointing managers and handing the root over are phase 2. With several managers a
   dropped one can still fork one step from the last epoch they managed (§5.4).
-- **An admin can mark a space encrypted on other members' devices** by publishing a grant
-  there, which blocks plaintext chat on those devices; there is no "unmark" in the UI.
-- **The first key is trust on first use** (D12): a lying relay or backend can hand a device
-  its first key. The pinned root is shown so a wrong one can be noticed.
-- **Posting to any space is refused while the account's record of encrypted spaces cannot be
-  read — by design** (owner decision). The record is one IndexedDB read at startup and after
-  an account switch; until it has loaded, the composer is disabled and nothing space-scoped
-  is signed in the clear, because nobody can say the space is *not* encrypted. Each attempt
-  waits at most a few seconds: if local storage doesn't answer (an IndexedDB open blocked by
-  another tab of the app, for example), the post is refused at once with "local storage isn't
-  answering… close other tabs or windows of The Wired, or reload", and the composer shows the
-  same explanation. The next attempt (and a background retry) reads again, and a read that
-  answers late still loads the record, so posting recovers by itself. The kinds that stay in
-  the clear (deletions, NIP-29 management, join and leave, reports, layout, voice presence)
-  are not held back. This client-side strictness can go once the relay-enforced flag (D8)
-  refuses plaintext in encrypted spaces.
+- **Look-alike spaces.** A server can list a different space with the same name and
+  picture. The id is what's verified, and the Info panel shows each space's key root for a
+  manual check; nothing stops someone from joining the wrong space by name.
+- **A space id reaches a new device only through the backend** (backend-backed spaces) or
+  not at all (NIP-29-native spaces are kept per device; import again from the address). An
+  account-signed space list would fix both; it is not built (§5.5).
+- **Root hand-over is not built.** The id commits to the first root; a hand-over must be
+  signed by it (§5.4).
+- **The keys of encrypted spaces can't load while local storage doesn't answer** (an
+  IndexedDB open blocked by another tab, for example). Each read gives up after a few seconds
+  and the next attempt tries again; a read that answers late still loads them. Nothing is
+  blocked for plain spaces, and nothing plaintext reaches an encrypted one meanwhile: the
+  guards decide from the id (earlier, the client refused every space post until it had read
+  its record; the committed id made that unnecessary).
+
+### 16.1 Edge cases and where they are tested
+
+| Case | Behaviour | Test |
+|---|---|---|
+| A grant names a root (or salt) that doesn't hash to the id | Ignored before any decryption | `spaceKeys.test.ts` "rejects a root tag that does not open the space id"; `encryptedSpaces.test.ts` "refuses a grant whose root doesn't hash to the id…" |
+| The listed creator or admin is someone else (a lying relay or backend) | Irrelevant: only the root the id commits to can hand out the first key | `encryptedSpaces.test.ts` "accepts the first key from the root the id commits to, whatever the server says" |
+| A server resolves an invite code to a different space than the link names | Refused before redeeming, and again after | `JoinSpaceModal.invite.test.tsx` |
+| An old invite link (no id) to an encrypted space | Refused: "this link can't be checked" | same |
+| A look-alike space (same name, other id) | Inherent to listings by a server; the Info panel root is the manual check | — (§2) |
+| Two creations colliding on an id | 2⁻¹²⁸ by chance; the backend refuses a taken id and the dialog starts over with a new salt and id | `CreateSpaceModal.test.tsx` "starts over with a new committed id when the id is already taken" |
+| A retried or abandoned creation | A retry keeps the id and the key prepared for it; switching encryption off or failing drops both | `CreateSpaceModal.test.tsx`; `encryptedSpaces.test.ts` "a creation that never happened" |
+| A relay that assigns its own group ids | Creation fails with "this relay can't host an encrypted space" unless the relay accepts the create and serves its metadata under our id | `relayGroupCheck.test.ts` |
+| Grants in a space with a plain id | Ignored; the space stays plain and keeps its chat | `encryptedSpaces.test.ts` "ignores grants in a space whose id is not a committed one" |
+| Feature off, nothing loaded, encrypted space | Plaintext refused from the id alone | `encryptedSpaces.test.ts` "refuses plaintext into an encrypted space with the feature off…" |
+| Local storage not answering | Plain spaces post; encrypted spaces refuse plaintext; key loading retries | `recordUnavailable.test.ts` |
+| A future hand-over of the root | Must be signed by the root the id commits to | not built |
+
 
 - **History is one REQ of 500 sealed events per space**, newest first, with no paging.
 - **Reactions**: the reaction button still shows in an encrypted space, and reacting is
