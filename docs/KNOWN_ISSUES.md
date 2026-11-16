@@ -360,7 +360,7 @@ account-switch freeze (#3, ~1900ms via `switchAccount`/`performCleanup`); this o
 is the initial cold-start path. The minified stack points at a heavy synchronous
 pass during first render (`qw`).
 
-**Where:** `loginFlow.ts` initial subscribe/hydrate path + the first feed render +
+**Where:** `performLogin` (`lib/nostr/login/performLogin.ts`) initial subscribe/hydrate path + the first feed render +
 engagement collector setup. Likely wants heavy first-render work deferred
 (idle/chunked scheduling). List virtualization (#1) has since cut the first feed
 render down to the cards in the window; re-measure before going further. Overlaps
@@ -419,7 +419,7 @@ If/when the transport layer is refactored, these seams from the perf work are
 **load-bearing** and must be preserved (or re-homed):
 
 1. **The `relayUrl` source distinction into `processIncomingEvent` is the
-   batching seam.** `eventPipeline.isBurstSource()` batches only `ws(s)://`
+   batching seam.** `isBurstSource()` (`lib/nostr/pipeline/batching.ts`) batches only `ws(s)://`
    sources; synthetic sources (`"local"` optimistic sends, `"resolve"`/`"search"`/
    `"browse"`/`"embedded"`) stay immediate so awaiting callers read fresh state.
    Whatever replaces `subscriptionManager.onEvent` **must keep passing a real
@@ -428,7 +428,7 @@ If/when the transport layer is refactored, these seams from the perf work are
    and resolvers read stale Redux.
 
 2. **Keep feeding the batching buffer, not per-event dispatch.** The buffer +
-   coalesced flush live in `eventPipeline` (downstream of transport). A
+   coalesced flush live in the event pipeline (`lib/nostr/pipeline/batching.ts`, downstream of transport). A
    `for await (const msg of pool.req(...))` loop should still call
    `processIncomingEvent(event, relayUrl)` per event — do **not** reintroduce
    per-event `store.dispatch`.

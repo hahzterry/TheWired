@@ -121,7 +121,11 @@ cd client/src-tauri && cargo build   # Build Rust binary
   - `relayManager.ts` -- Multi-relay WebSocket orchestrator (singleton)
   - `relayConnection.ts` -- Single WebSocket wrapper per relay
   - `subscriptionManager.ts` -- REQ/CLOSE/EOSE lifecycle (singleton)
-  - `eventPipeline.ts` -- Dedup + validate + verify + dispatch + feature routing
+  - `eventPipeline.ts` -- Entry point + the app's one pipeline instance (`processIncomingEvent`, `flushEventPipeline`, `resetEventPipelineCaches`). The stages live in `pipeline/`:
+    - `ingest.ts` (validate → dedup → verify → dispatch → index → notify → flush), `batching.ts` (burst buffer, flush, entity sweep), `indexEvent.ts` (**the kind switch**), `deletionIndex.ts` / `modDeleteIndex.ts` (kind 5 / 9005 cases), `spaceFeeds.ts`, `giftWrapHandler.ts` + `friendWraps.ts` + `callWraps.ts` (kind 1059 rumors), `createEventPipeline.ts` (the factory), `evaluationOrder.ts` (import-order pin, don't reorder)
+  - `loginFlow.ts` -- Entry point for the login path (`getSigner`, `performLogin`, `tryRestoreSession`, `switchAccount`, `performCleanup`, `performLogout`, …). The code lives in `login/`:
+    - `performLogin.ts` (the bootstrap order), `signerSession.ts`, `restore.ts`, `accounts.ts`, `cleanup.ts` (teardown order), `state.ts` (the one shared state object), plus per-step modules (`relayBridge`, `userData`, `relayBootstrap`, `spaces`, `music`, `giftWrapSub`, `followers`, `sessionStore`) and `evaluationOrder.ts`
+    - Import both from the entry files, never from `pipeline/*` or `login/*`
   - `dedup.ts` -- LRU deduplication (100k-entry `lru-cache`, zero false positives, supports `unmarkSeen` for retry)
   - `verifyWorkerBridge.ts` -- Main-thread bridge to Web Worker
   - `signer.ts` / `nip46Signer.ts` -- NostrSigner interface + factory; NIP-46 bunker backend
@@ -209,6 +213,17 @@ The long lists (space notes feed, profile tabs, media grid, space chat, DM conve
 - **Scroll restore** is `useAnchoredScrollRestore` with `scrollToAnchor` (the saved card is usually not in the DOM); mark each card with `data-feed-anchor`. Code that keeps re-scrolling a virtual list for a while (a restore loop) calls `markProgrammaticScroll` (`lib/virtual/viewportAnchor.ts`) so the at-rest anchor keeper makes no corrections of its own meanwhile.
 - **Tests** have no layout: wrap in `VirtualViewport` and await `virtualListSettled()` (`src/__tests__/helpers/virtualList.tsx`). See `docs/KNOWN_ISSUES.md` #1 for the design and measurements.
 
+### Code Splitting (Client)
+The startup bundle is the shell plus the landing view (space sidebar, chat / notes / media channels). Everything else is a lazy chunk: every other route, the music and AI sections, sidebar bodies per mode, right-panel tabs, the playback bar, the call view, onboarding, and the heavy modals. `client/src/__tests__/bundleHygiene.test.ts` fails on a static import that would undo this.
+- **New route, panel or overlay** → `lazyView(() => import(...), <PanelLoading />)` (`components/ui/lazyView.tsx`). Routes go in `app/lazyRoutes.tsx`, which exports drop-ins with the Suspense fallback built in. The fallback must fill the same slot as the view (`PanelLoading` does; its spinner is delayed so a fast load shows none).
+- **New heavy modal** → `lazyModal(() => import(...), "label")` (same file; see `features/spaces/lazyModals.tsx`). It loads on first open, stays mounted afterwards, and carries its own `ModalBoundary`, because the one from `withModalBoundary` lives inside the chunk that may fail to load.
+- Both are built on `lazyWithRetry`, so a failed chunk shows the nearest boundary's fallback with Reload, and Retry or navigating re-imports. Put a boundary close enough that a failed chunk does not take down more than its own slot.
+- **Preloading** (`lib/lazyPreload.ts`): `preloadOnIntent(view)` spreads hover/focus handlers on the control that opens a view; `app/routePreload.ts` lists what is fetched when idle after startup. Add to the idle list only what people open first.
+- **Libraries that must stay behind a dynamic import**: `hls.js` (go through `lib/media/hls.ts`), `livekit-client` (go through `lib/webrtc/livekit.ts`, see below), `music-metadata`, the markdown pipeline (`ArticleMarkdown` via `LazyArticleMarkdown`, `AIMarkdown`), `recharts`, tiptap, dnd-kit (`ChannelTreeView` loads `ChannelTreeDnd` only for people who can arrange channels).
+- **LiveKit**: feature code imports from `lib/webrtc/livekit.ts`, never from `livekitClient.ts`. The facade answers "no room" until something connects and loads the SDK on the first `connectToRoom`. Room listeners live in `lib/webrtc/roomEvents.ts`; the sync E2EE capability check is `lib/webrtc/e2ee/support.ts` (a test keeps it equal to the SDK's).
+- **Playback** is driven by `AudioEngine` in `app/Layout.tsx`, not by the (lazy) playback bar, so a track never waits for the bar's chunk.
+- `vite.config.ts` groups the startup code into four chunks (`react`, `nostr`, `vendor`, and the app shell in the entry) with Rolldown `codeSplitting` groups tagged `$initial`; lazy chunks are left to Rolldown.
+
 ### State Management (Client)
 - Redux is the single source of truth for all UI state
 - `eventsSlice` uses `createEntityAdapter` keyed by event ID
@@ -243,7 +258,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 
 - Use the `mcp__nostrbook` tools to look up NIP specs, event kinds, and tag definitions
 - Event kinds used: 0, 1, 3, 7, 9, 20, 22, 34235/34236, 30023, 30311, 1311, 1059/13/14 (NIP-17), 9734/9735 (NIP-57 zaps), 13194/23194/23195/23196/23197 (NIP-47 NWC), 24133 (NIP-46), 10000, 10002, 10009, 10063, 22242, 24242, 27235, 30078 (NIP-78 — also decentralized-space layout/relay-set overlays), 31683/33123/30119 (music), 39000-39002 + 9000-9022 (NIP-29). Full table in README/ARCHITECTURE.
-- Adding a new kind has many touch-points (`EVENT_KINDS`, routes, filterBuilder, `eventPipeline.indexEvent`, slices, render components) — load the `nostr-kind-rendering` skill; a missed step means the event silently never appears.
+- Adding a new kind has many touch-points (`EVENT_KINDS`, routes, filterBuilder, the `indexEvent` switch in `lib/nostr/pipeline/indexEvent.ts`, slices, render components) — load the `nostr-kind-rendering` skill; a missed step means the event silently never appears.
 - Bootstrap relays: `wss://relay.damus.io`, `wss://nos.lol`
 - Channel routing is defined in `client/src/lib/nostr/channelRoutes.ts`
 
@@ -254,7 +269,7 @@ Registered in `client/src-tauri/src/lib.rs`. Grouped by module:
 - `hls.js` -- check `Hls.isSupported()` before use; Safari has native HLS
 - `idb` -- typed IndexedDB wrapper; schema in `client/src/lib/db/database.ts`
 - `nostr-tools` -- protocol utils + NIP-46 `BunkerSigner`. NOTE: `./nip04`/`./nip47` are not exported subpaths; import `nip04`/`nip47` from the package root.
-- `livekit-client` -- voice/video SFU client; value imports ONLY in `lib/webrtc/livekitClient.ts` (type-only elsewhere) so the SDK stays lazy-loadable
+- `livekit-client` -- voice/video SFU client; value imports ONLY in `lib/webrtc/livekitClient.ts` and its E2EE helpers (type-only elsewhere). That module is itself loaded on demand through `lib/webrtc/livekit.ts`, so the SDK is not in the startup bundle
 - `marked` + `highlight.js` -- AI chat markdown + code highlighting; `recharts` -- AI artifact charts (lazy-loaded, code-split — keep it out of the main bundle)
 - Tailwind v4 -- uses `@import "tailwindcss"` in CSS, NOT `@tailwind` directives
 - Vite Web Workers -- use `new Worker(new URL("...", import.meta.url), { type: "module" })`

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Track } from "livekit-client";
-import { getParticipantTrack, onTrackTopologyChanged } from "@/lib/webrtc/livekitClient";
+import { getParticipantTrack, onTrackTopologyChanged } from "@/lib/webrtc/livekit";
 import type { TileSource } from "@/types/calling";
 
 /**

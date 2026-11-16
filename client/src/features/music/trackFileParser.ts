@@ -1,4 +1,12 @@
-import { parseBlob } from "music-metadata";
+import { preloadable } from "@/lib/lazyPreload";
+import { isChunkLoadError } from "@/lib/lazyWithRetry";
+import { TagReaderLoadError } from "./tagReaderError";
+
+/**
+ * The tag parsers are large and only needed once a file has been picked. A
+ * download that fails is not kept, so the next file (or a retry) fetches again.
+ */
+const loadTagReader = preloadable(() => import("music-metadata"));
 
 /** Embedded cover art extracted from audio file metadata */
 export interface EmbeddedCoverArt {
@@ -148,7 +156,14 @@ function extractCoverArt(
   return { objectUrl, file, format };
 }
 
-/** Read ID3/metadata tags from an audio File using music-metadata */
+/**
+ * Read ID3/metadata tags from an audio File using music-metadata.
+ *
+ * A file that cannot be parsed (corrupt, unsupported) yields `{}`. A reader
+ * that could not be downloaded throws `TagReaderLoadError` instead: `{}` there
+ * would say "this file has no tags" about a file nobody looked at, and the
+ * upload would go ahead without them.
+ */
 export async function readAudioMetadata(file: File): Promise<{
   title?: string;
   artist?: string;
@@ -160,8 +175,16 @@ export async function readAudioMetadata(file: File): Promise<{
   duration?: number;
   coverArt?: EmbeddedCoverArt | null;
 }> {
+  // Outside the catch below on purpose: that one is for the file.
+  let reader: Awaited<ReturnType<typeof loadTagReader>>;
   try {
-    const metadata = await parseBlob(file, { duration: true });
+    reader = await loadTagReader();
+  } catch (err) {
+    throw new TagReaderLoadError(err);
+  }
+
+  try {
+    const metadata = await reader.parseBlob(file, { duration: true });
     const common = metadata.common;
     return {
       title: common.title || undefined,
@@ -177,7 +200,11 @@ export async function readAudioMetadata(file: File): Promise<{
         file.name.replace(/\.[^.]+$/, ""),
       ),
     };
-  } catch {
+  } catch (err) {
+    // The reader fetches the parser for each format (MP3, FLAC, MP4, ...) as
+    // a further chunk while it parses. One of those failing to download is
+    // the reader not loading, not a bad file.
+    if (isChunkLoadError(err)) throw new TagReaderLoadError(err);
     // If metadata parsing fails (corrupt file, unsupported format), return empty
     return {};
   }
@@ -185,7 +212,7 @@ export async function readAudioMetadata(file: File): Promise<{
 
 let keyCounter = 0;
 
-/** Parse a batch of files: extract filename info + ID3 metadata */
+/** Parse a batch of files: extract filename info + ID3 metadata. Rejects with `TagReaderLoadError` when the reader did not load. */
 export async function parseTrackFiles(files: File[]): Promise<ParsedTrackInfo[]> {
   const results = await Promise.all(
     files.map(async (file): Promise<ParsedTrackInfo> => {

@@ -8,6 +8,7 @@
  * - Safari: Stricter about secure context — may block on http://localhost in some versions
  */
 import { isWindows, isMacOS } from "../platform";
+import { isMediaEngineLoadError, MEDIA_ENGINE_LOAD_MESSAGE } from "./loadError";
 
 export interface MediaDeviceInfo {
   deviceId: string;
@@ -53,6 +54,9 @@ export function describeMediaError(err: unknown, kind: MediaErrorKind = "media")
   const name = (err as { name?: string } | null)?.name ?? "";
   const message = (err as { message?: string } | null)?.message ?? "";
   const what = kind === "media" ? "camera or microphone" : kind;
+
+  // Not a device problem at all: the voice and video code did not download.
+  if (isMediaEngineLoadError(err)) return MEDIA_ENGINE_LOAD_MESSAGE;
 
   switch (name) {
     case "NotAllowedError":

@@ -19,7 +19,11 @@ const h = vi.hoisted(() => {
 vi.mock("livekit-client", () => ({
   BaseKeyProvider: h.BaseKeyProvider,
   createKeyMaterialFromBuffer: async () => ({}),
-  isE2EESupported: () => h.supported,
+}));
+// The capability check has its own module (and its own test, against the SDK).
+vi.mock("../support", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../support")>()),
+  e2eeSupported: () => h.supported,
 }));
 // The real sender pulls in the gift-wrap + relay stack; sessions under test
 // get `send` injected.
