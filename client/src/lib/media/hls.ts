@@ -3,8 +3,10 @@
  *
  * The library is about half a megabyte minified and only matters when an HLS
  * (`.m3u8`) source is actually played somewhere without native support, so it
- * must never be a static import. Video components attach a source through
- * `attachVideoSource`; the audio player has its own loader in `useAudioPlayer`.
+ * must never be a static import. This is the only module that imports it:
+ * video components attach a source through `attachVideoSource`, and the audio
+ * player takes the constructor from `loadHls`. A download that fails is not
+ * kept, so the next source that needs the library fetches it again.
  */
 import type Hls from "hls.js";
 import { preloadable } from "@/lib/lazyPreload";
@@ -28,6 +30,14 @@ export interface AttachVideoSourceOptions {
  * goes through hls.js where Media Source Extensions are available, and is
  * handed to the element otherwise (WebKit plays HLS natively). Returns a
  * cleanup that also cancels an attach still waiting for the library.
+ *
+ * For a manifest the source is attached once the library has arrived, not
+ * before this returns. A `play()` issued in between is not lost: the element
+ * has no source yet, so it stays in its "playing requested" state and starts
+ * when the source is attached (checked in Chromium and WebKit). What does
+ * differ is the promise that `play()` returned: Chromium resolves it when
+ * playback starts, WebKit rejects it with AbortError at the moment the source
+ * is assigned and plays anyway. Callers must not leave that promise unhandled.
  */
 export function attachVideoSource(
   video: HTMLVideoElement,

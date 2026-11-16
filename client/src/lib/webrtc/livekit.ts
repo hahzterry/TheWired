@@ -16,6 +16,8 @@
 import type { Room, Track } from "livekit-client";
 import type { TileSource } from "@/types/calling";
 import { preloadable, type Preloadable } from "@/lib/lazyPreload";
+import { isChunkLoadError } from "@/lib/lazyWithRetry";
+import { MediaEngineLoadError } from "./loadError";
 import { mediaEpoch } from "./mediaSession";
 import type { ConnectOptions } from "./livekitClient";
 
@@ -26,16 +28,37 @@ type LivekitModule = typeof import("./livekitClient");
 
 let loaded: LivekitModule | null = null;
 
+let importRoomModule: () => Promise<LivekitModule> = () => import("./livekitClient");
+
+// A failed download is not kept (`preloadable` forgets it), so the next join
+// imports again.
 const loader = preloadable(() =>
-  import("./livekitClient").then((mod) => {
+  importRoomModule().then((mod) => {
     loaded = mod;
     return mod;
   }),
 );
 
-/** Load the room module (and with it the SDK). Shared by every caller. */
-export function loadLivekit(): Promise<LivekitModule> {
-  return loader();
+/**
+ * Load the room module (and with it the SDK). Shared by every caller.
+ *
+ * A download that fails rejects with `MediaEngineLoadError`, whose message is
+ * written for the user: the engine's own ("Failed to fetch dynamically
+ * imported module ...") says nothing about what to do. Any other failure is a
+ * bug in the module and passes through untouched.
+ */
+export async function loadLivekit(): Promise<LivekitModule> {
+  try {
+    return await loader();
+  } catch (err) {
+    if (isChunkLoadError(err)) throw new MediaEngineLoadError(err);
+    throw err;
+  }
+}
+
+/** Test seam: replace the import, so a test can make the download fail. */
+export function setLivekitImporterForTests(importer: (() => Promise<LivekitModule>) | null): void {
+  importRoomModule = importer ?? (() => import("./livekitClient"));
 }
 
 /** Whether the room module (and the SDK) has been loaded in this session. */

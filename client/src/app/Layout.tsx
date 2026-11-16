@@ -59,8 +59,8 @@ export function Layout() {
   // so accepting does not wait for either.
   useEffect(() => {
     if (!hasIncomingCall && !hasActiveCall) return;
-    CallController.preload();
-    livekitPreload.preload();
+    void CallController.preload();
+    void livekitPreload.preload();
   }, [hasIncomingCall, hasActiveCall]);
 
   return (

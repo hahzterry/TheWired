@@ -101,6 +101,53 @@ describe("lazyView", () => {
     expect(await screen.findByTestId("page")).toHaveTextContent("page discover");
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("a preload that failed does not break the view: opening it imports again and renders", async () => {
+    let online = false;
+    const load = vi.fn(() =>
+      online ? Promise.resolve({ default: Page }) : Promise.reject(new TypeError("Importing a module script failed.")),
+    );
+    const View = lazyView(load, <PanelLoading />);
+
+    // The idle preload ran while the connection was down.
+    await expect(View.preload()).resolves.toBe(false);
+    expect(load).toHaveBeenCalledTimes(1);
+
+    online = true;
+    render(
+      <ErrorBoundary variant="panel" label="center">
+        <View name="messages" />
+      </ErrorBoundary>,
+    );
+
+    expect(await screen.findByTestId("page")).toHaveTextContent("page messages");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("a preload that failed, then a load that fails too, lands on the same Reload fallback and retry path", async () => {
+    let online = false;
+    const load = vi.fn(() =>
+      online ? Promise.resolve({ default: Page }) : Promise.reject(new TypeError("Importing a module script failed.")),
+    );
+    const View = lazyView(load, <PanelLoading />);
+
+    await View.preload();
+    render(
+      <ErrorBoundary variant="panel" label="center">
+        <View name="profile" />
+      </ErrorBoundary>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("This part of the app didn't load");
+    expect(screen.getByRole("button", { name: "Reload app" })).toBeInTheDocument();
+
+    online = true;
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+
+    expect(await screen.findByTestId("page")).toHaveTextContent("page profile");
+    expect(load).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("lazyModal", () => {

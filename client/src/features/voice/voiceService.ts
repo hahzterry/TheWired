@@ -19,6 +19,7 @@ import { e2eeSupported, E2EEUnsupportedError } from "@/lib/webrtc/e2ee/support";
 import { E2EE_REQUIRED_CODE } from "@/lib/api/voice";
 import { setRemoteAudioOutputMuted } from "@/lib/webrtc/remoteAudio";
 import { describeMediaError } from "@/lib/webrtc/mediaDevices";
+import { isMediaEngineLoadError, MEDIA_ENGINE_LOAD_MESSAGE } from "@/lib/webrtc/loadError";
 import { publishRoomPresence, clearRoomPresence } from "@/lib/nostr/roomPresence";
 import { assertMediaEpoch, isMediaSessionAborted, mediaEpoch } from "@/lib/webrtc/mediaSession";
 
@@ -126,6 +127,8 @@ export async function joinVoiceChannel(
 
 /** Readable reason for a failed join (LiveKit unreachable is the common one). */
 function describeJoinError(err: unknown): string {
+  // The voice code itself did not download: nothing below applies.
+  if (isMediaEngineLoadError(err)) return MEDIA_ENGINE_LOAD_MESSAGE;
   const name = (err as { name?: string } | null)?.name ?? "";
   const code = (err as { code?: string } | null)?.code ?? "";
   const message = (err as { message?: string } | null)?.message ?? String(err);

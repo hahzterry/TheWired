@@ -27,7 +27,7 @@ const VoiceChannel = lazyView(
   () =>
     import("../voice/VoiceChannel").then((m) => {
       // Someone looking at a voice channel is about to join it.
-      livekitPreload.preload();
+      void livekitPreload.preload();
       return { default: m.VoiceChannel };
     }),
   <PanelLoading label="Loading voice channel" />,

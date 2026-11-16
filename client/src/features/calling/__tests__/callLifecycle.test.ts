@@ -100,6 +100,7 @@ import {
 import { store, resetAll } from "@/store";
 import { login } from "@/store/slices/identitySlice";
 import { setIncomingCall, acceptCall } from "@/store/slices/callSlice";
+import { MediaEngineLoadError, MEDIA_ENGINE_LOAD_MESSAGE } from "@/lib/webrtc/loadError";
 
 const ME = "f".repeat(64);
 const PARTNER = "a".repeat(64);
@@ -312,6 +313,45 @@ describe("answering", () => {
     await vi.advanceTimersByTimeAsync(PAST_CONNECT_TIMEOUT_MS);
     expect(call()).toBeNull();
     expect(store.getState().call.callHistory[0].outcome).toBe("failed");
+  });
+});
+
+describe("when the call code cannot be downloaded", () => {
+  const loadFailure = () =>
+    new MediaEngineLoadError(new TypeError("Failed to fetch dynamically imported module: https://app.example/assets/livekitClient-abc.js"));
+
+  it("an outgoing call fails with the plain message, not a camera or microphone error", async () => {
+    h.connectRoom.mockRejectedValueOnce(loadFailure());
+
+    await expect(initiateCall(PARTNER, "audio")).rejects.toThrow();
+
+    const shown = store.getState().voice.mediaError;
+    expect(shown).toBe(MEDIA_ENGINE_LOAD_MESSAGE);
+    expect(shown).not.toMatch(/camera|microphone|module/i);
+    expect(call()).toBeNull();
+    expect(store.getState().call.callHistory[0].outcome).toBe("failed");
+  });
+
+  it("answering fails with the same message", async () => {
+    seedIncoming("audio");
+    store.dispatch(acceptCall());
+    h.connectRoom.mockRejectedValueOnce(new TypeError("Importing a module script failed."));
+
+    await expect(answerCall()).rejects.toThrow();
+
+    expect(store.getState().voice.mediaError).toBe(MEDIA_ENGINE_LOAD_MESSAGE);
+    expect(call()).toBeNull();
+  });
+
+  it("calling again after the failure connects", async () => {
+    h.connectRoom.mockRejectedValueOnce(loadFailure());
+    await expect(initiateCall(PARTNER, "audio")).rejects.toThrow();
+    h.connectRoom.mockClear();
+
+    await initiateCall(PARTNER, "audio");
+
+    expect(h.connectRoom).toHaveBeenCalledTimes(1);
+    expect(call()!.state).toBe("ringing");
   });
 });
 

@@ -55,5 +55,6 @@ describe("E2EEUnsupportedError", () => {
     expect(session.E2EEUnsupportedError).toBe(E2EEUnsupportedError);
     expect(new session.E2EEUnsupportedError()).toBeInstanceOf(E2EEUnsupportedError);
     expect(new E2EEUnsupportedError().name).toBe("E2EEUnsupportedError");
-  });
+    // Importing the session module pulls in the whole SDK, which is slow cold.
+  }, 30_000);
 });

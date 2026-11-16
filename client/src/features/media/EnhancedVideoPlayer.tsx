@@ -122,7 +122,14 @@ export function EnhancedVideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
-      video.play();
+      // The promise can reject for reasons that are not failures here: the
+      // source may still be on its way (an HLS stream waits for its player
+      // library), and WebKit rejects a play() issued before then with
+      // AbortError even though playback goes on to start once the source is
+      // attached. The button follows the element's play/pause events, so
+      // there is nothing to do with the rejection but keep it from going
+      // unhandled.
+      void video.play()?.catch(() => {});
     } else {
       video.pause();
     }

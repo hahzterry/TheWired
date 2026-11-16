@@ -8,19 +8,15 @@
  *   Everything else loads when it is opened.
  */
 import { useEffect } from "react";
-import { preloadWhenIdle, type Preloadable } from "@/lib/lazyPreload";
+import { preloadGroup, preloadWhenIdle, type Preloadable } from "@/lib/lazyPreload";
 import { DMSidebar, MusicSidebar } from "@/components/layout/lazySidebars";
 import { DiscoverPage, DMView, MusicRouter, NoteThreadPage, ProfilePage } from "./lazyRoutes";
 
-function group(...targets: Preloadable[]): Preloadable {
-  return { preload: () => targets.forEach((t) => t.preload()) };
-}
-
 /** Messages mode: the conversation view and its sidebar. */
-export const messagesIntent = group(DMSidebar, DMView);
+export const messagesIntent = preloadGroup(DMSidebar, DMView);
 
 /** Music mode: the section and its sidebar. */
-export const musicIntent = group(MusicSidebar, MusicRouter);
+export const musicIntent = preloadGroup(MusicSidebar, MusicRouter);
 
 /** In the order people tend to reach them from the landing view. */
 export const IDLE_PRELOADS: readonly Preloadable[] = [

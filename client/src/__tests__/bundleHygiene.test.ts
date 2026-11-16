@@ -43,6 +43,23 @@ function staticValueImports(text: string): Array<{ spec: string; statement: stri
   return found;
 }
 
+/** Dynamic `import("<spec>")` calls. */
+function dynamicImports(text: string): string[] {
+  return [...text.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]);
+}
+
+/** Files (outside `allowed`) with a dynamic import of a matching module. */
+function dynamicOffenders(matches: (spec: string) => boolean, allowed: (rel: string) => boolean): string[] {
+  const out: string[] = [];
+  for (const { rel, text } of FILES) {
+    if (allowed(rel)) continue;
+    for (const spec of dynamicImports(text)) {
+      if (matches(spec)) out.push(`${rel}: import("${spec}")`);
+    }
+  }
+  return out;
+}
+
 function offenders(matches: (spec: string) => boolean, allowed: (rel: string) => boolean): string[] {
   const out: string[] = [];
   for (const { rel, text } of FILES) {
@@ -80,6 +97,18 @@ describe("the import scanner itself", () => {
     ]);
   });
 
+  it("finds dynamic imports, and only those", () => {
+    const sample = [
+      'import Hls from "hls.js";',
+      'const mod = await import("hls.js");',
+      "const other = await import(",
+      '  "./livekitClient"',
+      ");",
+      'const worker = new URL("./w.ts", import.meta.url);',
+    ].join("\n");
+    expect(dynamicImports(sample)).toEqual(["hls.js", "./livekitClient"]);
+  });
+
   it("sees the app's source", () => {
     expect(FILES.length).toBeGreaterThan(400);
     expect(FILES.some((f) => f.rel === "app/App.tsx")).toBe(true);
@@ -89,6 +118,24 @@ describe("the import scanner itself", () => {
 describe("heavy libraries stay behind dynamic imports", () => {
   it("hls.js is never imported statically (use lib/media/hls.ts)", () => {
     expect(offenders((s) => s === "hls.js", () => false)).toEqual([]);
+  });
+
+  // One loader per heavy library means one place that handles a download that
+  // failed (and retries it), instead of each caller growing its own.
+  it("hls.js is loaded in one place: everything else goes through lib/media/hls.ts", () => {
+    expect(dynamicOffenders((s) => s === "hls.js", (rel) => rel === "lib/media/hls.ts")).toEqual([]);
+  });
+
+  it("the room module is loaded in one place: the facade (lib/webrtc/livekit.ts)", () => {
+    // The call debug dump (a `wiredDebug` command) reads the room directly.
+    const allowed = new Set(["lib/webrtc/livekit.ts", "lib/debug/callTracker.ts"]);
+    expect(dynamicOffenders((s) => /(^|\/)livekitClient$/.test(s), (rel) => allowed.has(rel))).toEqual([]);
+  });
+
+  it("music-metadata is loaded in one place: the track file parser", () => {
+    expect(
+      dynamicOffenders((s) => s === "music-metadata", (rel) => rel === "features/music/trackFileParser.ts"),
+    ).toEqual([]);
   });
 
   it("livekit-client is value-imported only by the room module and its E2EE helpers", () => {

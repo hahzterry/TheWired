@@ -148,6 +148,78 @@ describe("livekit facade", () => {
     expect(facade.getLivekitRoom()).toBe(impl.room);
   });
 
+  describe("when the SDK chunk cannot be downloaded", () => {
+    const chunkError = () =>
+      new TypeError("Failed to fetch dynamically imported module: https://app.example/assets/livekitClient-abc.js");
+
+    /** An importer that fails `failures` times, then hands over the real (mocked) module. */
+    function flakyImporter(failures: number, error: () => unknown = chunkError) {
+      let left = failures;
+      return vi.fn(async () => {
+        if (left > 0) {
+          left -= 1;
+          throw error();
+        }
+        return import("../livekitClient");
+      });
+    }
+
+    it("the join fails with a message written for the user, not the engine's", async () => {
+      const { facade } = await freshFacade();
+      const { MEDIA_ENGINE_LOAD_MESSAGE } = await import("../loadError");
+      facade.setLivekitImporterForTests(flakyImporter(1));
+
+      const failure = await facade.connectToRoom("wss://sfu", "token").catch((e: unknown) => e as Error);
+
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).name).toBe("MediaEngineLoadError");
+      expect((failure as Error).message).toBe(MEDIA_ENGINE_LOAD_MESSAGE);
+      expect((failure as Error).message).not.toMatch(/dynamically imported module/);
+      expect(facade.isLivekitLoaded()).toBe(false);
+      expect(impl.connectToRoom).not.toHaveBeenCalled();
+    });
+
+    it("the failed download is not kept: the next join downloads again and connects", async () => {
+      const { facade } = await freshFacade();
+      const importer = flakyImporter(1);
+      facade.setLivekitImporterForTests(importer);
+
+      await expect(facade.connectToRoom("wss://sfu", "token")).rejects.toThrow();
+      const room = await facade.connectToRoom("wss://sfu", "token");
+
+      expect(importer).toHaveBeenCalledTimes(2);
+      expect(room).toBe(impl.room);
+      expect(facade.isLivekitLoaded()).toBe(true);
+      expect(facade.getLivekitRoom()).toBe(impl.room);
+    });
+
+    it("a preload that failed (the call was ringing offline) does not break the join that follows", async () => {
+      const { facade } = await freshFacade();
+      const importer = flakyImporter(1);
+      facade.setLivekitImporterForTests(importer);
+
+      await expect(facade.livekitPreload.preload()).resolves.toBe(false);
+      await expect(facade.connectToRoom("wss://sfu", "token")).resolves.toBe(impl.room);
+      expect(importer).toHaveBeenCalledTimes(2);
+    });
+
+    it("WebKit's and Gecko's wording is recognised too", async () => {
+      for (const message of ["Importing a module script failed.", "error loading dynamically imported module"]) {
+        const { facade } = await freshFacade();
+        facade.setLivekitImporterForTests(flakyImporter(1, () => new TypeError(message)));
+        await expect(facade.connectToRoom("wss://sfu", "token")).rejects.toMatchObject({ name: "MediaEngineLoadError" });
+      }
+    });
+
+    it("a module that loads but throws is a bug, and passes through as it is", async () => {
+      const { facade } = await freshFacade();
+      const bug = new ReferenceError("x is not defined");
+      facade.setLivekitImporterForTests(flakyImporter(1, () => bug));
+
+      await expect(facade.connectToRoom("wss://sfu", "token")).rejects.toBe(bug);
+    });
+  });
+
   it("listeners registered before the SDK loads are the ones the room module notifies", async () => {
     const { facade } = await freshFacade();
     const events = await import("../roomEvents");
