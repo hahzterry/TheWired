@@ -11,10 +11,12 @@ Full engine stack incl. in-process · image **and** audio generation · full **g
 ## Engine strategy (decided)
 Three tiers behind ONE OpenAI-compatible HTTP adapter:
 1. **Reuse installed** — detect Ollama (`:11434`) / LM Studio (`:1234`).
-2. **Managed** — `llama-server` download-on-enable (Phase 2). **mistral.rs is the deferred in-process tier (Phase 4)**, the Tauri-native fit; recommended upgrade = mac-Metal default-on / llama-server elsewhere.
+2. **Managed** — `llama-server` download-on-enable (**shipped, Phase 2** — macOS + Linux). **mistral.rs is the deferred in-process tier (Phase 4)**, the Tauri-native fit; recommended upgrade = mac-Metal default-on / llama-server elsewhere.
 3. **Cloud** — Claude / OpenAI / OpenRouter / DeepSeek / Kimi (BYO key).
 
 Hardware "will it run?" is a TS heuristic we compute (sysinfo/wgpu/nvidia-smi give raw specs only); only relevant on the managed-engine path.
+
+A new chat with no saved default picks the best tier available: a connected tier-1 engine, else the running built-in engine, else a connected cloud provider (`engine/tiers.ts`). The user's saved default always wins.
 
 ---
 
@@ -130,10 +132,150 @@ inline where they changed the design.
 
 ---
 
-## ⏭ REMAINING PHASES
+## ✅ DONE — Phase 2 (managed local engine: `llama-server`)
+Local AI with nothing else installed. Settings → AI → **Built-in engine**: download the runtime and a
+model, Start, chat. Verified: `cargo test` in `client/src-tauri` (`cargo test llm::` for this
+feature; CI runs it too), `cargo check --features tauri/custom-protocol`,
+`pnpm --filter @thewired/client typecheck`, the full client suite, and live passes on Apple Silicon in
+`tauri dev` and in a non-dev (production-origin) build (see "Live QA" below).
 
-### Phase 2 — Managed local engine = `llama-server` (native `src-tauri/src/llm.rs`)
-Clone `cloudflared.rs` (download/verify/chmod, add progress `tauri::ipc::Channel`) + `tunnel.rs` (spawn/stdout-parse) + `relay.rs` `base_dir`. Commands: `llm_engine_ensure`, `llm_server_start/stop/status`, `llm_model_download` (HF GGUF, `.part`+atomic-rename), `llm_models_list/_delete`, `llm_scan_local_models` (reuse `~/.lmstudio`/Ollama/HF-cache GGUFs), `llm_hardware_info` (sysinfo + wgpu + nvidia-smi/rocm-smi). Register in `lib.rs`. Deps: `sysinfo`, `futures-util`, opt `wgpu`. Notarization: downloads land in `app_local_data_dir` (bundle untouched); the downloaded binary must itself be signed (run cloudflared's `codesign --verify`).
+### Native — `client/src-tauri/src/llm.rs` + `llm/`
+- **`llm/engine.rs` — the runtime.** Download-on-enable, NOT bundled (same reasoning as
+  `cloudflared.rs`: the app bundle and its signature stay untouched, and only people who use local AI
+  pay the download). One upstream llama.cpp build is pinned (`PINNED_BUILD`), with the exact size and
+  SHA-256 of every archive we can select (macOS arm64/x64, Linux x64/arm64; CPU/Metal builds). The
+  archive is verified BEFORE unpacking, unpacked into a staging directory through a strict entry filter
+  (regular files, directories and sibling symlinks only; no `..`, absolute paths, hard links or
+  out-of-tree links), checked with `codesign --verify --strict` on macOS, then renamed into place with
+  an `.installed` marker. Lives in `<app_local_data_dir>/llm/engine/<build>/`.
+  - *Deviation from the original plan:* the plan assumed a binary **we** sign. Upstream macOS builds
+    are ad-hoc signed (no Developer ID), so there is no team to pin; the pinned SHA-256 is the trust
+    anchor and `codesign` only proves the binary unpacked intact. Re-signing and hosting our own copy
+    is a release-engineering follow-up (below).
+- **`llm/catalog.rs` — vetted models.** Three GGUFs from the publisher's own repositories
+  (Qwen2.5 1.5B, Qwen3 4B, Qwen3 8B; Apache-2.0), each pinned to a Hugging Face **commit**, byte size
+  and SHA-256, with minimum/recommended memory. The webview names a model by id only; URLs and
+  digests never cross IPC.
+- **`llm/download.rs` — resumable verified downloads.** `<file>.part` + HTTP `Range` resume (append
+  only when the server returns the exact range asked for; `200` restarts; `416` restarts once),
+  free-disk check before any request (remaining bytes + 256 MB), progress over a
+  `tauri::ipc::Channel`, cancel that keeps the partial. The file is hashed in full and renamed into
+  place only when size and SHA-256 match; a mismatch deletes it. A `<file>.ok` fingerprint
+  (size + mtime at verification) makes later launches skip re-hashing unless the file changed, in
+  which case it is re-hashed and **removed** if wrong.
+- **`llm/supervisor.rs` — lifecycle as a pure state machine** (`Stopped → Starting → Running ⇄
+  Restarting → Failed`, plus `Stopping`). Every start/stop bumps a generation; background tasks carry
+  theirs and stale transitions are ignored. Crash policy: 3 automatic restarts per 10 minutes with
+  1 s / 2 s / 4 s backoff, then `Failed` with the reason.
+- **`llm.rs` — the process.** `llama-server --host 127.0.0.1 --port <OS-picked> --model … --alias
+  <id> --ctx-size 8192 --parallel 1 --jinja --no-webui`. A fresh 256-bit key per launch goes to the
+  child via `LLAMA_API_KEY` in its **environment** (argv is world-readable). Readiness = `/health`
+  is 200 **and** a request without the key is refused **and** one with it succeeds; otherwise the
+  process is killed, not used. Killed on app exit (`RunEvent::Exit`), by a watchdog helper if the app
+  dies without running its exit hook (macOS has no parent-death signal), and a stale pid record is
+  reaped at next launch (only if it still points at our own binary).
+- **Requests go through Rust, not the webview's HTTP stack.** `llm_request` takes a method + path
+  from a fixed two-entry table (`POST /v1/chat/completions`, `GET /v1/models`), a JSON body and the
+  model the chat expects; Rust adds the address and the key, makes the call, and streams the answer
+  back over an IPC channel as text (never splitting a UTF-8 character). A request for a model other
+  than the loaded one is refused, so an answer can never carry the wrong model's label.
+  `llm_request_cancel` stops a stream.
+  - *Why not let the webview fetch `127.0.0.1:<port>` itself?* That needs a loopback HTTP scope. The
+    production origin's scope is HTTPS-only, the port changes per launch, and a capability added at
+    runtime can never be removed, so every port the engine had ever used would stay reachable. It
+    would also be a path that only exists in packaged builds. Over IPC there is nothing to grant and
+    dev and packaged builds run the same code.
+- **Downloads refuse anything that is not the file.** A response whose declared length (or
+  `Content-Range` total) differs from the pinned size is rejected before a byte is written, so a
+  captive portal's sign-in page answered with `200` can never become the prefix of a later resume.
+  A response that declares nothing and stops short is rolled back to where it started.
+- **Old builds are pruned.** After a new pinned build verifies and installs, every other entry in
+  the engine folder (earlier builds, staging debris, leftover archives) is removed.
+
+### IPC (all in `app_commands.rs` + `capabilities/app-commands.json`, main window only)
+`llm_hardware_info`, `llm_models_list`, `llm_model_download`, `llm_download_cancel`,
+`llm_model_delete`, `llm_engine_ensure`, `llm_server_start`, `llm_server_stop`, `llm_server_status`,
+`llm_request`, `llm_request_cancel`. Status changes are also emitted as the `llm-engine-status` event.
+Failures are typed (`ErrorCode`: `insufficient_disk`, `hash_mismatch`, `unexpected_response`,
+`startup_failed`, `port_unavailable`, `insufficient_memory`, `unsupported_platform`, `crashed`,
+`model_mismatch`, …) so the UI can say what went wrong. No HTTP permission is involved: the engine
+needs no entry in any capability file beyond its commands.
+
+### Client
+- `engine/managedEngine.ts` — the only caller of `llm_*`. Mirrors native state into
+  `aiSlice.managed` (hardware, status, catalogue, download progress, last error per target) and
+  registers the engine with `llmManager` as provider `managed-llama` (kind `local-llama`) once the
+  runtime and a verified model are present. The provider is a thin facade: it starts the engine on
+  first use (or switches model, or waits out an automatic restart), checks WHICH model ended up
+  loaded, and then delegates to the shared **OpenAI-compatible adapter** with an IPC transport
+  (`makeOpenAICompatProvider(config, getKey, fetchImpl)`), so `ChatChunk`s, tool calls and the write
+  gate are identical to every other tier.
+- `engine/tiers.ts` — tier ranking + default selection (pure).
+- `ManagedEngineSection.tsx` (rendered at the top of `AISettingsTab`) + `managedFormat.ts` — status
+  badge, machine summary, runtime row, model list with size and memory guidance, progress/cancel,
+  resume/discard, start/stop/delete, and an error box per failure class.
+- `AIProvider` brings the engine module up after the account's providers load, and tears it down
+  (stopping the process) on logout or when the AI feature is turned off. Teardown is a no-op unless
+  the module was brought up in this page, so someone with AI off makes no engine IPC call at all.
+- Deleting a model, or discarding a partial download, asks first and names the model and the size.
+- **Web build:** `isManagedEngineAvailable()` is false, nothing is invoked and the section renders
+  nothing.
+
+### Contracts added in Phase 2 (don't break)
+- **The per-launch key and the engine's port never leave the native process.** There is no command
+  that returns either, `EngineStatus` (native) and `aiSlice.managed.status` (client) have no field
+  for them, and they are in no event. `llmManager` holds no key for the engine.
+- **The webview never connects to the engine.** Requests go through `llm_request`'s fixed route
+  table. Do not add a loopback HTTP scope or a runtime capability for the engine; a test fails if
+  `llm.rs` grows build-specific code or a runtime capability grant.
+- **Transport before status.** `applyStatus` settles the IPC client before `running` becomes
+  visible in the store, and drops it the moment the engine is not `running`.
+- **A chat is answered by the model it asked for.** `ensureManagedRunning` re-checks the loaded
+  model after anything it waited for, and the native side refuses a request that names another.
+- **The engine is never a stored provider.** `persistConfigs` skips `managed-llama`, the id is
+  reserved, and the generic provider API refuses to edit or remove it.
+- **Nothing unverified is executed or loaded.** No archive or model without a pinned digest is ever
+  fetched; a failed check removes the file.
+- **Loopback + key, always.** `server_args` binds `127.0.0.1` and never carries the key; a launch
+  that would answer without the key is refused.
+
+### Live QA (2026-11-15 `tauri dev`; 2026-11-16 non-dev build; macOS arm64, 36 GB)
+Runtime download + verify + install; model download cancelled at 25%, resumed after an app restart
+from the exact byte, verified (SHA-256 re-checked by hand against the pin); start; streamed chat; a
+read-tool call (`list_my_spaces`) and a gated `publish_note` that was declined (never signed);
+start-on-first-use from chat. Failure paths: engine killed → auto-restart on a new port + key and
+chat works again; four kills → `Failed` with the reason; model corrupted in place → refused at start
+and removed; graceful quit and a signal-terminated app both leave no engine behind; the port
+answers 401 without or with a wrong key, binds loopback only, and has no web UI.
+
+Non-dev build (`tauri build --debug --no-bundle`, run directly: UI served by the app on the
+production origin `http://localhost:14420`, production CSP and capabilities, no dev server): the
+engine commands pass the ACL; a chat sent with the engine stopped starts it and streams the reply
+over IPC (usage reported); a read-tool call works; Stop ends the stream and the engine goes idle; a
+killed engine restarts and chat works again; quit leaves nothing behind. In the same build the
+webview's own HTTP client is refused on the engine's port ("url not allowed on the configured
+scope") while an HTTPS control request succeeds, i.e. IPC is the only route and it works.
+
+### Remaining for Phase 2 (not done)
+- **Windows.** Upstream archives are `.zip`; no asset is wired, so the tier reports "not available
+  on this system". Needs zip extraction and Windows code signing (SmartScreen).
+- **Signed-bundle pass.** A non-dev build (production origin, production CSP and capabilities) was
+  exercised unbundled; a signed, notarized bundle on macOS and a Linux package were not.
+- **Our own signed runtime.** Re-sign (and notarize) the pinned build and host it ourselves, then
+  pin our Developer ID team in the `codesign` requirement like `cloudflared.rs` does.
+- **Not exercised live:** Linux and Intel macOS (asset table is unit-tested only), the
+  insufficient-disk and port-retry paths (unit/integration tests only).
+- `llm_scan_local_models` (reuse GGUFs from LM Studio / Ollama / the HF cache) — deliberately left
+  out: those files have no pinned digest. GPU detail (`wgpu`, `nvidia-smi`) and CUDA/Vulkan builds.
+- Prune the archive's unused tools after install; per-model tool-capability probe (the 1.5B model
+  sometimes calls a tool with malformed arguments).
+- The webview is paused by the OS while the window is hidden or the screen is locked, which stalls
+  streaming for **every** provider (the engine itself keeps running). A `backgroundThrottling`
+  window setting would fix it; that is a shell decision.
+
+---
+
+## ⏭ REMAINING PHASES
 
 ### Phase 3 — Image + audio engines
 Remote (DALL·E/Stability/fal/Replicate/ElevenLabs/MusicGen) = pure TS HTTP via `engineFetch`. Local (ComfyUI :8188 / A1111 :7860) = detect + HTTP (localhost cap already added); optional download/spawn reuses Phase-2 commands. Implement `imageProvider`/`audioProvider` (same `LLMProvider`, yield `image`/`audio` chunks — already in `ChatChunk`). Pipe into artifacts + publish-out (upload via `lib/api/blossom.ts`; consider kind:20).
@@ -165,6 +307,7 @@ A `Workflow` audit (`ai-harden-audit`: correctness/security/perf/UX reviewers + 
 - **Remaining gaps:** broader render tests for the chat view (message list / streaming bubble); the abort path is covered in logic but not via a full mid-stream-abort integration test.
 
 ## Verify
+- `cd client/src-tauri && cargo test` (managed engine: `cargo test llm::`); `cargo check --features tauri/custom-protocol` for the production-only path
 - `pnpm --filter @thewired/client typecheck` (clean)
 - `pnpm exec vitest run` (in `client/`) — **754 pass**; AI-specific: `pnpm exec vitest run src/features/ai`
 - `pnpm exec vite build` (in `client/`) — recharts is code-split into a lazy `ChartArtifact` chunk

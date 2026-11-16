@@ -34,6 +34,8 @@ import {
   PROVIDER_PRESETS,
   getPreset,
 } from "../../features/ai/engine/providerCatalog";
+import { ManagedEngineSection } from "../../features/ai/ManagedEngineSection";
+import { MANAGED_PROVIDER_ID } from "../../features/ai/engine/tiers";
 import {
   WEB_SEARCH_PROVIDERS,
   getWebSearchProvider,
@@ -46,7 +48,10 @@ import {
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export function AISettingsTab() {
-  const providers = useAppSelector(selectProviderConfigs);
+  // The built-in engine has its own section; it is not an editable provider.
+  const providers = useAppSelector(selectProviderConfigs).filter(
+    (config) => config.id !== MANAGED_PROVIDER_ID,
+  );
   const [showAdd, setShowAdd] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [detectMsg, setDetectMsg] = useState<string | null>(null);
@@ -68,6 +73,9 @@ export function AISettingsTab() {
 
   return (
     <div className="space-y-6">
+      {/* Desktop only; renders nothing on the web build. */}
+      <ManagedEngineSection />
+
       <section className="space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-heading">AI Engines</h3>

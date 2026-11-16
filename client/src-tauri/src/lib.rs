@@ -2,6 +2,7 @@ mod cloudflared;
 #[cfg(test)]
 mod ipc_acl_tests;
 mod keystore;
+mod llm;
 #[cfg(not(dev))]
 mod localhost;
 mod nip44;
@@ -182,6 +183,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .manage(relay::EmbeddedRelayState::default())
         .manage(tunnel::TunnelState::default())
+        .manage(llm::LlmState::default())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
                 .on_navigation(move |_webview, url| {
@@ -239,6 +241,10 @@ pub fn run() {
             // older builds (permissions only; never touches contents).
             keystore::harden_on_startup();
 
+            // An AI engine process left over from a previous run must not keep
+            // holding memory.
+            llm::reap_on_startup(app.handle());
+
             // In production, serve the bundle on the port we already own and
             // navigate to it for IPC access.
             #[cfg(not(dev))]
@@ -281,7 +287,25 @@ pub fn run() {
             tunnel::tunnel_status,
             tunnel::tunnel_named_identity,
             tunnel::tunnel_set_custom,
+            llm::llm_hardware_info,
+            llm::llm_models_list,
+            llm::llm_model_download,
+            llm::llm_download_cancel,
+            llm::llm_model_delete,
+            llm::llm_engine_ensure,
+            llm::llm_server_start,
+            llm::llm_server_stop,
+            llm::llm_server_status,
+            llm::llm_request,
+            llm::llm_request_cancel,
         ])
-        .run(context)
-        .expect("error while running tauri application");
+        .build(context)
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // The managed AI engine is a child process: never leave it running
+            // after the app has gone.
+            if let tauri::RunEvent::Exit = event {
+                llm::shutdown(app);
+            }
+        });
 }

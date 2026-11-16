@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/thewired/gateway/internal/metrics"
 )
 
 // readOverrides classifies semantically-read POST endpoints as reads so they get
@@ -124,11 +126,13 @@ func RateLimitMiddleware(limiter *Limiter, failOpen bool, next http.Handler) htt
 		ipResult, err := limiter.AllowIP(r.Context(), ip)
 		if err != nil {
 			log.Printf("IP rate limiter error (fail-open=%v): %v", failOpen, err)
+			metrics.RateLimitStoreError(metrics.BucketIP, failOpen)
 			if !failOpen {
 				writeUnavailable(w)
 				return
 			}
 		} else if !ipResult.Allowed {
+			metrics.RateLimitRejection(metrics.BucketIP)
 			writeTooMany(w, ipResult, "IP_RATE_LIMITED")
 			return
 		}
@@ -138,6 +142,7 @@ func RateLimitMiddleware(limiter *Limiter, failOpen bool, next http.Handler) htt
 		result, err := limiter.Allow(r.Context(), pubkey, category)
 		if err != nil {
 			log.Printf("Rate limiter error (fail-open=%v): %v", failOpen, err)
+			metrics.RateLimitStoreError(category, failOpen)
 			if failOpen {
 				next.ServeHTTP(w, r) // degraded: don't take the API down with Redis
 				return
@@ -151,6 +156,7 @@ func RateLimitMiddleware(limiter *Limiter, failOpen bool, next http.Handler) htt
 		w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", result.ResetAt.Unix()))
 
 		if !result.Allowed {
+			metrics.RateLimitRejection(category)
 			writeTooMany(w, result, "RATE_LIMITED")
 			return
 		}
@@ -159,6 +165,7 @@ func RateLimitMiddleware(limiter *Limiter, failOpen bool, next http.Handler) htt
 			report, err := limiter.AllowReport(r.Context(), pubkey, anonymous)
 			if err != nil {
 				log.Printf("Report rate limiter error (fail-open=%v): %v", failOpen, err)
+				metrics.RateLimitStoreError(metrics.BucketReport, failOpen)
 				if !failOpen {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -166,6 +173,7 @@ func RateLimitMiddleware(limiter *Limiter, failOpen bool, next http.Handler) htt
 					return
 				}
 			} else if !report.Allowed {
+				metrics.RateLimitRejection(metrics.BucketReport)
 				writeTooMany(w, report, "REPORT_RATE_LIMITED")
 				return
 			}

@@ -92,7 +92,7 @@ processes:
     log_location: ./logs/backend.log
 
   gateway:
-    command: "go run cmd/gateway/main.go"
+    command: "go run ./cmd/gateway"
     working_dir: "services/gateway"
     depends_on:
       backend:

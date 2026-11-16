@@ -2,6 +2,7 @@ import { db } from "../db/connection.js";
 import { sql } from "drizzle-orm";
 import { getMeilisearchClient } from "../lib/meilisearch.js";
 import { startLockedInterval } from "../lib/workerLock.js";
+import { recordJobFailure } from "../lib/metrics/index.js";
 import { suspensionService } from "../services/suspensionService.js";
 
 const INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
@@ -113,6 +114,7 @@ export function startProfileStatsComputer(): { stop: () => void } {
       console.log(`[profileStats] Updated ranking fields for ${changed} of ${profiles} profiles`);
     } catch (err) {
       console.error("[profileStats] Error:", (err as Error).message);
+      recordJobFailure("profileStatsComputer");
     }
   }
 

@@ -16,6 +16,11 @@ import type {
   AIProviderStatus,
   AIToolCall,
   AIToolResult,
+  ManagedDownload,
+  ManagedEngineError,
+  ManagedEngineStatus,
+  ManagedHardware,
+  ManagedModel,
   PendingWrite,
 } from "@/types/ai";
 import { DEFAULT_AI_PREFS, type AIPrefs } from "@/features/ai/aiPrefs";
@@ -34,6 +39,30 @@ const conversationsAdapter = createEntityAdapter<AIConversation, string>({
 const messagesAdapter = createEntityAdapter<AIMessage, string>({
   selectId: (m) => m.id,
 });
+
+/**
+ * Built-in (managed) local engine, desktop only. Mirrors what the native side
+ * reports: status, catalogue, download progress, last error per target. No
+ * secrets — the engine's per-launch key never enters this state (it lives in
+ * `llmManager` memory). `null`/empty on the web build, where the tier is hidden.
+ */
+export interface ManagedEngineState {
+  hardware: ManagedHardware | null;
+  status: ManagedEngineStatus | null;
+  models: ManagedModel[];
+  /** In-flight downloads keyed by model id (or `"engine"` for the runtime). */
+  downloads: Record<string, ManagedDownload>;
+  /** Last failure per target: a model id, or `"engine"` for runtime/start errors. */
+  errors: Record<string, ManagedEngineError>;
+}
+
+const initialManagedState: ManagedEngineState = {
+  hardware: null,
+  status: null,
+  models: [],
+  downloads: {},
+  errors: {},
+};
 
 interface AIState {
   conversations: EntityState<AIConversation, string>;
@@ -62,6 +91,7 @@ interface AIState {
   /** conversationIds whose messages have been hydrated from IndexedDB. */
   hydratedConversations: string[];
   prefs: AIPrefs;
+  managed: ManagedEngineState;
 }
 
 const initialState: AIState = {
@@ -81,6 +111,7 @@ const initialState: AIState = {
   pendingWriteIdsByConversation: {},
   hydratedConversations: [],
   prefs: DEFAULT_AI_PREFS,
+  managed: initialManagedState,
 };
 
 /** Append text to the last text part of a message, or start one. */
@@ -414,6 +445,39 @@ export const aiSlice = createSlice({
     setPrefs(state, action: PayloadAction<AIPrefs>) {
       state.prefs = action.payload;
     },
+
+    // --- Managed local engine (display state only; never the access key) ---
+    setManagedHardware(state, action: PayloadAction<ManagedHardware | null>) {
+      state.managed.hardware = action.payload;
+    },
+    setManagedStatus(state, action: PayloadAction<ManagedEngineStatus | null>) {
+      state.managed.status = action.payload;
+    },
+    setManagedModels(state, action: PayloadAction<ManagedModel[]>) {
+      state.managed.models = action.payload;
+    },
+    /** Progress for one download; `null` clears it (finished, failed, cancelled). */
+    setManagedDownload(
+      state,
+      action: PayloadAction<{ id: string; download: ManagedDownload | null }>,
+    ) {
+      const { id, download } = action.payload;
+      if (download) state.managed.downloads[id] = download;
+      else delete state.managed.downloads[id];
+    },
+    /** Last failure for one target; `null` clears it (retry, dismiss, success). */
+    setManagedError(
+      state,
+      action: PayloadAction<{ id: string; error: ManagedEngineError | null }>,
+    ) {
+      const { id, error } = action.payload;
+      if (error) state.managed.errors[id] = error;
+      else delete state.managed.errors[id];
+    },
+    /** Logout / feature off / web build: nothing about the engine is shown. */
+    resetManagedEngine(state) {
+      state.managed = initialManagedState;
+    },
     /** Stage (or clear) an "Ask AI" context to be sent with the next message. */
     setPendingContext(state, action: PayloadAction<AIContext | null>) {
       state.pendingContext = action.payload;
@@ -491,6 +555,12 @@ export const {
   clearProviderStatus,
   setComposerDraft,
   setPrefs,
+  setManagedHardware,
+  setManagedStatus,
+  setManagedModels,
+  setManagedDownload,
+  setManagedError,
+  resetManagedEngine,
   setPendingContext,
   addPendingWrite,
   setPendingWrites,
@@ -569,6 +639,8 @@ export const selectComposerDraft =
       : "";
 
 export const selectAIPrefs = (state: RootState) => state.ai.prefs;
+
+export const selectManagedEngine = (state: RootState) => state.ai.managed;
 
 export const selectPendingContext = (state: RootState) =>
   state.ai.pendingContext;

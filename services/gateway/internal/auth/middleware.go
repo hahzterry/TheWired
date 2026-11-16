@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"encoding/base64"
+
+	"github.com/thewired/gateway/internal/metrics"
 )
 
 var (
@@ -93,6 +95,7 @@ func NIP98MiddlewareWithOptions(opts Options, next http.Handler) http.Handler {
 		}
 
 		if !strings.HasPrefix(authHeader, "Nostr ") {
+			metrics.AuthFailure(metrics.AuthInvalidScheme)
 			writeAuthError(w, http.StatusUnauthorized, "INVALID_AUTH", "invalid auth scheme")
 			return
 		}
@@ -101,12 +104,14 @@ func NIP98MiddlewareWithOptions(opts Options, next http.Handler) http.Handler {
 		eventB64 := strings.TrimPrefix(authHeader, "Nostr ")
 		eventJSON, err := base64.StdEncoding.DecodeString(eventB64)
 		if err != nil {
+			metrics.AuthFailure(metrics.AuthInvalidBase64)
 			writeAuthError(w, http.StatusUnauthorized, "INVALID_AUTH", "invalid base64")
 			return
 		}
 
 		var event NostrEvent
 		if err := json.Unmarshal(eventJSON, &event); err != nil {
+			metrics.AuthFailure(metrics.AuthInvalidEventJSON)
 			writeAuthError(w, http.StatusUnauthorized, "INVALID_AUTH", "invalid event JSON")
 			return
 		}
@@ -130,6 +135,12 @@ func NIP98MiddlewareWithOptions(opts Options, next http.Handler) http.Handler {
 			// The verifier's message names the client's own `u` tag; the client
 			// gets a fixed description, the detail goes to the log.
 			log.Printf("NIP-98 verify failed for %s %s: %v", r.Method, r.URL.Path, err)
+			reason := metrics.AuthOther
+			var verr *VerifyError
+			if errors.As(err, &verr) {
+				reason = verr.Reason
+			}
+			metrics.AuthFailure(reason)
 			writeAuthError(w, http.StatusUnauthorized, "AUTH_FAILED", "auth event does not match this request")
 			return
 		}
@@ -140,11 +151,13 @@ func NIP98MiddlewareWithOptions(opts Options, next http.Handler) http.Handler {
 		payloadTag := getTagValue(event.Tags, "payload")
 		if payloadTag != "" {
 			if err := verifyPayload(r, payloadTag); err != nil {
+				metrics.AuthFailure(metrics.AuthPayloadMismatch)
 				writeAuthError(w, http.StatusUnauthorized, "AUTH_FAILED", err.Error())
 				return
 			}
 		} else if opts.PayloadMode != PayloadOff && hasBody(r) && !isMultipart(r) {
 			if opts.PayloadMode == PayloadEnforce {
+				metrics.AuthFailure(metrics.AuthPayloadRequired)
 				writeAuthError(w, http.StatusUnauthorized, "PAYLOAD_REQUIRED",
 					"NIP-98 payload tag (sha256 of the request body) is required")
 				return
@@ -162,11 +175,15 @@ func NIP98MiddlewareWithOptions(opts Options, next http.Handler) http.Handler {
 			if err != nil {
 				if opts.ReplayFailClosed && isWriteMethod(r.Method) {
 					log.Printf("NIP-98 replay guard error (fail-closed, %s): %v", r.Method, err)
+					metrics.RateLimitStoreError("replay", false)
+					metrics.AuthFailure(metrics.AuthReplayUnavailable)
 					writeAuthError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "service temporarily unavailable")
 					return
 				}
 				log.Printf("NIP-98 replay guard error (fail-open): %v", err)
+				metrics.RateLimitStoreError("replay", true)
 			} else if !fresh {
+				metrics.AuthFailure(metrics.AuthReplay)
 				writeAuthError(w, http.StatusUnauthorized, "AUTH_REPLAY", "auth event already used")
 				return
 			}
