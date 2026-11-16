@@ -61,7 +61,6 @@ function status(patch: Partial<ManagedEngineStatus> = {}): ManagedEngineStatus {
   return {
     phase: "stopped",
     modelId: null,
-    port: null,
     restarts: 0,
     error: null,
     engineInstalled: true,
@@ -128,7 +127,7 @@ beforeEach(() => {
 describe("ManagedEngineSection — availability", () => {
   it("renders nothing on the web build, even with state present", () => {
     engine.available = false;
-    const { container } = renderSection({ status: status({ phase: "running", modelId: SMALL, port: 5 }) });
+    const { container } = renderSection({ status: status({ phase: "running", modelId: SMALL }) });
     expect(container).toBeEmptyDOMElement();
     expect(screen.queryByText("Built-in engine")).toBeNull();
   });
@@ -252,16 +251,60 @@ describe("ManagedEngineSection — model list", () => {
     expect(resume).toHaveTextContent("Resume · 50% done");
     fireEvent.click(resume);
     expect(engine.downloadManagedModel).toHaveBeenCalledWith(SMALL);
-    fireEvent.click(small.getByRole("button", { name: "Discard partial Qwen2.5 1.5B Instruct download" }));
-    expect(engine.deleteManagedModel).toHaveBeenCalledWith(SMALL);
   });
 
-  it("starts or deletes an installed model", () => {
+  it("starts an installed model", () => {
     renderSection({ models: [model(SMALL, { installed: true }), model(LARGE)] });
     const small = within(row("Qwen2.5 1.5B Instruct"));
     fireEvent.click(small.getByRole("button", { name: "Start Qwen2.5 1.5B Instruct" }));
     expect(engine.startManagedEngine).toHaveBeenCalledWith(SMALL);
+  });
+});
+
+describe("ManagedEngineSection — removing downloads takes a second click", () => {
+  it("REGRESSION: Delete asks first, naming the model and its size", () => {
+    // Found in review: one click removed a multi-gigabyte download.
+    renderSection({ models: [model(SMALL, { installed: true }), model(LARGE, { installed: true })] });
+    const large = within(row("Qwen3 8B"));
+    fireEvent.click(large.getByRole("button", { name: "Delete Qwen3 8B" }));
+
+    expect(engine.deleteManagedModel).not.toHaveBeenCalled();
+    const confirm = large.getByRole("group", { name: "Confirm removing Qwen3 8B" });
+    expect(confirm).toHaveTextContent("Delete Qwen3 8B (5.0 GB)?");
+    expect(confirm).toHaveTextContent("download it again");
+    // While asking, the row offers only the two answers.
+    expect(large.queryByRole("button", { name: "Start Qwen3 8B" })).toBeNull();
+    expect(large.queryByRole("button", { name: "Delete Qwen3 8B" })).toBeNull();
+    // The other model's row is unaffected.
+    expect(within(row("Qwen2.5 1.5B Instruct")).getByRole("button", { name: /^Start/ })).toBeEnabled();
+
+    fireEvent.click(within(confirm).getByRole("button", { name: "Confirm delete Qwen3 8B" }));
+    expect(engine.deleteManagedModel).toHaveBeenCalledTimes(1);
+    expect(engine.deleteManagedModel).toHaveBeenCalledWith(LARGE);
+    expect(large.queryByRole("group", { name: "Confirm removing Qwen3 8B" })).toBeNull();
+  });
+
+  it("Keep backs out without deleting anything", () => {
+    renderSection({ models: [model(SMALL, { installed: true }), model(LARGE)] });
+    const small = within(row("Qwen2.5 1.5B Instruct"));
     fireEvent.click(small.getByRole("button", { name: "Delete Qwen2.5 1.5B Instruct" }));
+    fireEvent.click(small.getByRole("button", { name: "Keep Qwen2.5 1.5B Instruct" }));
+    expect(engine.deleteManagedModel).not.toHaveBeenCalled();
+    expect(small.queryByRole("group")).toBeNull();
+    expect(small.getByRole("button", { name: "Start Qwen2.5 1.5B Instruct" })).toBeEnabled();
+    expect(small.getByRole("button", { name: "Delete Qwen2.5 1.5B Instruct" })).toBeEnabled();
+  });
+
+  it("discarding a partial download asks first too, with how much would be lost", () => {
+    renderSection({ models: [model(SMALL, { partialBytes: 558_660_368 }), model(LARGE)] });
+    const small = within(row("Qwen2.5 1.5B Instruct"));
+    fireEvent.click(small.getByRole("button", { name: "Discard partial Qwen2.5 1.5B Instruct download" }));
+    expect(engine.deleteManagedModel).not.toHaveBeenCalled();
+    const confirm = small.getByRole("group", { name: "Confirm removing Qwen2.5 1.5B Instruct" });
+    expect(confirm).toHaveTextContent("Discard the 559 MB of Qwen2.5 1.5B Instruct downloaded so far?");
+    fireEvent.click(
+      within(confirm).getByRole("button", { name: "Confirm discard partial Qwen2.5 1.5B Instruct download" }),
+    );
     expect(engine.deleteManagedModel).toHaveBeenCalledWith(SMALL);
   });
 });
@@ -269,7 +312,7 @@ describe("ManagedEngineSection — model list", () => {
 describe("ManagedEngineSection — engine state", () => {
   it("running: badge, stop, and the loaded model cannot be deleted", () => {
     renderSection({
-      status: status({ phase: "running", modelId: SMALL, port: 51234 }),
+      status: status({ phase: "running", modelId: SMALL }),
       models: [model(SMALL, { installed: true }), model(LARGE, { installed: true })],
     });
     expect(screen.getAllByText("Running")).toHaveLength(2); // header + row

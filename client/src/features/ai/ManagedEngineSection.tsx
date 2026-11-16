@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -320,6 +321,13 @@ function ModelRow({
   const engineBusy = phase === "starting" || phase === "restarting" || phase === "stopping";
   const fitTone =
     fit === "good" ? "text-green-400" : fit === "tight" ? "text-yellow-400" : "text-red-400";
+  // Removing a model (or a partial download) throws away gigabytes that would
+  // have to be fetched again, so it takes a second, explicit click.
+  const [confirming, setConfirming] = useState<"delete" | "discard" | null>(null);
+  const confirmRemoval = () => {
+    setConfirming(null);
+    void deleteManagedModel(model.id);
+  };
 
   return (
     <li className="space-y-2.5 rounded-xl bg-field p-3 ring-1 ring-border">
@@ -358,88 +366,124 @@ function ModelRow({
 
       {error && <ErrorBox error={error} onDismiss={() => dismissManagedError(model.id)} />}
 
-      <div className="flex flex-wrap gap-2">
-        {download ? (
+      {confirming && !download && !running && !launching ? (
+        <div
+          role="group"
+          aria-label={`Confirm removing ${model.name}`}
+          className="flex flex-wrap items-center gap-2 rounded-lg bg-surface px-3 py-2"
+        >
+          <span className="min-w-0 flex-1 text-xs text-heading">
+            {confirming === "delete"
+              ? `Delete ${model.name} (${formatSize(model.sizeBytes)})? You would have to download it again to use it.`
+              : `Discard the ${formatSize(model.partialBytes)} of ${model.name} downloaded so far? The download would start over.`}
+          </span>
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => void cancelManagedDownload(model.id)}
-            disabled={download.phase === "verifying"}
-            className="gap-1.5"
-            aria-label={`Cancel ${model.name} download`}
+            onClick={confirmRemoval}
+            className="gap-1.5 text-red-400"
+            aria-label={
+              confirming === "delete"
+                ? `Confirm delete ${model.name}`
+                : `Confirm discard partial ${model.name} download`
+            }
           >
-            <X size={12} />
-            Cancel
+            <Trash2 size={12} />
+            {confirming === "delete" ? "Delete model" : "Discard"}
           </Button>
-        ) : model.installed ? (
-          <>
-            {running || launching ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfirming(null)}
+            aria-label={`Keep ${model.name}`}
+          >
+            Keep
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {download ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void cancelManagedDownload(model.id)}
+              disabled={download.phase === "verifying"}
+              className="gap-1.5"
+              aria-label={`Cancel ${model.name} download`}
+            >
+              <X size={12} />
+              Cancel
+            </Button>
+          ) : model.installed ? (
+            <>
+              {running || launching ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void stopManagedEngine()}
+                  className="gap-1.5"
+                  aria-label="Stop engine"
+                >
+                  <Square size={12} />
+                  Stop
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => void startManagedEngine(model.id)}
+                  disabled={fit === "insufficient" || engineBusy}
+                  className="gap-1.5"
+                  aria-label={`Start ${model.name}`}
+                >
+                  <Play size={12} />
+                  Start
+                </Button>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => void stopManagedEngine()}
+                onClick={() => setConfirming("delete")}
+                disabled={running || launching}
                 className="gap-1.5"
-                aria-label="Stop engine"
-              >
-                <Square size={12} />
-                Stop
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                onClick={() => void startManagedEngine(model.id)}
-                disabled={fit === "insufficient" || engineBusy}
-                className="gap-1.5"
-                aria-label={`Start ${model.name}`}
-              >
-                <Play size={12} />
-                Start
-              </Button>
-            )}
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void deleteManagedModel(model.id)}
-              disabled={running || launching}
-              className="gap-1.5"
-              aria-label={`Delete ${model.name}`}
-            >
-              <Trash2 size={12} />
-              Delete
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void downloadManagedModel(model.id)}
-              disabled={fit === "insufficient" || runtimeBusy}
-              className="gap-1.5"
-              aria-label={
-                model.partialBytes > 0 ? `Resume ${model.name} download` : `Download ${model.name}`
-              }
-            >
-              <Download size={12} />
-              {model.partialBytes > 0
-                ? `Resume · ${downloadPercent(model.partialBytes, model.sizeBytes)}% done`
-                : `Download · ${formatSize(model.sizeBytes)}`}
-            </Button>
-            {model.partialBytes > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void deleteManagedModel(model.id)}
-                className="gap-1.5"
-                aria-label={`Discard partial ${model.name} download`}
+                aria-label={`Delete ${model.name}`}
               >
                 <Trash2 size={12} />
-                Discard
+                Delete
               </Button>
-            )}
-          </>
-        )}
-      </div>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void downloadManagedModel(model.id)}
+                disabled={fit === "insufficient" || runtimeBusy}
+                className="gap-1.5"
+                aria-label={
+                  model.partialBytes > 0 ? `Resume ${model.name} download` : `Download ${model.name}`
+                }
+              >
+                <Download size={12} />
+                {model.partialBytes > 0
+                  ? `Resume · ${downloadPercent(model.partialBytes, model.sizeBytes)}% done`
+                  : `Download · ${formatSize(model.sizeBytes)}`}
+              </Button>
+              {model.partialBytes > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfirming("discard")}
+                  className="gap-1.5"
+                  aria-label={`Discard partial ${model.name} download`}
+                >
+                  <Trash2 size={12} />
+                  Discard
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </li>
   );
 }
