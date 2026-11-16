@@ -30,6 +30,48 @@ class MockWorker {
 }
 vi.stubGlobal("Worker", MockWorker);
 
+// --- ResizeObserver ---
+// jsdom has none. The virtualized lists (react-virtuoso) construct one on
+// mount; with no layout there is nothing to report, so a no-op is accurate.
+// Tests give a virtual list its dimensions through `VirtuosoMockContext`.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  class NoopResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  // Assigned, not vi.stubGlobal: a test's `vi.unstubAllGlobals()` must not
+  // take it away from the tests that follow.
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = NoopResizeObserver;
+}
+
+// --- Element scrolling ---
+// jsdom does not scroll elements: `scrollTo` and `scrollBy` are missing or do
+// nothing, and no scroll event follows. A virtualized list opened on a given
+// row scrolls its container there and shows its rows once that scroll lands;
+// when rows are added above the viewport it scrolls by their height. Give
+// elements a minimal version of both so such lists behave in tests. As in a
+// browser, the offset changes at once and the scroll event comes after the
+// call has returned.
+{
+  const proto = Element.prototype as unknown as {
+    scrollTo: (arg?: ScrollToOptions | number, y?: number) => void;
+    scrollBy: (arg?: ScrollToOptions | number, y?: number) => void;
+  };
+  const topOf = (arg?: ScrollToOptions | number, y?: number) => (typeof arg === "object" ? arg?.top : y);
+  const scrolled = (el: Element) => queueMicrotask(() => el.dispatchEvent(new Event("scroll")));
+  proto.scrollTo = function (this: Element, arg, y) {
+    const top = topOf(arg, y);
+    if (typeof top === "number") this.scrollTop = Math.max(0, top);
+    scrolled(this);
+  };
+  proto.scrollBy = function (this: Element, arg, y) {
+    const delta = topOf(arg, y);
+    if (typeof delta === "number") this.scrollTop = Math.max(0, this.scrollTop + delta);
+    scrolled(this);
+  };
+}
+
 // --- Mock Tauri IPC ---
 // TauriSigner calls invoke() from @tauri-apps/api/core.
 // Default to rejecting (tests for TauriSigner will override per-test).

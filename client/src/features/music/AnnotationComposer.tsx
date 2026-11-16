@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X, Lock, Globe, Users, Feather } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { buildAnnotationEvent } from "./musicEventBuilder";
 import { signAndPublish, signAndSaveLocally } from "@/lib/nostr/publish";
@@ -24,7 +25,7 @@ interface AnnotationComposerProps {
   onClose: () => void;
 }
 
-export function AnnotationComposer({
+function AnnotationComposerInner({
   targetRef,
   targetName,
   onClose,
@@ -198,3 +199,5 @@ export function AnnotationComposer({
     </Modal>
   );
 }
+
+export const AnnotationComposer = withModalBoundary(AnnotationComposerInner, "annotation-composer");

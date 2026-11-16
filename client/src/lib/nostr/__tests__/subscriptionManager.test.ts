@@ -10,6 +10,8 @@ vi.mock("../relayManager", async (importOriginal) => {
       subscribe: vi.fn(),
       closeSubscription: vi.fn(),
       getReadRelays: vi.fn(() => []),
+      isSessionDropped: vi.fn(() => false),
+      getSubscriptionDelivery: vi.fn(() => ({ relays: 1, sent: 1 })),
     },
   };
 });
@@ -202,7 +204,7 @@ describe("subscriptionManager — discriminated EOSE reason", () => {
     const opts = lastSubOpts();
     opts.onEOSE("sub", LOCAL);
     opts.onEOSE("sub", DAMUS);
-    expect(onEOSE).toHaveBeenCalledWith({ reason: "all-eose" });
+    expect(onEOSE).toHaveBeenCalledWith({ reason: "all-eose", sentTo: 1 });
   });
 
   it("reports 'no-relays' when every relay is stripped (nothing to wait on)", async () => {
@@ -214,7 +216,7 @@ describe("subscriptionManager — discriminated EOSE reason", () => {
       onEOSE,
     });
     await Promise.resolve(); // the no-relays EOSE fires on a microtask
-    expect(onEOSE).toHaveBeenCalledWith({ reason: "no-relays" });
+    expect(onEOSE).toHaveBeenCalledWith({ reason: "no-relays", sentTo: 0 });
   });
 
   it("reports 'timeout' when a tracked relay never EOSEs", () => {
@@ -228,7 +230,7 @@ describe("subscriptionManager — discriminated EOSE reason", () => {
     });
     expect(onEOSE).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1000);
-    expect(onEOSE).toHaveBeenCalledWith({ reason: "timeout" });
+    expect(onEOSE).toHaveBeenCalledWith({ reason: "timeout", sentTo: 1 });
     vi.useRealTimers();
   });
 });
@@ -240,7 +242,7 @@ describe("subscriptionManager — subscribeOnce", () => {
       relayUrls: [LOCAL],
     });
     lastSubOpts().onEOSE("sub", LOCAL); // all-eose
-    await expect(p).resolves.toEqual({ reason: "all-eose" });
+    await expect(p).resolves.toEqual({ reason: "all-eose", sentTo: 1 });
     expect(relayCloseMock).toHaveBeenCalledWith("relayman-sub"); // guaranteed close (no leak)
   });
 
@@ -249,7 +251,7 @@ describe("subscriptionManager — subscribeOnce", () => {
       filters: [{ kinds: [1], authors: ["a".repeat(64)] }],
       relayUrls: [PURPLEPAG],
     });
-    await expect(p).resolves.toEqual({ reason: "no-relays" });
+    await expect(p).resolves.toEqual({ reason: "no-relays", sentTo: 0 });
     expect(relayCloseMock).toHaveBeenCalledWith("relayman-sub");
   });
 });
@@ -297,5 +299,55 @@ describe("subscriptionManager — close reaches the relay", () => {
     });
     void subscriptionManager.subscribeOnce({ filters: [{ kinds: [1] }], relayUrls: [LOCAL] });
     expect(relayCloseMock).toHaveBeenCalledWith("wire-early");
+  });
+});
+
+describe("subscriptionManager — dead relays and delivery", () => {
+  const DEAD = "wss://dead.example";
+  const isSessionDroppedMock = relayManager.isSessionDropped as unknown as Mock;
+  const deliveryMock = relayManager.getSubscriptionDelivery as unknown as Mock;
+
+  beforeEach(() => {
+    isSessionDroppedMock.mockReset().mockReturnValue(false);
+    deliveryMock.mockReset().mockReturnValue({ relays: 1, sent: 1 });
+  });
+
+  it("does not wait on a relay relayManager dropped for the session", () => {
+    isSessionDroppedMock.mockImplementation((url: string) => url === DEAD);
+    const onEOSE = vi.fn();
+    subscriptionManager.subscribe({
+      filters: [{ kinds: [1], authors: ["a".repeat(64)] }],
+      relayUrls: [LOCAL, DEAD],
+      onEOSE,
+    });
+    // The live relay alone completes the quorum; no 5 s wait for the dead one.
+    lastSubOpts().onEOSE("sub", LOCAL);
+    expect(onEOSE).toHaveBeenCalledWith({ reason: "all-eose", sentTo: 1 });
+  });
+
+  it("reports no-relays when the only target is a dropped relay", async () => {
+    isSessionDroppedMock.mockReturnValue(true);
+    const onEOSE = vi.fn();
+    subscriptionManager.subscribe({ filters: [{ kinds: [1] }], relayUrls: [DEAD], onEOSE });
+    await Promise.resolve();
+    expect(onEOSE).toHaveBeenCalledWith({ reason: "no-relays", sentTo: 0 });
+  });
+
+  it("reports sentTo: 0 on a timeout when the REQ never left the client", () => {
+    vi.useFakeTimers();
+    deliveryMock.mockReturnValue({ relays: 1, sent: 0 }); // deferred behind a full cap
+    const onEOSE = vi.fn();
+    subscriptionManager.subscribe({ filters: [{ kinds: [1] }], relayUrls: [LOCAL], onEOSE, timeoutMs: 1000 });
+    vi.advanceTimersByTime(1000);
+    expect(deliveryMock).toHaveBeenCalledWith("relayman-sub");
+    expect(onEOSE).toHaveBeenCalledWith({ reason: "timeout", sentTo: 0 });
+    vi.useRealTimers();
+  });
+
+  it("passes priority through to relayManager (and defaults to none)", () => {
+    subscriptionManager.subscribeOnce({ filters: [{ kinds: [1] }], relayUrls: [LOCAL], priority: true });
+    expect(lastSubOpts().priority).toBe(true);
+    subscriptionManager.subscribe({ filters: [{ kinds: [1] }], relayUrls: [LOCAL] });
+    expect(lastSubOpts().priority).toBeUndefined();
   });
 });

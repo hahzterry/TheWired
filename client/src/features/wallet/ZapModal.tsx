@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Zap, X, Loader2, Check } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Avatar } from "../../components/ui/Avatar";
 import { useProfile } from "../profile/useProfile";
@@ -14,7 +15,7 @@ import type { ZapTarget } from "./WalletProvider";
 
 const PRESETS = [21, 100, 500, 1000, 5000];
 
-export function ZapModal({
+function ZapModalInner({
   target,
   onClose,
 }: {
@@ -240,3 +241,5 @@ export function ZapModal({
     </Modal>
   );
 }
+
+export const ZapModal = withModalBoundary(ZapModalInner, "zap");

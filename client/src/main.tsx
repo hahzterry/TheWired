@@ -7,6 +7,8 @@ import { initZoom } from "./lib/zoom";
 import { installWiredDebug } from "./lib/debug/logger";
 import { startPerfMonitor } from "./lib/debug/perfMonitor";
 import { installAudioUnlock } from "./lib/audio/unlockAudio";
+import { installGlobalErrorHandlers } from "./lib/crash/globalHandlers";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 // Side-effect import: registers wiredDebug.calls() (lazy-loads the call stack on use)
 import "./lib/debug/callTracker";
 import "@fontsource-variable/geist";
@@ -24,6 +26,10 @@ installAudioUnlock();
 // console API and, in dev, drop a single discovery hint. Turn it on when needed
 // with wiredDebug.enable("profile,relay,…"); wiredDebug.help() lists everything.
 installWiredDebug();
+// Capture errors that never reach a React boundary (event handlers, timers,
+// unawaited promises) into the local crash log. Installed before render so a
+// failure during startup is recorded too.
+installGlobalErrorHandlers();
 // Main-thread lag monitor runs always: warn-level events still print even when
 // the rest of debug logging is off, so user-visible UI freezes are always surfaced.
 startPerfMonitor();
@@ -38,9 +44,13 @@ if (import.meta.env.DEV) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Provider store={store}>
-      <App />
-    </Provider>
+    {/* Last line of defence: sits outside the store and router so its
+        fallback cannot depend on anything that might be what broke. */}
+    <ErrorBoundary variant="screen" label="root">
+      <Provider store={store}>
+        <App />
+      </Provider>
+    </ErrorBoundary>
   </React.StrictMode>,
 );
 

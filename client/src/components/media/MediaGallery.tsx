@@ -4,6 +4,7 @@ import { imageCache } from "@/lib/cache/imageCache";
 import { MediaLightbox } from "../ui/MediaLightbox";
 import { SmartImage } from "./SmartImage";
 import { SmartVideo } from "./SmartVideo";
+import { InlineAudio } from "./InlineAudio";
 import { MediaGrid } from "./MediaGrid";
 import type { MediaDensity } from "./mediaLayout";
 
@@ -102,7 +103,7 @@ export const MediaGallery = memo(function MediaGallery({
       ))}
 
       {audios.map((m) => (
-        <audio key={m.url} src={m.url} controls preload="metadata" className={chat ? "w-full max-w-[26rem]" : "w-full"} />
+        <InlineAudio key={m.url} src={m.url} className={chat ? "w-full max-w-[26rem]" : "w-full"} />
       ))}
 
       {lightboxIndex != null && imageUrls.length > 0 && (

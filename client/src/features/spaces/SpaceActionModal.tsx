@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { X, Plus, LogIn, Globe } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { CreateSpaceModal } from "./CreateSpaceModal";
 import { JoinSpaceModal } from "./JoinSpaceModal";
 import { ImportSpaceModal } from "./ImportSpaceModal";
@@ -19,7 +20,7 @@ interface SpaceActionModalProps {
   onClose: () => void;
 }
 
-export function SpaceActionModal({ open, onClose }: SpaceActionModalProps) {
+function SpaceActionModalInner({ open, onClose }: SpaceActionModalProps) {
   const { joinSpace } = useSpace();
   const navigate = useNavigate();
   const location = useLocation();
@@ -154,3 +155,5 @@ export function SpaceActionModal({ open, onClose }: SpaceActionModalProps) {
     </>
   );
 }
+
+export const SpaceActionModal = withModalBoundary(SpaceActionModalInner, "space-action");

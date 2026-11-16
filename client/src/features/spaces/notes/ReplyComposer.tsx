@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from "react";
+import { useRef, useEffect } from "react";
 import { Send, X } from "lucide-react";
 import { useProfile } from "../../profile/useProfile";
 import { useAutoResize } from "../../../hooks/useAutoResize";
+import { useRetainedState } from "../../../hooks/useRetainedState";
 
 interface ReplyComposerProps {
   targetPubkey: string;
@@ -10,6 +11,12 @@ interface ReplyComposerProps {
   /** Header verb before the author name. Default "Replying to"; e.g. "Quoting". */
   label?: string;
   placeholder?: string;
+  /**
+   * Keeps the draft while the composer is not mounted. Cards in a virtualized
+   * feed unmount when scrolled away; with a key the text is still there when
+   * the card comes back.
+   */
+  draftKey?: string;
 }
 
 export function ReplyComposer({
@@ -18,8 +25,9 @@ export function ReplyComposer({
   onCancel,
   label = "Replying to",
   placeholder = "Write a reply...",
+  draftKey,
 }: ReplyComposerProps) {
-  const [text, setText] = useState("");
+  const [text, setText] = useRetainedState(draftKey ?? null, "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useAutoResize(textareaRef, text, 120);
   const { profile } = useProfile(targetPubkey);

@@ -3,7 +3,7 @@ import { Button } from "../../components/ui/Button";
 import { Avatar } from "../../components/ui/Avatar";
 import { useProfile } from "../profile/useProfile";
 import { useZap } from "../wallet/WalletProvider";
-import { ArticleMarkdown } from "./ArticleMarkdown";
+import { LazyArticleMarkdown } from "./LazyArticleMarkdown";
 import type { LongFormArticle } from "../../types/media";
 
 interface ArticleReaderProps {
@@ -100,7 +100,7 @@ export function ArticleReader({ article, onBack, onEdit, onDelete }: ArticleRead
         )}
 
         <div className="mt-8">
-          <ArticleMarkdown content={article.content} />
+          <LazyArticleMarkdown content={article.content} />
         </div>
       </div>
     </div>

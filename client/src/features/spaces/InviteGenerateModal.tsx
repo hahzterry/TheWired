@@ -1,6 +1,7 @@
 import { useReducer, useCallback, useState, useRef, useEffect } from "react";
 import { X, Copy, Check, Send, Search } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
 import { Avatar } from "../../components/ui/Avatar";
@@ -124,7 +125,7 @@ function reducer(state: ModalState, action: ModalAction): ModalState {
   }
 }
 
-export function InviteGenerateModal({
+function InviteGenerateModalInner({
   open,
   onClose,
   spaceId,
@@ -558,3 +559,5 @@ function DmTargetPicker({
     </div>
   );
 }
+
+export const InviteGenerateModal = withModalBoundary(InviteGenerateModalInner, "invite-generate");

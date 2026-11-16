@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useSpaceChannels } from "./useSpaceChannels";
 import { CategorySelect, categoryChoiceError, choiceForCategory, type CategoryChoice } from "./CategorySelect";
 import type { SpaceChannelType, ChannelFeedMode } from "../../types/space";
@@ -28,7 +29,7 @@ interface CreateChannelModalProps {
 }
 
 /** The body mounts fresh per open, starting from the subfolder it was opened for. */
-export function CreateChannelModal(props: CreateChannelModalProps) {
+function CreateChannelModalInner(props: CreateChannelModalProps) {
   if (!props.open) return null;
   return <CreateChannelModalBody {...props} />;
 }
@@ -245,3 +246,5 @@ function CreateChannelModalBody({ open, onClose, spaceId, defaultCategoryId }: C
     </Modal>
   );
 }
+
+export const CreateChannelModal = withModalBoundary(CreateChannelModalInner, "create-channel");

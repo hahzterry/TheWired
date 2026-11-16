@@ -1,6 +1,7 @@
 import { useState, useRef, useMemo } from "react";
 import { X } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { useAppSelector } from "@/store/hooks";
 import { uploadCoverArt } from "@/lib/api/music";
 import { buildTrackEvent, buildPrivateTrackEvent } from "./musicEventBuilder";
@@ -25,7 +26,7 @@ interface EditTrackModalProps {
   onClose: () => void;
 }
 
-export function EditTrackModal({ track, onClose }: EditTrackModalProps) {
+function EditTrackModalInner({ track, onClose }: EditTrackModalProps) {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
   const allAlbums = useAppSelector((s) => s.music.albums);
   const isMine = useIsMine();
@@ -315,3 +316,5 @@ export function EditTrackModal({ track, onClose }: EditTrackModalProps) {
     </Modal>
   );
 }
+
+export const EditTrackModal = withModalBoundary(EditTrackModalInner, "edit-track");

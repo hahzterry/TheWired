@@ -13,8 +13,6 @@ import {
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
-  type DraggableAttributes,
-  type DraggableSyntheticListeners,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -26,47 +24,19 @@ import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import type { SpaceChannel } from "../../types/space";
 import { flattenTree, locateChannel, moveChannel, type CategoryNode, type ChannelTree } from "./channelTree";
+import {
+  PlainChannelTree,
+  type CategoryRenderContext,
+  type ChannelRenderContext,
+  type ChannelTreeDndProps,
+} from "./ChannelTreeView";
+
+export type { CategoryRenderContext, ChannelRenderContext, ChannelTreeDndProps, DragHandle } from "./ChannelTreeView";
 
 const CH = "ch:";
 const CAT = "cat:";
 const ZONE = "zone:";
 const NONE = "__none__";
-
-/** Spread onto the element that should start a drag (a grip, or the whole row). */
-export interface DragHandle {
-  ref: (el: HTMLElement | null) => void;
-  attributes: DraggableAttributes;
-  listeners: DraggableSyntheticListeners;
-}
-
-export interface ChannelRenderContext {
-  handle?: DragHandle;
-  dragging: boolean;
-  overlay?: boolean;
-}
-
-export interface CategoryRenderContext extends ChannelRenderContext {
-  /** A channel is being dragged over this subfolder. */
-  dropTarget: boolean;
-}
-
-interface ChannelTreeDndProps {
-  tree: ChannelTree;
-  /** Drag-and-drop on (people who can manage channels). Off renders a plain list. */
-  enabled: boolean;
-  /** Keyboard dragging via the handle (needs a dedicated handle element, not the row button). */
-  keyboard?: boolean;
-  /** Collapsed subfolders hide their channels but still accept drops. */
-  collapsed?: ReadonlySet<string>;
-  onMoveChannel: (channelId: string, toCategoryId: string | null, index: number) => void;
-  onMoveCategory: (categoryId: string, index: number) => void;
-  renderChannel: (channel: SpaceChannel, ctx: ChannelRenderContext) => ReactNode;
-  renderCategoryHeader: (node: CategoryNode, ctx: CategoryRenderContext) => ReactNode;
-  /** Shown inside an expanded subfolder with no channels (only when enabled). */
-  emptyCategoryHint?: ReactNode;
-  /** Whether to render a category (e.g. hide empty ones from members). */
-  showCategory?: (node: CategoryNode) => boolean;
-}
 
 const zoneId = (categoryId: string | null) => `${ZONE}${categoryId ?? NONE}`;
 const zoneCategory = (id: string): string | null => {
@@ -113,27 +83,13 @@ export function resolveChannelDrop(
  * The channel tree with drag-and-drop: channels reorder within and move across
  * subfolders (including into collapsed or empty ones), subfolders reorder.
  * Moves are previewed locally while dragging and committed once on drop.
+ *
+ * Render it through `ChannelTreeView`, which loads this module (and dnd-kit)
+ * only for people who can arrange channels.
  */
 export function ChannelTreeDnd(props: ChannelTreeDndProps) {
-  if (!props.enabled) return <PlainTree {...props} />;
+  if (!props.enabled) return <PlainChannelTree {...props} />;
   return <DndTree {...props} />;
-}
-
-function PlainTree({ tree, collapsed, renderChannel, renderCategoryHeader, showCategory }: ChannelTreeDndProps) {
-  return (
-    <div>
-      {tree.uncategorized.map((ch) => (
-        <div key={ch.id}>{renderChannel(ch, { dragging: false })}</div>
-      ))}
-      {tree.categories.filter((n) => showCategory?.(n) ?? true).map((node) => (
-        <div key={node.category.id}>
-          {renderCategoryHeader(node, { dragging: false, dropTarget: false })}
-          {!collapsed?.has(node.category.id) &&
-            node.channels.map((ch) => <div key={ch.id}>{renderChannel(ch, { dragging: false })}</div>)}
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function DndTree({

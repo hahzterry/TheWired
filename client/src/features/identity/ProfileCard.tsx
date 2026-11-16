@@ -8,7 +8,12 @@ import {
   PopoverMenuSeparator,
 } from "../../components/ui/PopoverMenu";
 import { ProfileEditModal } from "../profile/ProfileEditModal";
-import { AddAccountModal } from "./AddAccountModal";
+import { lazyModal } from "@/components/ui/lazyView";
+
+const AddAccountModal = lazyModal(
+  () => import("./AddAccountModal").then((m) => ({ default: m.AddAccountModal })),
+  "add-account",
+);
 import { useIdentity } from "./useIdentity";
 import { useProfile } from "../profile/useProfile";
 import { useEndCallConfirm } from "../calling/EndCallConfirmDialog";

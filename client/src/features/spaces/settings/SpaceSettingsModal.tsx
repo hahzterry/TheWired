@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X, Settings, Hash, Shield, Users, Gavel, Bell, Rss, UserPlus, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Modal } from "../../../components/ui/Modal";
+import { withModalBoundary } from "@/components/ui/withModalBoundary";
 import { GeneralTab } from "./GeneralTab";
 import { ChannelsTab } from "./ChannelsTab";
 import { RolesTab } from "./RolesTab";
@@ -45,7 +46,7 @@ interface SpaceSettingsModalProps {
   spaceId: string;
 }
 
-export function SpaceSettingsModal({ open, onClose, spaceId }: SpaceSettingsModalProps) {
+function SpaceSettingsModalInner({ open, onClose, spaceId }: SpaceSettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabId>("general");
   const { can } = usePermissions(spaceId);
   const space = useAppSelector((s) => s.spaces.list.find((sp) => sp.id === spaceId));
@@ -110,3 +111,5 @@ export function SpaceSettingsModal({ open, onClose, spaceId }: SpaceSettingsModa
     </Modal>
   );
 }
+
+export const SpaceSettingsModal = withModalBoundary(SpaceSettingsModalInner, "space-settings");

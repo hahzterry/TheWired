@@ -451,7 +451,7 @@ export function SpaceMusicView() {
           </div>
         )}
 
-        <LoadMoreButton isLoading={meta.isLoadingMore} hasMore={meta.hasMore} onLoadMore={loadMore} />
+        <LoadMoreButton isLoading={meta.isLoadingMore} hasMore={meta.hasMore} onLoadMore={loadMore} error={meta.loadMoreError} />
       </div>
 
       {uploadModal}

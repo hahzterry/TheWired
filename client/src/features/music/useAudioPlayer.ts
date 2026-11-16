@@ -24,6 +24,7 @@ import { selectAudioSource } from "./trackParser";
 import { reportPlay, getAudioVariants } from "@/lib/api/music";
 import { getCachedAudio } from "@/lib/db/audioCache";
 import { resolveMusicAccess } from "@/lib/cache/tokenCache";
+import { loadHls } from "@/lib/media/hls";
 import type { RepeatMode } from "@/types/music";
 
 // Module-level audio element singleton — persists across navigation
@@ -33,23 +34,16 @@ let loadedTrackId: string | null = null;
 // Track object URLs so we can revoke them to prevent memory leaks
 let currentObjectUrl: string | null = null;
 
-// HLS state — the constructor is loaded lazily the first time we actually
-// need MSE playback, so Safari / Tauri macOS never pays the hls.js download cost.
+// HLS state — the constructor comes from the shared loader (`lib/media/hls.ts`)
+// the first time we actually need MSE playback, so Safari / Tauri macOS never
+// pays the hls.js download cost, and a download that failed is retried by the
+// next track that needs it.
 type HlsInstance = InstanceType<typeof HlsType>;
 let hlsInstance: HlsInstance | null = null;
-let HlsCtor: typeof HlsType | null = null;
 
 // Feature flag — set VITE_PREFER_HLS=false to force playback to use the
 // original imeta URL (bypasses the /music/variants/:sha lookup entirely).
 const PREFER_HLS = import.meta.env.VITE_PREFER_HLS !== "false";
-
-async function getHlsCtor(): Promise<typeof HlsType> {
-  if (!HlsCtor) {
-    const mod = await import("hls.js");
-    HlsCtor = mod.default;
-  }
-  return HlsCtor;
-}
 
 function teardownHls() {
   if (hlsInstance) {
@@ -433,7 +427,7 @@ export function useAudioPlayer() {
           if (el.src !== hlsUrl) el.src = hlsUrl;
         } else {
           try {
-            const Hls = await getHlsCtor();
+            const Hls = await loadHls();
             if (loadedTrackId !== targetId) return;
             if (Hls.isSupported()) {
               const instance = new Hls({ lowLatencyMode: false });

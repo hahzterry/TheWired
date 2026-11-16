@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({
   fetchToken: vi.fn(async (_s: string, _c: string) => ({ token: "t", url: "wss://x", roomName: "s:c" })),
 }));
 
-vi.mock("@/lib/webrtc/e2ee/session", () => ({
+vi.mock("@/lib/webrtc/e2ee/support", () => ({
   e2eeSupported: () => h.e2eeSupported,
   E2EEUnsupportedError: class E2EEUnsupportedError extends Error {
     constructor() {
@@ -20,7 +20,7 @@ vi.mock("@/lib/webrtc/e2ee/session", () => ({
     }
   },
 }));
-vi.mock("@/lib/webrtc/livekitClient", () => ({
+vi.mock("@/lib/webrtc/livekit", () => ({
   connectToRoom: (...a: [string, string, unknown]) => h.connectRoom(...a),
   disconnectFromRoom: vi.fn(async () => {}),
   setMicrophoneEnabled: vi.fn(async () => {}),
@@ -41,6 +41,7 @@ vi.mock("@/lib/nostr/roomPresence", () => ({
 import { joinVoiceChannel } from "../voiceService";
 import { store, resetAll } from "@/store";
 import { login } from "@/store/slices/identitySlice";
+import { MediaEngineLoadError, MEDIA_ENGINE_LOAD_MESSAGE } from "@/lib/webrtc/loadError";
 
 const ME = "f".repeat(64);
 
@@ -78,5 +79,44 @@ describe("joinVoiceChannel", () => {
     await expect(joinVoiceChannel("s", "c")).rejects.toThrow();
     expect(store.getState().voice.mediaError).toMatch(/Update The Wired/);
     expect(h.connectRoom).not.toHaveBeenCalled();
+  });
+
+  describe("when the voice code cannot be downloaded", () => {
+    it("says so in plain words, with what to do, and never shows the engine's error", async () => {
+      h.connectRoom.mockRejectedValueOnce(new MediaEngineLoadError(new TypeError("Importing a module script failed.")));
+
+      await expect(joinVoiceChannel("s", "c")).rejects.toThrow();
+
+      const shown = store.getState().voice.mediaError;
+      expect(shown).toBe(MEDIA_ENGINE_LOAD_MESSAGE);
+      expect(shown).toMatch(/check your connection/i);
+      expect(shown).toMatch(/reload/i);
+      expect(shown).not.toMatch(/Could not join|module/i);
+      expect(store.getState().voice.connecting).toBe(false);
+      expect(store.getState().voice.connectedRoom).toBeNull();
+    });
+
+    it("maps a raw failed-chunk error the same way, whichever engine worded it", async () => {
+      for (const message of [
+        "Failed to fetch dynamically imported module: https://app.example/assets/livekitClient-abc.js",
+        "Importing a module script failed.",
+        "error loading dynamically imported module",
+      ]) {
+        h.connectRoom.mockRejectedValueOnce(new TypeError(message));
+        await expect(joinVoiceChannel("s", "c")).rejects.toThrow();
+        expect(store.getState().voice.mediaError).toBe(MEDIA_ENGINE_LOAD_MESSAGE);
+      }
+    });
+
+    it("a second attempt joins once the download works", async () => {
+      h.connectRoom.mockRejectedValueOnce(new MediaEngineLoadError(new TypeError("Failed to fetch dynamically imported module")));
+      await expect(joinVoiceChannel("s", "c")).rejects.toThrow();
+
+      await joinVoiceChannel("s", "c");
+
+      expect(h.connectRoom).toHaveBeenCalledTimes(2);
+      expect(store.getState().voice.connectedRoom).toEqual({ spaceId: "s", channelId: "c", roomName: "s:c" });
+      expect(store.getState().voice.mediaError).toBeNull();
+    });
   });
 });

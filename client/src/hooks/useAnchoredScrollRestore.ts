@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { markProgrammaticScroll } from "@/lib/virtual/viewportAnchor";
 
 /**
  * Anchor-aware scroll restoration for feeds whose height grows *after* paint
@@ -19,14 +20,32 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
  *
  * Pixel offset is still stored and used as a fallback (anchor missing, or the
  * viewport was above the first card — e.g. in a profile header).
+ *
+ * Virtualized feeds: only the cards around the viewport are in the DOM, so the
+ * saved anchor is usually not there to measure when the feed is reopened. The
+ * caller passes `scrollToAnchor`, which asks the virtualizer to bring that card
+ * in; once it is rendered the same re-pinning takes over. A pixel offset is
+ * never applied while waiting, because the unmeasured list has no meaningful
+ * pixel positions yet.
  */
-/** Stop re-pinning once the anchor target holds steady for this many frames. */
-const REPIN_STABLE_FRAMES = 8;
+/**
+ * Stop re-pinning once the anchor target holds steady for this many frames
+ * (about half a second). Long enough for cards above the anchor to finish
+ * settling their media after a virtualized list has rendered them.
+ */
+const REPIN_STABLE_FRAMES = 30;
 
 export interface SavedScrollPosition {
   scrollTop: number;
   anchorId?: string;
   anchorOffset?: number;
+  /**
+   * How tall the anchor card was when the position was saved. When the card
+   * comes back at another height (the window or the column count changed),
+   * the offset is scaled with it, so the reader lands on the same part of the
+   * card instead of a pixel count that may now be past its end.
+   */
+  anchorHeight?: number;
 }
 
 export interface AnchoredScrollRestoreOptions {
@@ -45,6 +64,13 @@ export interface AnchoredScrollRestoreOptions {
   active?: boolean;
   /** How long to keep re-pinning the anchor as late media loads (ms). */
   repinDurationMs?: number;
+  /**
+   * Virtualized lists: bring a card that is not in the DOM into view, `offset`
+   * px scrolled past its top. Return true once the request was made, false if
+   * the list is not ready yet (it is asked again next frame), or null when the
+   * card is not in the list any more (falls back to the pixel offset).
+   */
+  scrollToAnchor?: (anchorId: string, offset: number) => boolean | null;
 }
 
 /** Snapshot where the scroll container is sitting, as an anchor card + offset. */
@@ -57,25 +83,58 @@ export function captureScrollPosition(
 
   const cards = container.querySelectorAll<HTMLElement>(`[${cardAttr}]`);
   const containerTop = container.getBoundingClientRect().top;
-  let anchor: { id: string; top: number } | null = null;
+  let anchor: { id: string; top: number; height: number } | null = null;
 
   // Cards are in document order: walk down until one starts below the fold top.
   // The last card starting at/above the fold top is the one the user is reading.
   for (const card of cards) {
     const id = card.getAttribute(cardAttr);
     if (!id) continue;
-    const top = card.getBoundingClientRect().top - containerTop + scrollTop;
+    const rect = card.getBoundingClientRect();
+    const top = rect.top - containerTop + scrollTop;
     if (top <= scrollTop + 1) {
-      anchor = { id, top };
+      anchor = { id, top, height: rect.height };
     } else {
       break;
     }
   }
 
   if (anchor) {
-    return { scrollTop, anchorId: anchor.id, anchorOffset: scrollTop - anchor.top };
+    const saved: SavedScrollPosition = { scrollTop, anchorId: anchor.id, anchorOffset: scrollTop - anchor.top };
+    if (anchor.height > 0) saved.anchorHeight = anchor.height;
+    return saved;
   }
   return { scrollTop };
+}
+
+/**
+ * The scrollTop that puts the saved anchor card back where it was, or null
+ * when that card is not in the DOM (no anchor saved, or not rendered).
+ */
+export function resolveAnchorTop(
+  container: HTMLElement,
+  saved: SavedScrollPosition,
+  cardAttr?: string,
+): number | null {
+  if (!cardAttr || !saved.anchorId) return null;
+  const el = container.querySelector<HTMLElement>(
+    `[${cardAttr}="${CSS.escape(saved.anchorId)}"]`,
+  );
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  const top = rect.top - container.getBoundingClientRect().top + container.scrollTop;
+  return Math.max(0, top + scaledAnchorOffset(saved, rect.height));
+}
+
+/**
+ * The saved offset into the anchor card, scaled to the card's height now. A
+ * card that kept its height (within a pixel) keeps the exact offset.
+ */
+export function scaledAnchorOffset(saved: SavedScrollPosition, heightNow: number): number {
+  const offset = saved.anchorOffset ?? 0;
+  const before = saved.anchorHeight;
+  if (!before || before <= 0 || heightNow <= 0 || Math.abs(heightNow - before) <= 1) return offset;
+  return offset * (heightNow / before);
 }
 
 /** Resolve the scrollTop that puts the saved anchor card back where it was. */
@@ -84,20 +143,14 @@ export function resolveScrollTop(
   saved: SavedScrollPosition,
   cardAttr?: string,
 ): number {
-  if (cardAttr && saved.anchorId) {
-    const el = container.querySelector<HTMLElement>(
-      `[${cardAttr}="${CSS.escape(saved.anchorId)}"]`,
-    );
-    if (el) {
-      const top =
-        el.getBoundingClientRect().top -
-        container.getBoundingClientRect().top +
-        container.scrollTop;
-      return Math.max(0, top + (saved.anchorOffset ?? 0));
-    }
-  }
-  return saved.scrollTop;
+  return resolveAnchorTop(container, saved, cardAttr) ?? saved.scrollTop;
 }
+
+/** How long each frame of the re-pin loop claims the scroller for. */
+const REPIN_MARK_MS = 150;
+
+/** Frames to wait for a requested card to render before asking again. */
+const ANCHOR_REQUEST_FRAMES = 20;
 
 export interface AnchoredScrollRestore {
   /** Attach to the scrollable container. */
@@ -113,6 +166,7 @@ export function useAnchoredScrollRestore({
   cardAttr,
   active = true,
   repinDurationMs = 3000,
+  scrollToAnchor,
 }: AnchoredScrollRestoreOptions): AnchoredScrollRestore {
   const nodeRef = useRef<HTMLDivElement | null>(null);
   // Mutable mirrors so the listeners (attached once) always see fresh values.
@@ -121,6 +175,8 @@ export function useAnchoredScrollRestore({
   const keyRef = useRef(key);
   const activeRef = useRef(active);
   const cardAttrRef = useRef(cardAttr);
+  const scrollToAnchorRef = useRef(scrollToAnchor);
+  scrollToAnchorRef.current = scrollToAnchor;
   readRef.current = read;
   writeRef.current = write;
   activeRef.current = active;
@@ -153,9 +209,37 @@ export function useAnchoredScrollRestore({
 
     restoringRef.current = true;
     cancelRepin();
+    // A virtualized list keeps the reader's place on its own while idle; tell
+    // it this scrolling is ours, so it does not put the old position back. The
+    // mark is renewed every frame of the loop below and lapses soon after it.
+    markProgrammaticScroll(el, REPIN_MARK_MS);
+
+    // A virtualized list may not have the anchor card rendered. Ask it to
+    // bring the card in; never fall back to a pixel offset while waiting.
+    // `requested` counts frames since the last request (-1: none yet).
+    let requested = -1;
+    let anchorGone = false;
+    const viaList = (): boolean => {
+      const ask = scrollToAnchorRef.current;
+      if (!ask || !saved.anchorId || anchorGone) return false;
+      if (requested < 0 || requested >= ANCHOR_REQUEST_FRAMES) {
+        const result = ask(saved.anchorId, saved.anchorOffset ?? 0);
+        if (result === null) {
+          anchorGone = true;
+          return false;
+        }
+        requested = result ? 0 : -1;
+      } else {
+        requested++;
+      }
+      return true;
+    };
+
     // Apply immediately — pre-paint when invoked from a layout effect — so the
     // feed never flashes the top before jumping.
-    el.scrollTop = resolveScrollTop(el, saved, cardAttrRef.current);
+    const first = resolveAnchorTop(el, saved, cardAttrRef.current);
+    if (first !== null) el.scrollTop = first;
+    else if (!viaList()) el.scrollTop = saved.scrollTop;
 
     // Keep the anchor pinned while late media grows the content, then release.
     // Bail as soon as the target holds steady for a few frames (content settled)
@@ -169,18 +253,25 @@ export function useAnchoredScrollRestore({
         repinRaf.current = 0;
         return;
       }
-      const target = resolveScrollTop(node, saved, cardAttrRef.current);
-      if (Math.abs(node.scrollTop - target) > 1) {
-        node.scrollTop = target;
+      const anchored = resolveAnchorTop(node, saved, cardAttrRef.current);
+      if (anchored === null && viaList()) {
+        // Waiting for the list to render the card.
         stable = 0;
       } else {
-        stable++;
+        const target = anchored ?? saved.scrollTop;
+        if (Math.abs(node.scrollTop - target) > 1) {
+          node.scrollTop = target;
+          stable = 0;
+        } else {
+          stable++;
+        }
       }
       if (stable >= REPIN_STABLE_FRAMES || ++frames >= maxFrames) {
         restoringRef.current = false;
         repinRaf.current = 0;
         return;
       }
+      markProgrammaticScroll(node, REPIN_MARK_MS);
       repinRaf.current = requestAnimationFrame(step);
     };
     repinRaf.current = requestAnimationFrame(step);
@@ -246,13 +337,16 @@ export function useAnchoredScrollRestore({
     if (nodeRef.current && restoredKeyRef.current !== key) doRestore();
   }, [key, active, doRestore]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // In development React runs every effect's cleanup once right after mount
+    // (StrictMode). That cleanup cancels a re-pin loop the container ref has
+    // just started, which left a fresh mount without its re-pinning. Resume it.
+    if (restoringRef.current && !repinRaf.current && nodeRef.current) doRestore();
+    return () => {
       if (saveRaf.current) cancelAnimationFrame(saveRaf.current);
       cancelRepin();
-    },
-    [cancelRepin],
-  );
+    };
+  }, [cancelRepin, doRestore]);
 
   return { containerRef, capture };
 }

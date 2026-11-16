@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { getUserMedia, stopMediaStream, describeMediaError } from "@/lib/webrtc/mediaDevices";
 import { createAudioLevelMonitor } from "@/lib/webrtc/audioProcessing";
-import { getLocalMicrophoneStream } from "@/lib/webrtc/livekitClient";
+import { getLocalMicrophoneStream } from "@/lib/webrtc/livekit";
 import { useMediaPrefs } from "./useMediaPrefs";
 
 /**

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { ArrowLeft, ArrowRight, Check, ChevronRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Modal } from "../../components/ui/Modal";
+import { withModalBoundary } from "../../components/ui/withModalBoundary";
 import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
 import { Avatar } from "../../components/ui/Avatar";
@@ -22,7 +23,7 @@ interface OnboardingFlowProps {
 
 type Step = "loading" | "welcome" | "question" | "confirm" | "submitting" | "done";
 
-export function OnboardingFlow({
+function OnboardingFlowInner({
   open,
   onClose,
   spaceId,
@@ -387,3 +388,5 @@ export function OnboardingFlow({
     </Modal>
   );
 }
+
+export const OnboardingFlow = withModalBoundary(OnboardingFlowInner, "space-onboarding");
