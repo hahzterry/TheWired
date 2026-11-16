@@ -1,14 +1,20 @@
 // Invite links for backend-backed spaces (docs/E2EE_SPACES.md §5.4, D12).
 //
-//   https://<public web origin>/invite/<code>/<spaceId>
+//   https://<public web origin>/invite/<code>/<spaceId>   encrypted spaces
+//   https://<public web origin>/invite/<code>             every other space
 //
-// The code is the backend's; the space id is put in the link by the inviter's
-// client, so the server that resolves the code cannot change it. The joining
-// client refuses when the server resolves the code to another space. The id
-// is a path segment, not a query or fragment: the public invite page and
-// every client parser keep the path whole, while a query or fragment is
-// dropped along the way. Links without it (older ones) still work for plain
-// spaces; for an encrypted space they cannot be checked, and are refused.
+// The code is the backend's; for an encrypted space the inviter's client puts
+// the space id in the link, so the server that resolves the code cannot change
+// it, and the joining client refuses when the server resolves the code to
+// another space. The id is a path segment, not a query or fragment: the public
+// invite page and every client parser keep the path whole, while a query or
+// fragment is dropped along the way.
+//
+// Plain spaces get the short form for now: clients released before the longer
+// form route only `/invite/<code>` and drop anything else. Both
+// forms are parsed and checked here whatever the space. Links without the id
+// still work for plain spaces; for an encrypted space they cannot be checked,
+// and are refused.
 
 import { isEncryptedSpaceId } from "./e2ee/spaceIdFormat";
 
@@ -22,9 +28,11 @@ export interface ParsedInvite {
   spaceId?: string;
 }
 
-/** The path of an invite link for `code` into `spaceId`. */
+/** The path of an invite link for `code` into `spaceId`: the space id is in
+ *  the link for an encrypted space only (see the header). */
 export function invitePath(code: string, spaceId: string): string {
-  return `/invite/${encodeURIComponent(code)}/${encodeURIComponent(spaceId)}`;
+  const base = `/invite/${encodeURIComponent(code)}`;
+  return isEncryptedSpaceId(spaceId) ? `${base}/${encodeURIComponent(spaceId)}` : base;
 }
 
 /** Parse an invite link, deep-link path or bare code. */

@@ -265,13 +265,15 @@ Consequences:
 - **The id commits to the *first* root.** A future hand-over of the root to someone else
   must be a statement signed by the root the id commits to (and chained from it); a device
   must never accept a new root on any server's word.
-- **Invites name the space.** A backend-backed space's invite link is
+- **Invites name the space.** An encrypted backend-backed space's invite link is
   `…/invite/<code>/<spaceId>`: the inviter's client puts the id in the link, the joining client
   refuses when the backend resolves the code to another space, and a link without the id is
   refused for an encrypted space ("this link can't be checked"). The id is a path segment
   because the public invite page and every client parser keep the path whole, while a query
-  string or fragment is dropped on the way. NIP-29-native invites are the group address
-  (`host'groupId`), which already is the id.
+  string or fragment is dropped on the way. Other spaces' links keep the short
+  `…/invite/<code>` form for now, because clients released before the longer form only
+  route that shape; clients accept and check both forms for any space. NIP-29-native
+  invites are the group address (`host'groupId`), which already is the id.
 - Nobody but the root can jump ahead of the chain, start a second chain or re-root the space.
 - A manager dropped at a rotation can issue nothing after it. They can still fork *from the
   last epoch they managed*, one step, which every member would hold alongside the real one;
