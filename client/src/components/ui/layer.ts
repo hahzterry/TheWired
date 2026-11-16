@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useInsertionEffect, useRef, type RefObject } from "react";
 
 /**
  * Shared keyboard plumbing for the overlay primitives (Modal, MediaLightbox,
@@ -70,28 +70,44 @@ export function useModalFocus(
   active: boolean,
   isTop: () => boolean = always,
 ): void {
-  // Who to give focus back to. Two moments matter:
-  //  - during render, before the dialog mounts: the only time the opener is
-  //    still focused when a child of the dialog uses autoFocus;
-  //  - when the effect runs: by then a menu that launched the dialog has closed
-  //    and handed focus to its own trigger, which is where focus should return
-  //    (the menu item itself is inert by now).
-  const focusedAtRender = useRef<HTMLElement | null>(null);
-  const wasActive = useRef(false);
-  if (active && !wasActive.current) {
-    focusedAtRender.current = document.activeElement as HTMLElement | null;
-  }
-  wasActive.current = active;
+  // Who to give focus back to. Nothing is read or written while rendering:
+  // a render can run twice or be thrown away. Two moments in the commit matter.
+  //
+  //  1. Before the commit touches focus. A child with autoFocus is focused in
+  //     the commit's layout phase, children first, so by the time any layout
+  //     or passive effect of ours runs the opener has already lost focus. An
+  //     insertion effect runs in the mutation phase, before that, and only for
+  //     a render that commits.
+  //  2. When the passive effect runs. By then a menu that launched the dialog
+  //     has closed and handed focus to its own trigger, which is where focus
+  //     should return (the menu item itself is inert by now).
+  const focusedBeforeCommit = useRef<HTMLElement | null>(null);
+  useInsertionEffect(() => {
+    if (!active) return;
+    const focused = document.activeElement as HTMLElement | null;
+    // A re-run with focus already inside the dialog must not replace the opener.
+    if (!containerRef.current?.contains(focused)) focusedBeforeCommit.current = focused;
+  }, [active, containerRef]);
+
+  // What had focus inside the dialog when the effect was last cleaned up.
+  // StrictMode re-runs effects on mount: the cleanup hands focus back to the
+  // opener, and the set-up that follows must put it back where it was (an
+  // autoFocus field, say) rather than on the first control. After a real close
+  // that element is gone from the document and this is ignored.
+  const focusedInsideAtCleanup = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!active) return;
     const container = containerRef.current;
     const focusedNow = document.activeElement as HTMLElement | null;
-    const previouslyFocused = container?.contains(focusedNow) ? focusedAtRender.current : focusedNow;
+    const previouslyFocused = container?.contains(focusedNow) ? focusedBeforeCommit.current : focusedNow;
 
     if (container && !container.contains(document.activeElement)) {
-      (focusableWithin(container)[0] ?? container).focus();
+      const resume = focusedInsideAtCleanup.current;
+      const target = resume && container.contains(resume) ? resume : focusableWithin(container)[0];
+      (target ?? container).focus();
     }
+    focusedInsideAtCleanup.current = null;
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Tab" || !container) return;
@@ -123,7 +139,11 @@ export function useModalFocus(
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      // Restore focus to the element that opened the dialog (if still in the DOM).
+      const focused = document.activeElement as HTMLElement | null;
+      focusedInsideAtCleanup.current = container?.contains(focused) ? focused : null;
+      // Restore focus to the element that opened the dialog (if still in the
+      // DOM). Synchronously: a dialog that replaces this one in the same
+      // commit sets up after this and must end up holding focus.
       if (
         previouslyFocused &&
         document.contains(previouslyFocused) &&
