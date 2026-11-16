@@ -240,6 +240,33 @@ async fn verify_macos_signature(path: &Path) -> Result<(), LlmError> {
     }
 }
 
+/// Remove everything in the engine folder that is not the pinned build: builds
+/// from earlier app versions (hundreds of megabytes each), abandoned staging
+/// directories and leftover archives. Only ever called once the pinned build
+/// has verified and installed, so nothing removed here can still be needed.
+/// Returns how many entries were removed.
+pub fn prune_other_builds(base: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(engine_root(base)) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        if entry.file_name() == PINNED_BUILD {
+            continue;
+        }
+        let path = entry.path();
+        // `symlink_metadata`: a link is removed as a link, never followed.
+        let is_real_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
+        let gone = if is_real_dir {
+            std::fs::remove_dir_all(&path).is_ok()
+        } else {
+            std::fs::remove_file(&path).is_ok()
+        };
+        if gone {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Download (resumably), verify, unpack and publish the pinned engine.
 /// Returns the path of `llama-server`.
 pub async fn install(
@@ -308,6 +335,8 @@ pub async fn install(
     let bin = installed_binary(base).ok_or_else(|| {
         LlmError::new(ErrorCode::EngineInvalid, "The engine did not install correctly.")
     })?;
+    // The new build is verified and in place: earlier builds are dead weight.
+    prune_other_builds(base);
     on_event(DownloadEvent::Done);
     Ok(bin)
 }
@@ -507,6 +536,47 @@ mod tests {
             std::fs::write(dir.join(INSTALLED_MARKER), asset.sha256).unwrap();
             assert_eq!(installed_binary(tmp.path()), Some(dir.join(SERVER_NAME)));
         }
+    }
+
+    #[test]
+    fn installing_a_new_build_leaves_only_that_build_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = engine_root(tmp.path());
+        let current = install_dir(tmp.path());
+        let old_build = root.join("b10001");
+        let older_build = root.join("b9000");
+        for dir in [&current, &old_build, &older_build] {
+            std::fs::create_dir_all(dir.join("llama")).unwrap();
+            std::fs::write(dir.join("llama").join(SERVER_NAME), b"bin").unwrap();
+            std::fs::write(dir.join(INSTALLED_MARKER), "x").unwrap();
+        }
+        // Debris from interrupted installs of other versions.
+        std::fs::create_dir_all(root.join("b10001.staging/half")).unwrap();
+        std::fs::write(root.join("llama-b10001-bin-macos-arm64.tar.gz"), b"old archive").unwrap();
+        std::fs::write(root.join("llama-b10001-bin-macos-arm64.tar.gz.part"), b"partial").unwrap();
+        // Something outside the engine folder that must never be touched.
+        let models = tmp.path().join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(models.join("model.gguf"), b"weights").unwrap();
+        // A link inside the engine folder pointing out of it: removed as a
+        // link, its target left alone.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&models, root.join("b8000")).unwrap();
+
+        let removed = prune_other_builds(tmp.path());
+        assert_eq!(removed, if cfg!(unix) { 6 } else { 5 });
+
+        let left: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, vec![PINNED_BUILD.to_string()], "only the pinned build remains");
+        assert!(current.join("llama").join(SERVER_NAME).is_file(), "the pinned build is intact");
+        assert_eq!(std::fs::read(models.join("model.gguf")).unwrap(), b"weights");
+
+        // Nothing left to prune; a missing engine folder is fine too.
+        assert_eq!(prune_other_builds(tmp.path()), 0);
+        assert_eq!(prune_other_builds(&tmp.path().join("nowhere")), 0);
     }
 
     #[test]
