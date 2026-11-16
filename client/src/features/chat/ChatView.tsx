@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
-import { selectIsEncryptedSpace, selectHasSpaceKey } from "../../store/slices/spaceE2eeSlice";
+import { selectIsEncryptedSpace, selectHasSpaceKey, selectSpaceE2eeLoaded } from "../../store/slices/spaceE2eeSlice";
 import { selectFeatureEnabled, FEATURE_E2EE_SPACES } from "../../store/slices/featuresSlice";
 import { ChatMessage } from "./ChatMessage";
 import { ChatReply } from "./ChatReply";
@@ -63,6 +63,10 @@ export function ChatView() {
   const encrypted = useAppSelector(selectIsEncryptedSpace(activeSpaceId));
   const hasSpaceKey = useAppSelector(selectHasSpaceKey(activeSpaceId));
   const e2eeEnabled = useAppSelector(selectFeatureEnabled(FEATURE_E2EE_SPACES));
+  // Until this account's record of encrypted spaces has loaded nobody can say
+  // this space is NOT encrypted: the composer waits (it is a moment, from
+  // IndexedDB, and never waits on the keychain).
+  const e2eeRecordLoaded = useAppSelector(selectSpaceE2eeLoaded);
   const sealedNotice = !encrypted
     ? null
     : !e2eeEnabled
@@ -420,7 +424,7 @@ export function ChatView() {
         <ChatInput
           onSend={(content, mentions, attachments, emojiTags) => sendMessage(content, mentions, attachments, emojiTags)}
           onCreatePoll={encrypted ? undefined : sendPoll}
-          disabled={!canSend || sealedNotice !== null}
+          disabled={!canSend || sealedNotice !== null || !e2eeRecordLoaded}
           memberPubkeys={memberPubkeys}
           spaceId={activeSpaceId}
           attachments={upload.attachments}

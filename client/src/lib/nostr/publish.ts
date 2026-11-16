@@ -11,6 +11,7 @@ import { publishOutbox } from "./publishOutbox";
 import { devLocalTargets, resolvePublishTargets } from "./gatedTargets";
 import { store } from "@/store";
 import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
+import { ensureSpaceE2eeRecord, isSpaceE2eeRecordLoaded } from "@/features/spaces/e2ee/e2eeRecord";
 
 /**
  * Where an event goes when the caller named no relays. Public events use the
@@ -42,12 +43,22 @@ export interface SignOptions {
  * (docs/E2EE_SPACES.md §6.1). Chat there goes out sealed (kind 4290); only
  * deletions, group management, reports and layout overlays stay in the clear.
  * This is the one chokepoint every publish path signs through, so a feature
- * that doesn't know about encryption can't leak into such a space. Spaces that
- * are not marked encrypted are unaffected.
+ * that doesn't know about encryption can't leak into such a space.
+ *
+ * Fails closed: until the account's record of encrypted spaces is loaded,
+ * nothing space-scoped is signed in the clear (the record is read here if it
+ * hasn't been yet). Spaces that are not encrypted are unaffected once it is.
  */
-function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): void {
-  const encrypted = store.getState().spaceE2ee.spaces;
+async function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): Promise<void> {
   if (SPACE_E2EE_PLAINTEXT_KINDS.includes(unsigned.kind)) return;
+  if (!unsigned.tags.some((t) => t[0] === "h" && t[1])) return;
+  if (!isSpaceE2eeRecordLoaded()) {
+    await ensureSpaceE2eeRecord().catch(() => {});
+    if (!isSpaceE2eeRecordLoaded()) {
+      throw new Error("Still loading this account's spaces. Try again in a moment.");
+    }
+  }
+  const encrypted = store.getState().spaceE2ee.spaces;
   for (const tag of unsigned.tags) {
     if (tag[0] === "h" && encryptedSpaceEntry(encrypted, tag[1])) {
       throw new Error("This space is end-to-end encrypted, and this can't be posted there yet.");
@@ -56,7 +67,7 @@ function assertSealedForEncryptedSpace(unsigned: UnsignedEvent): void {
 }
 
 async function signWith(unsigned: UnsignedEvent, opts?: SignOptions): Promise<NostrEvent> {
-  assertSealedForEncryptedSpace(unsigned);
+  await assertSealedForEncryptedSpace(unsigned);
   if (opts?.signer) return opts.signer.signEvent(unsigned);
   const signer = getSigner();
   if (!signer) throw new Error("No signer available");

@@ -1,14 +1,40 @@
 import { useEffect } from "react";
 import { useAppSelector } from "@/store/hooks";
-import { startSpaceE2ee, stopSpaceE2ee } from "./e2eeController";
+import { selectFeatureEnabled, FEATURE_E2EE_SPACES } from "@/store/slices/featuresSlice";
+import { ensureSpaceE2eeRecord, resetSpaceE2eeRecord } from "./e2eeRecord";
 
-/** Run the encrypted-spaces controller for the logged-in account. Mounted once
- *  at the app root; restarts on account switch so no key outlives its account. */
+/**
+ * Encrypted spaces for the logged-in account. Mounted once at the app root.
+ *
+ * The record of which spaces are encrypted is loaded for every account,
+ * feature on or off: until it is, the composer and the publish guard refuse to
+ * treat any space as ordinary. It is small and has no crypto in it.
+ *
+ * The rest (keys, subscriptions, the codec) is loaded only when the feature is
+ * on, so it stays off the startup path, and restarts on account switch so no
+ * key outlives its account.
+ */
 export function useSpaceE2ee(): void {
   const pubkey = useAppSelector((s) => s.identity.pubkey);
+  const enabled = useAppSelector(selectFeatureEnabled(FEATURE_E2EE_SPACES));
+
   useEffect(() => {
-    if (!pubkey) return;
-    startSpaceE2ee();
-    return () => stopSpaceE2ee();
+    resetSpaceE2eeRecord();
+    if (pubkey) ensureSpaceE2eeRecord().catch(() => {});
   }, [pubkey]);
+
+  useEffect(() => {
+    if (!pubkey || !enabled) return;
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    void import("./e2eeController").then((controller) => {
+      if (cancelled) return;
+      controller.startSpaceE2ee();
+      stop = controller.stopSpaceE2ee;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [pubkey, enabled]);
 }

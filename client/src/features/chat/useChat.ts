@@ -14,7 +14,10 @@ import { saveUserState, getUserState } from "../../lib/db/userStateStore";
 import { EVENT_KINDS, type NostrEvent } from "../../types/nostr";
 import type { PollDraft } from "../polls/PollComposer";
 import { selectIsEncryptedSpace } from "../../store/slices/spaceE2eeSlice";
-import { sealForSpace } from "../spaces/e2ee/sealedChat";
+// The sealing code (and the codec under it) loads with the first message sent
+// into an encrypted space, not at startup.
+const sealForSpace: typeof import("../spaces/e2ee/sealedChat").sealForSpace = async (unsigned, spaceId) =>
+  (await import("../spaces/e2ee/sealedChat")).sealForSpace(unsigned, spaceId);
 
 /** 15 minutes in seconds */
 const EDIT_WINDOW_SECONDS = 15 * 60;

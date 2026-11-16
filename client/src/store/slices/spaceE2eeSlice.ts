@@ -23,14 +23,19 @@ export interface EncryptedSpaceState {
 }
 
 interface SpaceE2eeState {
-  /** True once the account's persisted record was loaded this session. */
-  hydrated: boolean;
+  /**
+   * The account whose record `spaces` is, or null while none is loaded. The
+   * record counts as loaded only when this equals the logged-in pubkey: after
+   * a logout or an account switch the previous account's record must not be
+   * mistaken for the next one's (see `selectSpaceE2eeLoaded`).
+   */
+  account: string | null;
   spaces: Record<string, EncryptedSpaceState>;
   /** spaceId -> epoch ids whose key is in this session's memory. */
   ready: Record<string, string[]>;
 }
 
-const initialState: SpaceE2eeState = { hydrated: false, spaces: {}, ready: {} };
+const initialState: SpaceE2eeState = { account: null, spaces: {}, ready: {} };
 
 const own = (obj: object, key: string): boolean => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -47,11 +52,18 @@ export const spaceE2eeSlice = createSlice({
   name: "spaceE2ee",
   initialState,
   reducers: {
-    /** Replace the persisted part at login. */
-    hydrateSpaceE2ee(state, action: PayloadAction<Record<string, EncryptedSpaceState>>) {
-      state.spaces = action.payload;
+    /** The account's persisted record was read (before any key is loaded). */
+    hydrateSpaceE2ee(
+      state,
+      action: PayloadAction<{ account: string; spaces: Record<string, EncryptedSpaceState> }>,
+    ) {
+      state.account = action.payload.account;
+      state.spaces = action.payload.spaces;
       state.ready = {};
-      state.hydrated = true;
+    },
+    /** Logout or account switch: nothing of the previous account stays. */
+    resetSpaceE2ee() {
+      return initialState;
     },
     /** Remember that a space is encrypted (sticky). */
     markSpaceEncrypted(state, action: PayloadAction<string>) {
@@ -87,6 +99,7 @@ export const spaceE2eeSlice = createSlice({
 
 export const {
   hydrateSpaceE2ee,
+  resetSpaceE2ee,
   markSpaceEncrypted,
   addEpochHolders,
   epochAccepted,
@@ -106,6 +119,23 @@ export function encryptedSpaceEntry(
 ): EncryptedSpaceState | undefined {
   return spaceId && Object.prototype.hasOwnProperty.call(spaces, spaceId) ? spaces[spaceId] : undefined;
 }
+
+/**
+ * Has the logged-in account's record of encrypted spaces been loaded? Until it
+ * has, nobody can say a space is NOT encrypted, so the composer stays disabled
+ * and nothing with a space's `h` tag is signed in the clear.
+ */
+export function isSpaceE2eeLoadedFor(state: Pick<RootState, "spaceE2ee" | "identity">): boolean {
+  return state.spaceE2ee.account !== null && state.spaceE2ee.account === state.identity.pubkey;
+}
+
+export const selectSpaceE2eeLoaded = (state: RootState): boolean => isSpaceE2eeLoadedFor(state);
+
+/** The pinned key root of an encrypted space, or null. */
+export const selectSpaceKeyRoot =
+  (spaceId: string | null | undefined) =>
+  (state: RootState): string | null =>
+    encryptedSpaceEntry(state.spaceE2ee.spaces, spaceId)?.root ?? null;
 
 /** Is this space end-to-end encrypted (as far as this device knows)? */
 export const selectIsEncryptedSpace =

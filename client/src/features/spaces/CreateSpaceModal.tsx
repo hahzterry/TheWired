@@ -31,7 +31,6 @@ import {
   tunnelToRelayUrl,
 } from "../../lib/relay/embeddedRelay";
 import type { Space, SpaceType } from "../../types/space";
-import { prepareFirstEpoch, publishFirstEpoch } from "./e2ee/spaceKeyring";
 
 /** Top-level choice in the create modal. "decentralized" reveals the relay
  *  picker; A-lite keeps backend-owned channels/roles but a creator-chosen relay. */
@@ -229,6 +228,26 @@ function CreateSpaceModalInner({
   // and the backend treats a repeat create by the same creator as idempotent,
   // so a slow success can't turn into two spaces.
   const pendingIdRef = useRef<string | null>(null);
+  /** The pending space id a first key was made for (e2ee). It is undone if the
+   *  space never gets created: a failed or cancelled creation, or encryption
+   *  unticked before the retry. */
+  const preparedIdRef = useRef<string | null>(null);
+
+  // The keyring (and the codec under it) loads only when someone actually
+  // makes an encrypted space: it stays off the startup path.
+  const loadKeyring = () => import("./e2ee/spaceKeyring");
+
+  async function abandonPreparedKey(): Promise<void> {
+    const id = preparedIdRef.current;
+    if (!id) return;
+    preparedIdRef.current = null;
+    await (await loadKeyring()).abandonFirstEpoch(id).catch(() => {});
+  }
+
+  function handleClose(): void {
+    void abandonPreparedKey();
+    onClose();
+  }
 
   async function handleCreate() {
     if (!name.trim() || !pubkey || creating || pictureUploading) return;
@@ -275,9 +294,13 @@ function CreateSpaceModalInner({
     // End-to-end encrypted space: make and store the first key before anything
     // is created, so a keychain failure can't leave a space that was meant to
     // be encrypted accepting plaintext (docs/E2EE_SPACES.md).
+    // A key prepared for this id on an earlier, failed attempt with encryption
+    // on must not make a now-plain space encrypted.
+    if (!makeEncrypted && preparedIdRef.current === spaceId) await abandonPreparedKey();
     if (makeEncrypted) {
       try {
-        await prepareFirstEpoch(space, fullHistory ? "full" : "epoch");
+        await (await loadKeyring()).prepareFirstEpoch(space, fullHistory ? "full" : "epoch");
+        preparedIdRef.current = spaceId;
       } catch (err) {
         setCreateError(
           `Couldn't set up encryption: ${err instanceof Error ? err.message : "unknown error"}. Try again.`,
@@ -357,6 +380,8 @@ function CreateSpaceModalInner({
         // membership, so a local-only copy would be a dead space. Keep the
         // form open so the user can retry.
         if (err instanceof ApiRequestError && err.code === "SPACE_EXISTS") pendingIdRef.current = null;
+        // Nothing was created: drop the key prepared for it.
+        await abandonPreparedKey();
         setCreateError(
           err instanceof ApiRequestError && err.code === "INVALID_HOST_RELAY"
             ? "The server doesn't accept that host relay."
@@ -368,10 +393,11 @@ function CreateSpaceModalInner({
     }
 
     pendingIdRef.current = null;
+    preparedIdRef.current = null;
     // Now navigate to the space
     onCreate(space);
     if (makeEncrypted) {
-      publishFirstEpoch(space).catch((err) => {
+      void loadKeyring().then((keyring) => keyring.publishFirstEpoch(space)).catch((err) => {
         console.error("[CreateSpace] publishing the space key failed:", err instanceof Error ? err.message : "unknown error");
       });
     }
@@ -446,12 +472,12 @@ function CreateSpaceModalInner({
   const showDropdown = query.trim() && (filteredResults.length > 0 || isSearching);
 
   return (
-    <Modal open={open} onClose={onClose}>
+    <Modal open={open} onClose={handleClose}>
       <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl card-glass p-8 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <ModalTitle className="text-lg font-bold text-heading">Create Space</ModalTitle>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-full p-1 text-soft hover:bg-card-hover hover:text-heading transition-colors"
           >
             <X size={18} />
@@ -811,7 +837,7 @@ function CreateSpaceModalInner({
           </p>
         )}
         <div className="mt-6 flex justify-end gap-2">
-          <Button variant="ghost" size="md" onClick={onClose}>
+          <Button variant="ghost" size="md" onClick={handleClose}>
             Cancel
           </Button>
           <Button

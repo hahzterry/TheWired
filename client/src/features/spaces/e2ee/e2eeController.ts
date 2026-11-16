@@ -12,10 +12,13 @@ import { store, type RootState } from "@/store";
 import { EVENT_KINDS, type NostrEvent, type NostrFilter } from "@/types/nostr";
 import { subscriptionManager } from "@/lib/nostr/subscriptionManager";
 import { registerSpaceE2eeHooks } from "@/lib/nostr/spaceE2eeHooks";
-import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
+import { encryptedSpaceEntry, isSpaceE2eeLoadedFor } from "@/store/slices/spaceE2eeSlice";
+import { processIncomingEvent } from "@/lib/nostr/eventPipeline";
+import { relayManager } from "@/lib/nostr/relayManager";
+import { fetchAllPaged, type PagedReqTransport } from "./pagedReq";
 import type { Space } from "@/types/space";
 import { resolveRelaySet } from "../relaySet";
-import { reconcileSpaceKeys } from "./keyReconcile";
+import { clearKeyReconcile, reconcileSpaceKeys } from "./keyReconcile";
 import { clearSealedChatSession, openSealedFromPipeline, releaseParked } from "./sealedChat";
 import {
   clearSpaceE2eeSession,
@@ -109,6 +112,55 @@ const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let last: { enabled: boolean; list: Space[]; encrypted: RootState["spaceE2ee"]["spaces"]; active: string | null } | null =
   null;
 
+// ── This account's grants, paged ─────────────────────────────────────────────
+// The live grant subscription asks the relay once, for everything in the
+// joined spaces, and a relay answers one REQ with at most 500 events: on a
+// relay whose spaces hold more grants than that, the ones addressed to this
+// account can be past the cap and never seen. So the grants this device needs
+// (those naming it) are also fetched to the end, page by page.
+
+const relayTransport: PagedReqTransport = {
+  subscribe: (opts) => relayManager.subscribe(opts),
+  close: (subId) => relayManager.closeSubscription(subId),
+};
+
+/** host -> the space ids last fetched for, joined. */
+const keyFetched = new Map<string, string>();
+const keyFetchTimers = new Set<ReturnType<typeof setTimeout>>();
+
+function fetchMyGrants(host: string, ids: string[], me: string, attempt = 0): void {
+  const key = [...ids].sort().join(",");
+  keyFetched.set(host, key);
+  void fetchAllPaged(relayTransport, {
+    filter: { kinds: [EVENT_KINDS.SPACE_KEY_GRANT], "#h": ids, "#p": [me] },
+    relayUrl: host,
+    onEvent: (event, relayUrl) => void processIncomingEvent(event, relayUrl),
+    cancelled: () => !running || keyFetched.get(host) !== key,
+  }).then((result) => {
+    if (!running || keyFetched.get(host) !== key) return;
+    // An empty answer is also what a REQ sent before NIP-42 AUTH completes
+    // gets; ask again a few times unless something addressed to us arrived.
+    if (result.count > 0 || attempt >= MAX_EMPTY_RETRIES) return;
+    if (ids.some((id) => delivered.has(`${EVENT_KINDS.SPACE_KEY_GRANT}:${id}`))) return;
+    const timer = setTimeout(() => {
+      keyFetchTimers.delete(timer);
+      if (running && keyFetched.get(host) === key) fetchMyGrants(host, ids, me, attempt + 1);
+    }, EMPTY_RETRY_BASE_MS * 2 ** attempt);
+    keyFetchTimers.add(timer);
+  }, () => {
+    // Never reached (fetchAllPaged settles every page); the live subscription
+    // and the next sync cover a failure.
+  });
+}
+
+function syncKeyFetches(byHost: Map<string, string[]>, me: string): void {
+  for (const host of [...keyFetched.keys()]) if (!byHost.has(host)) keyFetched.delete(host);
+  for (const [host, ids] of byHost) {
+    if (keyFetched.get(host) === [...ids].sort().join(",")) continue;
+    fetchMyGrants(host, ids, me);
+  }
+}
+
 function closeAll(subs: Map<string, HostSub>): void {
   for (const sub of subs.values()) closeSub(sub);
   subs.clear();
@@ -169,7 +221,7 @@ function scheduleReconcile(spaceId: string, delayMs: number = RECONCILE_DEBOUNCE
 function sync(): void {
   if (!running) return;
   const state = store.getState();
-  const enabled = isSpaceE2eeEnabled() && !!state.identity.pubkey && state.spaceE2ee.hydrated;
+  const enabled = isSpaceE2eeEnabled() && !!state.identity.pubkey && isSpaceE2eeLoadedFor(state);
   const snapshot = {
     enabled,
     list: state.spaces.list,
@@ -188,6 +240,7 @@ function sync(): void {
   last = snapshot;
 
   if (!enabled) {
+    keyFetched.clear();
     closeAll(grantSubs);
     closeAll(bgSealedSubs);
     if (historySub) {
@@ -199,12 +252,14 @@ function sync(): void {
 
   // Grants for every joined space: this is how a device learns a space is
   // encrypted, receives its keys, and (as a manager) sees who holds them.
+  const joinedByHost = groupByHost(state.spaces.list);
   syncHostSubs(
     grantSubs,
-    groupByHost(state.spaces.list),
+    joinedByHost,
     (ids) => ({ kinds: [EVENT_KINDS.SPACE_KEY_GRANT], "#h": ids }),
     EVENT_KINDS.SPACE_KEY_GRANT,
   );
+  syncKeyFetches(joinedByHost, state.identity.pubkey!);
 
   const encryptedSpaces = state.spaces.list.filter((s) => encryptedSpaceEntry(state.spaceE2ee.spaces, s.id));
   // Live only (a recent `since`), so an empty answer is the normal one.
@@ -274,7 +329,8 @@ export function startSpaceE2ee(): void {
     sync();
   });
   unsubscribeStore = store.subscribe(sync);
-  void ensureSpaceE2eeHydrated().then(sync);
+  // A record that could not be read is retried on the next sync trigger.
+  void ensureSpaceE2eeHydrated().then(sync, sync);
 }
 
 /** Stop and forget everything in memory; call on logout and account switch. */
@@ -291,6 +347,10 @@ export function stopSpaceE2ee(): void {
   if (historySub) closeSub(historySub);
   historySub = null;
   delivered.clear();
+  keyFetched.clear();
+  for (const timer of keyFetchTimers) clearTimeout(timer);
+  keyFetchTimers.clear();
+  clearKeyReconcile();
   for (const timer of reconcileTimers.values()) clearTimeout(timer);
   reconcileTimers.clear();
   rosterSeen.clear();

@@ -7,11 +7,13 @@
 import { compareEpochsForSend } from "@ishtarservices/core";
 import type { SpaceEpochInfo, SpaceHistoryPolicy } from "@ishtarservices/shared-types";
 import { store } from "@/store";
-import { encryptedSpaceEntry } from "@/store/slices/spaceE2eeSlice";
 import { fetchFreshRoster, type RosterSource } from "./freshRoster";
+import { fetchEpochHolders, type HoldersSource } from "./freshHolders";
 import {
   grantEpochs,
+  hasPendingRotation,
   isEncryptedSpace,
+  keyRootOf,
   isSpaceE2eeEnabled,
   isSpaceKeyManager,
   rotateSpaceKey,
@@ -50,6 +52,7 @@ export function epochsToGrant(policy: SpaceHistoryPolicy, held: readonly SpaceEp
 }
 
 let rosterSource: RosterSource = fetchFreshRoster;
+let holdersSource: HoldersSource = fetchEpochHolders;
 
 /** How long a just-removed member is kept off the roster this device acts on.
  *  The authority's roster can lag a kick by a moment (the relay has not
@@ -106,8 +109,20 @@ async function reconcileOnce(spaceId: string, opts?: ReconcileOptions): Promise<
   const explicit = new Set(opts?.exclude ?? []);
   const lagging = activeExclusions(spaceId, fresh, now);
   const roster = fresh.filter((pk) => !explicit.has(pk) && !lagging.has(pk));
-  // Read after the fetch: grants may have arrived meanwhile.
-  const holders = encryptedSpaceEntry(store.getState().spaceE2ee.spaces, spaceId)?.holders[current.info.id] ?? [];
+
+  // A rotation whose grants never reached the relay goes out first.
+  if (hasPendingRotation(spaceId)) {
+    await rotateSpaceKey(spaceId, roster);
+    return;
+  }
+
+  // Who holds the current key, as the relay serves it: a grant the relay
+  // refused handed nobody anything, whatever this device signed.
+  const root = keyRootOf(spaceId);
+  if (!root) return;
+  const holders = await holdersSource({ space, epoch: current.info, key: current.key, root });
+  if (!holders) return;
+  if (sendEpochOf(spaceId)?.info.id !== current.info.id) return; // moved on meanwhile
   const plan = planKeyReconcile(roster, holders, me);
 
   if (plan.rotate) {
@@ -117,24 +132,64 @@ async function reconcileOnce(spaceId: string, opts?: ReconcileOptions): Promise<
   }
 }
 
+/** Retry a pass that failed (a refused or unanswered grant, a signer that was
+ *  away), backing off; the next roster change or opening the space also
+ *  retries. */
+const RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000];
+const retries = new Map<string, { attempt: number; timer: ReturnType<typeof setTimeout> }>();
+
+function scheduleRetry(spaceId: string): void {
+  const prev = retries.get(spaceId);
+  if (prev) clearTimeout(prev.timer);
+  const attempt = prev ? prev.attempt + 1 : 0;
+  if (attempt >= RETRY_DELAYS_MS.length) {
+    retries.delete(spaceId);
+    return;
+  }
+  const timer = setTimeout(() => {
+    void reconcileSpaceKeys(spaceId, undefined, true);
+  }, RETRY_DELAYS_MS[attempt]);
+  retries.set(spaceId, { attempt, timer });
+}
+
 // One pass at a time per space, in request order.
 const chains = new Map<string, Promise<void>>();
 
 /** Bring a space's key in step with its roster, if this account manages it. */
-export function reconcileSpaceKeys(spaceId: string, opts?: ReconcileOptions): Promise<void> {
+export function reconcileSpaceKeys(spaceId: string, opts?: ReconcileOptions, isRetry = false): Promise<void> {
   const run = (chains.get(spaceId) ?? Promise.resolve())
     .then(() => reconcileOnce(spaceId, opts))
-    .catch((err) => {
-      console.error("[e2ee] key reconcile failed:", err instanceof Error ? err.message : "unknown error");
-    });
+    .then(
+      () => {
+        const pending = retries.get(spaceId);
+        if (pending) clearTimeout(pending.timer);
+        retries.delete(spaceId);
+      },
+      (err) => {
+        console.error("[e2ee] key reconcile failed:", err instanceof Error ? err.message : "unknown error");
+        if (!isRetry) retries.delete(spaceId);
+        scheduleRetry(spaceId);
+      },
+    );
   chains.set(spaceId, run);
   return run;
 }
 
-/** Test-only: forget remembered removals and queued passes, and optionally
- *  replace where the roster comes from. */
-export function _resetKeyReconcile(source: RosterSource = fetchFreshRoster): void {
+/** Stop pending retries; call on account switch and logout. */
+export function clearKeyReconcile(): void {
+  for (const r of retries.values()) clearTimeout(r.timer);
+  retries.clear();
   recentlyRemoved.clear();
   chains.clear();
+}
+
+/** Test-only: forget remembered removals and queued passes, and optionally
+ *  replace where the roster and the key holders come from. */
+export function _resetKeyReconcile(
+  source: RosterSource = fetchFreshRoster,
+  holders: HoldersSource = fetchEpochHolders,
+): void {
+  clearKeyReconcile();
   rosterSource = source;
+  holdersSource = holders;
 }

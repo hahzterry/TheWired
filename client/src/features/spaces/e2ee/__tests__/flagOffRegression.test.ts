@@ -124,6 +124,9 @@ beforeEach(async () => {
   h.unwrap.mockReset();
   published = [];
   vi.spyOn(relayManager, "connect").mockImplementation(() => undefined as never);
+  // The paged grant fetch talks to the relay layer directly; nothing answers here.
+  vi.spyOn(relayManager, "subscribe").mockImplementation(() => "paged-sub");
+  vi.spyOn(relayManager, "closeSubscription").mockImplementation(() => undefined as never);
   vi.spyOn(relayManager, "publish").mockImplementation((event: unknown) => {
     published.push(event as NostrEvent);
     return 1;
@@ -330,6 +333,16 @@ describe("feature on: subscriptions", () => {
     const sealedFilters = all.filter((f) => (f.kinds as number[])[0] === 4290);
     expect(sealedFilters.some((f) => typeof f.since === "number")).toBe(true);
     expect(sealedFilters.some((f) => f.limit === 500 && f.since === undefined)).toBe(true);
+  });
+
+  it("fetches this account's grants by recipient, to the end, on the space's relay", async () => {
+    const paged = vi.mocked(relayManager.subscribe).mock.calls.map(
+      (c) => c[0] as unknown as { filters: Array<Record<string, unknown>>; relayUrls: string[] },
+    );
+    const mine = paged.find((o) => (o.filters[0]["#p"] as string[] | undefined)?.includes(me));
+    expect(mine).toBeDefined();
+    expect(mine!.relayUrls).toEqual([HOST]);
+    expect(mine!.filters[0]).toMatchObject({ kinds: [4291], "#h": [SPACE], "#p": [me], limit: 500 });
   });
 
   it("closes everything when the feature is switched off again", async () => {

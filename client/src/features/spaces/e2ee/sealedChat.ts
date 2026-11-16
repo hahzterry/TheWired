@@ -17,6 +17,7 @@ import { LRUCache } from "lru-cache";
 import { store } from "@/store";
 import { ingestOpenedSealedEvent } from "@/lib/nostr/eventPipeline";
 import type { SealedOpenResult } from "@/lib/nostr/spaceE2eeHooks";
+import { forgetSeenEvents } from "@/lib/nostr/forgetSeen";
 import type { NostrEvent, UnsignedEvent } from "@/types/nostr";
 import {
   ensureSpaceE2eeHydrated,
@@ -53,28 +54,47 @@ export async function sealForSpace(unsigned: UnsignedEvent, spaceId: string): Pr
 
 // ── Receive ──────────────────────────────────────────────────────────────────
 
-const MAX_PARKED_PER_EPOCH = 500;
-const MAX_PARKED_EPOCHS = 64;
+/** Sealed events kept per author per space while their key is missing. A
+ *  member who floods a space with sealed events under made-up epochs only
+ *  ever evicts their own. */
+const MAX_PARKED_PER_AUTHOR = 200;
+/** Distinct authors with parked events per space. */
+const MAX_PARKED_AUTHORS = 256;
 
-/** `${spaceId}:${epochId}` -> sealed events waiting for that key. */
-const parked = new Map<string, Array<{ event: NostrEvent; relayUrl: string }>>();
+interface Parked {
+  event: NostrEvent;
+  relayUrl: string;
+}
+
+/** spaceId -> author -> parked events, oldest first. */
+const parked = new Map<string, Map<string, Parked[]>>();
+
+/** Let an evicted event be fetched and judged again later: it was never
+ *  opened, so the pipeline must not treat it as done. */
+function release(events: Parked[]): void {
+  forgetSeenEvents(events.map((p) => p.event.id));
+}
 /** Rumor ids already rendered, per space: a second outer event carrying the
  *  same rumor is a replay. */
 const seenRumors = new LRUCache<string, true>({ max: 20_000 });
 
-function park(spaceId: string, epochId: string, event: NostrEvent, relayUrl: string): void {
-  const key = `${spaceId}:${epochId}`;
-  let list = parked.get(key);
+function park(spaceId: string, event: NostrEvent, relayUrl: string): void {
+  let bySpace = parked.get(spaceId);
+  if (!bySpace) {
+    bySpace = new Map();
+    parked.set(spaceId, bySpace);
+  }
+  let list = bySpace.get(event.pubkey);
   if (!list) {
-    if (parked.size >= MAX_PARKED_EPOCHS) {
-      const oldest = parked.keys().next().value;
-      if (oldest !== undefined) parked.delete(oldest);
+    if (bySpace.size >= MAX_PARKED_AUTHORS) {
+      release([{ event, relayUrl }]);
+      return;
     }
     list = [];
-    parked.set(key, list);
+    bySpace.set(event.pubkey, list);
   }
   if (list.some((p) => p.event.id === event.id)) return;
-  if (list.length >= MAX_PARKED_PER_EPOCH) list.shift();
+  if (list.length >= MAX_PARKED_PER_AUTHOR) release(list.splice(0, 1));
   list.push({ event, relayUrl });
 }
 
@@ -103,7 +123,7 @@ export function openSealedFromPipeline(event: NostrEvent, relayUrl: string): Sea
   if (!key) {
     // Not held (yet): a grant may still be on its way, or the keychain is
     // still loading. Never rendered as text; kept until the key shows up.
-    park(header.spaceId, header.epochId, event, relayUrl);
+    park(header.spaceId, event, relayUrl);
     return { status: "parked" };
   }
   return open(event, key, header.spaceId);
@@ -111,13 +131,22 @@ export function openSealedFromPipeline(event: NostrEvent, relayUrl: string): Sea
 
 /** An epoch key arrived: open and ingest everything parked for it. */
 export async function releaseParked(spaceId: string, epochId: string): Promise<number> {
-  const mapKey = `${spaceId}:${epochId}`;
-  const list = parked.get(mapKey);
+  const bySpace = parked.get(spaceId);
   const key = getEpochKey(spaceId, epochId);
-  if (!list || !key) return 0;
-  parked.delete(mapKey);
+  if (!bySpace || !key) return 0;
+  const ready: Parked[] = [];
+  for (const [author, list] of bySpace) {
+    const keep = list.filter((p) => {
+      if (readSealedHeader(p.event)?.epochId !== epochId) return true;
+      ready.push(p);
+      return false;
+    });
+    if (keep.length > 0) bySpace.set(author, keep);
+    else bySpace.delete(author);
+  }
+  if (bySpace.size === 0) parked.delete(spaceId);
   let released = 0;
-  for (const { event, relayUrl } of list) {
+  for (const { event, relayUrl } of ready) {
     const result = open(event, key, spaceId);
     if (result.status !== "opened") continue;
     await ingestOpenedSealedEvent(result.event, relayUrl);
@@ -129,12 +158,13 @@ export async function releaseParked(spaceId: string, epochId: string): Promise<n
 /** How many sealed events are waiting for keys in a space (for the UI). */
 export function parkedCount(spaceId: string): number {
   let n = 0;
-  for (const [key, list] of parked) if (key.startsWith(`${spaceId}:`)) n += list.length;
+  for (const list of parked.get(spaceId)?.values() ?? []) n += list.length;
   return n;
 }
 
 /** Drop receive-side state; call on account switch and logout. */
 export function clearSealedChatSession(): void {
+  for (const bySpace of parked.values()) for (const list of bySpace.values()) release(list);
   parked.clear();
   seenRumors.clear();
 }

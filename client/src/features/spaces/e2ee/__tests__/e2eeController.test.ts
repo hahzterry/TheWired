@@ -63,6 +63,7 @@ const space: Space = {
 };
 
 let published: NostrEvent[] = [];
+let stored: NostrEvent[] = [];
 const grants = () => published.filter((e) => e.kind === 4291);
 
 /** Let queued promise work (IndexedDB, keychain) finish under fake timers. */
@@ -76,17 +77,37 @@ beforeEach(async () => {
   h.keychain.clear();
   published = [];
   vi.spyOn(relayManager, "connect").mockImplementation(() => undefined as never);
+  // The paged grant fetch talks to the relay layer directly; nothing answers here.
+  vi.spyOn(relayManager, "subscribe").mockImplementation(() => "paged-sub");
+  vi.spyOn(relayManager, "closeSubscription").mockImplementation(() => undefined as never);
   vi.spyOn(relayManager, "publish").mockImplementation((event: unknown) => {
     published.push(event as NostrEvent);
     return 1;
   });
+  vi.spyOn(relayManager, "publishWithConfirmation").mockImplementation(async (event: NostrEvent) => {
+    published.push(event);
+    stored.push(event);
+    return [{ relayUrl: HOST, success: true, message: "" }];
+  });
+  stored = [];
   let n = 0;
   vi.spyOn(subscriptionManager, "subscribe").mockImplementation(() => `sub-${++n}`);
   vi.spyOn(subscriptionManager, "close").mockImplementation(() => undefined as never);
   store.dispatch(resetAll());
   resetEventPipelineCaches();
-  // The authority's roster, for these tests, is whatever the store holds now.
-  _resetKeyReconcile(async (sp) => store.getState().spaces.list.find((x) => x.id === sp.id)?.memberPubkeys ?? null);
+  // The authority's roster, for these tests, is whatever the store holds now;
+  // key holders are whatever the (stubbed) relay stored.
+  _resetKeyReconcile(
+    async (sp) => store.getState().spaces.list.find((x) => x.id === sp.id)?.memberPubkeys ?? null,
+    async (q) => {
+      const out = new Set<string>();
+      for (const e of stored) {
+        const header = readGrantHeader(e);
+        if (header?.epochId === q.epoch.id) header.recipients.forEach((pk) => out.add(pk));
+      }
+      return [...out];
+    },
+  );
   setActivePubkey(me);
   store.dispatch(login({ pubkey: me, signerType: "nip07" }));
   store.dispatch(setFeatureEnabled({ feature: FEATURE_E2EE_SPACES, enabled: true }));
