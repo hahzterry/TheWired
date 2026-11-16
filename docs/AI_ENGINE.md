@@ -248,6 +248,14 @@ chat works again; four kills → `Failed` with the reason; model corrupted in pl
 and removed; graceful quit and a signal-terminated app both leave no engine behind; the port
 answers 401 without or with a wrong key, binds loopback only, and has no web UI.
 
+Non-dev build (`tauri build --debug --no-bundle`, run directly: UI served by the app on the
+production origin `http://localhost:14420`, production CSP and capabilities, no dev server): the
+engine commands pass the ACL; a chat sent with the engine stopped starts it and streams the reply
+over IPC (usage reported); a read-tool call works; Stop ends the stream and the engine goes idle; a
+killed engine restarts and chat works again; quit leaves nothing behind. In the same build the
+webview's own HTTP client is refused on the engine's port ("url not allowed on the configured
+scope") while an HTTPS control request succeeds, i.e. IPC is the only route and it works.
+
 ### Remaining for Phase 2 (not done)
 - **Windows.** Upstream archives are `.zip`; no asset is wired, so the tier reports "not available
   on this system". Needs zip extraction and Windows code signing (SmartScreen).
