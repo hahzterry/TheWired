@@ -2,7 +2,7 @@
  * Engagement driven by a virtualized list's rendered range (instead of one
  * IntersectionObserver per card).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { renderHook } from "@testing-library/react";
 
 vi.mock("@/lib/nostr/subscriptionManager", () => ({
@@ -11,16 +11,11 @@ vi.mock("@/lib/nostr/subscriptionManager", () => ({
 
 import { subscriptionManager } from "@/lib/nostr/subscriptionManager";
 import { EngagementWindow, useEngagementRange } from "../engagementCollector";
+import { engagementSubs, noteIds } from "./engagementSubs";
 
 const subscribe = vi.mocked(subscriptionManager.subscribe);
 const close = vi.mocked(subscriptionManager.close);
-
-function eIds(callIndex: number): string[] {
-  return (subscribe.mock.calls[callIndex][0] as { filters: { "#e": string[] }[] }).filters[0]["#e"];
-}
-function relays(callIndex: number): string[] | undefined {
-  return (subscribe.mock.calls[callIndex][0] as { relayUrls?: string[] }).relayUrls;
-}
+const subs = engagementSubs(subscribe as unknown as Mock, close as unknown as Mock);
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -35,25 +30,24 @@ afterEach(() => {
 });
 
 describe("EngagementWindow.setVisible", () => {
-  it("fetches the rendered range once, in feed order", () => {
+  it("fetches the rendered range once, in feed order, and follows it live", () => {
     const w = new EngagementWindow(["wss://r"]);
     w.setVisible(["n10", "n11", "n12"], 10);
     w.flush();
-    expect(subscribe).toHaveBeenCalledTimes(1);
-    expect(eIds(0)).toEqual(["n10", "n11", "n12"]);
+    expect(subs.stored().map(noteIds)).toEqual([["n10", "n11", "n12"]]);
+    expect(subs.live().map(noteIds)).toEqual([["n10", "n11", "n12"]]);
     w.dispose();
   });
 
-  it("fetches only the notes that are new to the window as it moves", () => {
+  it("fetches only the notes that are new to the window as it moves, and keeps the rest live", () => {
     const w = new EngagementWindow();
     w.setVisible(["a", "b", "c"], 0);
     w.flush();
     w.setVisible(["b", "c", "d", "e"], 1);
     w.flush();
-    expect(subscribe).toHaveBeenCalledTimes(2);
-    expect(eIds(1)).toEqual(["d", "e"]);
-    // Only the newest batch stays live.
-    expect(close).toHaveBeenCalledWith("sub-1");
+    expect(subs.stored().map(noteIds)).toEqual([["a", "b", "c"], ["d", "e"]]);
+    // `b` and `c` are still rendered: they are still subscribed to.
+    expect(noteIds(subs.openLive()!)).toEqual(["b", "c", "d", "e"]);
     w.dispose();
   });
 
@@ -64,12 +58,12 @@ describe("EngagementWindow.setVisible", () => {
     w.setVisible(["m", "n"], 40);
     w.setVisible(["y", "z"], 90);
     vi.advanceTimersByTime(300);
-    expect(subscribe).toHaveBeenCalledTimes(1);
-    expect(eIds(0)).toEqual(["y", "z"]);
+    expect(subs.stored().map(noteIds)).toEqual([["y", "z"]]);
+    expect(subs.live().map(noteIds)).toEqual([["y", "z"]]);
     w.dispose();
   });
 
-  it("does not re-fetch when the window scrolls back over fetched notes", () => {
+  it("does not re-fetch when the window scrolls back over fetched notes, but follows them again", () => {
     const w = new EngagementWindow();
     w.setVisible(["a", "b"], 0);
     w.flush();
@@ -77,7 +71,8 @@ describe("EngagementWindow.setVisible", () => {
     w.flush();
     w.setVisible(["a", "b"], 0);
     w.flush();
-    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(subs.stored().map(noteIds)).toEqual([["a", "b"], ["c", "d"]]);
+    expect(noteIds(subs.openLive()!)).toEqual(["a", "b"]);
     w.dispose();
   });
 });
@@ -87,9 +82,8 @@ describe("useEngagementRange", () => {
     const { result } = renderHook(() => useEngagementRange(["wss://host"], "chan-1"));
     result.current(["a", "b"], 0);
     vi.advanceTimersByTime(300);
-    expect(subscribe).toHaveBeenCalledTimes(1);
-    expect(eIds(0)).toEqual(["a", "b"]);
-    expect(relays(0)).toEqual(["wss://host"]);
+    expect(subs.all().map(noteIds)).toEqual([["a", "b"], ["a", "b"]]);
+    expect(subs.all().map((r) => r.relayUrls)).toEqual([["wss://host"], ["wss://host"]]);
   });
 
   it("keeps the same window while only the relay array identity changes", () => {
@@ -101,29 +95,30 @@ describe("useEngagementRange", () => {
     rerender({ urls: ["wss://host"] });
     result.current(["a"], 0);
     vi.advanceTimersByTime(300);
-    // Already fetched by the same window: no second REQ, nothing closed.
-    expect(subscribe).toHaveBeenCalledTimes(1);
+    // Already fetched and followed by the same window: nothing new, nothing closed.
+    expect(subscribe).toHaveBeenCalledTimes(2);
     expect(close).not.toHaveBeenCalled();
   });
 
-  it("starts over when the feed changes: closes the old sub and fetches again", () => {
+  it("starts over when the feed changes: closes what was open and fetches again", () => {
     const { result, rerender } = renderHook(({ key }) => useEngagementRange(undefined, key), {
       initialProps: { key: "chan-1" },
     });
     result.current(["a"], 0);
     vi.advanceTimersByTime(300);
     rerender({ key: "chan-2" });
-    expect(close).toHaveBeenCalledWith("sub-1");
+    expect(subs.open()).toEqual([]);
     result.current(["a"], 0);
     vi.advanceTimersByTime(300);
-    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(subs.stored().map(noteIds)).toEqual([["a"], ["a"]]);
   });
 
-  it("closes its subscription on unmount", () => {
+  it("closes its subscriptions on unmount", () => {
     const { result, unmount } = renderHook(() => useEngagementRange(undefined, "chan-1"));
     result.current(["a"], 0);
     vi.advanceTimersByTime(300);
+    expect(subs.open()).toHaveLength(2);
     unmount();
-    expect(close).toHaveBeenCalledWith("sub-1");
+    expect(subs.open()).toEqual([]);
   });
 });
