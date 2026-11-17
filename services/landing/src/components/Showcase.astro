@@ -2,10 +2,11 @@
 import { Picture, getImage } from 'astro:assets';
 import type { ImageMetadata } from 'astro';
 import Icon from './Icon.astro';
-import spaces from '../assets/showcase/spaces.png';
-import music from '../assets/showcase/music.png';
-import profile from '../assets/showcase/profile.png';
-import themesPoster from '../assets/showcase/themes-poster.png';
+import spaces from '../assets/showcase/spaces.webp';
+import music from '../assets/showcase/music.webp';
+import messages from '../assets/showcase/messages.webp';
+import profile from '../assets/showcase/profile.webp';
+import themesPoster from '../assets/showcase/themes-poster.webp';
 
 type Tab = {
   id: string;
@@ -25,33 +26,44 @@ const tabs: Tab[] = [
     label: 'Spaces',
     icon: 'hash',
     title: 'Spaces with channels, roles and folders',
-    body: 'Give your scene a home: chat, notes, media and voice channels, organized in folders, with roles you define.',
+    body: 'Give your scene a home: chat, notes, music, photos and voice channels, organized in folders, with roles you define.',
     points: ['Chat, notes, media & voice channels', 'Roles, permissions, moderation', 'Our relay, any NIP-29 relay, or your own machine'],
-    window: 'Neon Frequencies / #general',
+    window: 'basement frequencies / #chat',
     image: spaces,
-    alt: 'A space in The Wired: channels on the left, a busy chat in the middle, the member list on the right.',
+    alt: 'A space in The Wired: folders of channels on the left, a chat planning a basement show with a flyer and reactions in the middle, and the member list on the right.',
   },
   {
     id: 'music',
     label: 'Music',
     icon: 'music',
     title: 'A music library you publish yourself',
-    body: 'Upload tracks and albums, build projects with collaborators, make playlists, and listen together in real time.',
+    body: 'Release albums and tracks, build projects with collaborators, make playlists, and listen together in real time.',
     points: ['Albums, projects & playlists', 'Listen Together sessions', 'Lightning tips straight to the artist'],
-    window: 'Music / My Music',
+    window: 'Music / concrete psalms',
     image: music,
-    alt: 'The music library: a project with cover art above a list of tracks.',
+    alt: 'An album page: cover art, a seven-track list with one track playing, listener notes, and the player bar.',
+  },
+  {
+    id: 'messages',
+    label: 'Messages',
+    icon: 'message',
+    title: 'Private messages, private calls',
+    body: 'Direct and group messages are end-to-end encrypted (NIP-17). Share tracks and posts inline, and start a voice or video call from any conversation.',
+    points: ['NIP-17 direct & group messages', 'Encrypted voice & video calls', 'Friends list across devices'],
+    window: 'Messages / KXRA',
+    image: messages,
+    alt: 'Messages: a list of conversations on the left and an encrypted thread on the right, including a shared album card.',
   },
   {
     id: 'profile',
     label: 'Profiles',
     icon: 'user',
     title: 'A profile that travels with you',
-    body: 'Your name, avatar, posts and follows live on Nostr relays, so every Nostr app can show them. You choose which tabs others see.',
-    points: ['One identity across Nostr apps', 'Notes, articles, media & music tabs', 'Show or hide each section'],
-    window: 'Profile',
+    body: 'Your name, avatar, posts and follows live on Nostr relays, so every Nostr app can show them. Pin what matters and choose which tabs others see.',
+    points: ['One identity across Nostr apps', 'Notes, articles, media & music tabs', 'Pinned posts, zaps, friends'],
+    window: 'KXRA',
     image: profile,
-    alt: 'A profile page with a banner, avatar, bio and a feed of posts.',
+    alt: 'An artist profile with a banner, avatar, bio, message, zap and friend buttons, and a pinned release post.',
   },
   {
     id: 'themes',
