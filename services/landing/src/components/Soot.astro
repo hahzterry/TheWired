@@ -1,6 +1,8 @@
 ---
 /**
- * soot — the mobile app on The Wired's network. This band borrows soot's own
+ * soot — a standalone app for iPhone and Android, built on The Wired's
+ * network. It gets this one section and is presented as its own app, not as
+ * a mobile version of The Wired. The band borrows soot's own
  * design rules: bone canvas (the cat is black and is never recoloured),
  * grain, lowercase, flat, one ember spark. Its assets live in ../../soot/
  * under that directory's NOTICE.
@@ -14,7 +16,7 @@ import chat from '../../soot/shots/space-chat.jpg';
 import nowPlaying from '../../soot/shots/now-playing.jpg';
 ---
 
-<section id="mobile" class="soot-band relative isolate overflow-hidden bg-bone text-soot" style={`--grain: url(${grain.src});`}>
+<section id="soot" class="soot-band relative isolate overflow-hidden bg-bone text-soot" style={`--grain: url(${grain.src});`}>
   <div class="container grid grid-cols-1 items-center gap-14 py-20 sm:py-24 lg:grid-cols-2 lg:py-28">
     <div class="reveal max-w-xl">
       <Picture
@@ -28,11 +30,11 @@ import nowPlaying from '../../soot/shots/now-playing.jpg';
         class="h-auto w-[180px] sm:w-[200px]"
       />
 
-      <p class="mt-8 font-mono text-[0.78rem] text-ash">for iphone & android</p>
-      <h2 class="soot-title mt-3">the wired, in your pocket.</h2>
+      <p class="mt-8 font-mono text-[0.78rem] text-ash">built on the wired · iphone & android</p>
+      <h2 class="soot-title mt-3">a home for the underground.</h2>
       <p class="mt-5 text-lg leading-relaxed text-[#3d3a36]">
-        soot is a mobile app built on the wired's network: spaces, music, messages and calls on your phone. sign in
-        with the same key and your spaces, messages and follows are already there.
+        soot is its own app for iPhone and Android, built on the wired's network: spaces for your scene, music as
+        the native language, and messages straight to the artist.
       </p>
 
       <div class="mt-8 flex flex-col gap-3 sm:flex-row">

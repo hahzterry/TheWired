@@ -3,13 +3,13 @@
  * Downloads. The latest release is read from GitHub at build time so the page
  * works without JavaScript; in the browser the script re-reads it (to catch a
  * release published after this build), picks the visitor's platform, and
- * points the hero's button at the right build — or at soot on a phone.
+ * points the hero's button at the right build. Phones get the full list:
+ * The Wired is a desktop app.
  */
 import { Picture } from 'astro:assets';
 import Icon from './Icon.astro';
 import accentGuy from '../assets/characters/accent-guy.png';
-import sootLogo from '../../soot/public/img/soot.png';
-import { RELEASES_URL, REQUIREMENTS, SOOT } from '../data/site';
+import { RELEASES_URL, REQUIREMENTS } from '../data/site';
 import { fallbackRelease, fetchLatestRelease, type Release } from '../lib/platforms';
 
 let release: Release = fallbackRelease();
@@ -32,8 +32,7 @@ const osIcon = { macOS: 'apple', Windows: 'windows', Linux: 'linux' } as const;
       <p class="mt-5 text-lede text-body">Free and open source. Updates install themselves.</p>
     </div>
 
-    <div class="mt-14 grid grid-cols-1 gap-5 md:mt-20 lg:grid-cols-[minmax(0,1fr)_21rem]">
-      <!-- desktop -->
+    <div class="mt-14 md:mt-20">
       <div class="reveal card relative p-6 sm:p-8">
         <!-- he sits on the card's edge -->
         <Picture
@@ -61,7 +60,7 @@ const osIcon = { macOS: 'apple', Windows: 'windows', Linux: 'linux' } as const;
           </a>
         </div>
 
-        <ul class="mt-8 grid grid-cols-1 gap-2 sm:grid-cols-2" aria-label="All builds">
+        <ul class="mt-8 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3" aria-label="All builds">
           {release.builds.map((b) => (
             <li>
               <a
@@ -92,18 +91,6 @@ const osIcon = { macOS: 'apple', Windows: 'windows', Linux: 'linux' } as const;
         <p class="mt-6 font-mono text-[0.75rem] text-muted">{REQUIREMENTS}</p>
       </div>
 
-      <!-- phone: a bone card, because the soot lockup only sits on bone -->
-      <div class="reveal flex flex-col rounded-[20px] bg-bone p-7 text-soot">
-        <Picture src={sootLogo} formats={['avif', 'webp']} fallbackFormat="png" widths={[140, 280]} sizes="140px" alt="soot" loading="lazy" class="h-auto w-[130px]" />
-        <p class="mt-6 font-soot text-2xl font-extrabold leading-tight">on your phone?</p>
-        <p class="mt-2 text-[0.95rem] leading-relaxed text-[#3d3a36]">
-          soot is the mobile app for the same network. same key, same spaces.
-        </p>
-        <div class="mt-auto flex flex-col gap-2 pt-6">
-          <a class="btn btn-soot btn-sm" href={SOOT.appStore}><Icon name="apple" size={16} /> app store</a>
-          <a class="btn btn-soot btn-sm" href={SOOT.googlePlay}><Icon name="google-play" size={14} /> google play</a>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -118,7 +105,7 @@ const osIcon = { macOS: 'apple', Windows: 'windows', Linux: 'linux' } as const;
 </style>
 
 <script>
-  import { SOOT, RELEASES_URL } from '../data/site';
+  import { RELEASES_URL } from '../data/site';
   import { detectDevice, fetchLatestRelease, primaryBuildFor, type BuildId, type Device, type Release } from '../lib/platforms';
 
   const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel);
@@ -143,17 +130,11 @@ const osIcon = { macOS: 'apple', Windows: 'windows', Linux: 'linux' } as const;
     const heroCta = $<HTMLAnchorElement>('[data-hero-cta]');
     const heroMeta = $('[data-hero-meta]');
 
+    // A phone can't run the desktop app: send the button to the full list.
     if (device === 'ios' || device === 'android') {
-      const ios = device === 'ios';
-      if (heroCta) heroCta.href = ios ? SOOT.appStore : SOOT.googlePlay;
-      setText('[data-hero-cta-label]', ios ? 'Get soot for iPhone' : 'Get soot for Android');
-      $('[data-hero-cta-icon]')?.setAttribute('hidden', '');
-      if (heroMeta) {
-        heroMeta.innerHTML = '';
-        heroMeta.append('soot is our mobile app for the same network. ');
-        const a = Object.assign(document.createElement('a'), { href: '#download', className: 'text-link', textContent: 'Desktop downloads' });
-        heroMeta.append(a);
-      }
+      if (heroCta) heroCta.href = '#download';
+      setText('[data-hero-cta-label]', 'Get it for your computer');
+      setText('[data-hero-meta]', 'A desktop app for macOS, Windows and Linux.');
       return;
     }
 

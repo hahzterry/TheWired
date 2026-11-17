@@ -1,17 +1,14 @@
 ---
-import { GITHUB_URL, SOOT } from '../data/site';
+import { GITHUB_URL } from '../data/site';
 
 interface Props {
   title?: string;
   description?: string;
-  /** Show Safari's smart app banner for soot on iPhone. */
-  appBanner?: boolean;
 }
 
 const {
   title = 'The Wired — your community, on a network nobody owns',
-  description = 'The Wired is a free, open-source desktop app for spaces, music, voice and video calls, and encrypted messages — built on Nostr, so your identity and your people go wherever you go. For macOS, Windows and Linux; soot brings it to iPhone and Android.',
-  appBanner = false,
+  description = 'The Wired is a free, open-source desktop app for spaces, music, voice and video calls, and encrypted messages — built on Nostr, so your identity and your people go wherever you go. For macOS, Windows and Linux.',
 } = Astro.props;
 
 const canonical = new URL(Astro.url.pathname, Astro.site).href;
@@ -42,7 +39,6 @@ const jsonLd = {
     <link rel="canonical" href={canonical} />
     <meta name="theme-color" content="#0C0910" />
     <meta name="color-scheme" content="dark" />
-    {appBanner && <meta name="apple-itunes-app" content={`app-id=${SOOT.appStoreId}`} />}
 
     <!-- Open Graph / Twitter -->
     <meta property="og:site_name" content="The Wired" />
