@@ -34,6 +34,14 @@ const right = [
       <stop offset="0.8" style="stop-color: var(--color-heading); stop-opacity: 0.2" />
       <stop offset="1" style="stop-color: var(--color-heading); stop-opacity: 0.16" />
     </linearGradient>
+    <!-- the pulses fade out before they reach the headline -->
+    <linearGradient id="pulse-fade-ramp" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1440" y2="0">
+      <stop offset="0.5" stop-color="#000" />
+      <stop offset="0.72" stop-color="#fff" />
+    </linearGradient>
+    <mask id="pulse-fade" maskUnits="userSpaceOnUse" x="0" y="0" width="1440" height="640">
+      <rect width="1440" height="640" fill="url(#pulse-fade-ramp)" />
+    </mask>
     <linearGradient id="pole-fade" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" style="stop-color: var(--color-border)" />
       <stop offset="0.85" style="stop-color: var(--color-border); stop-opacity: 0" />
@@ -58,7 +66,7 @@ const right = [
   </g>
 
   <!-- signal -->
-  <g fill="none" stroke-width="2" stroke-linecap="round">
+  <g fill="none" stroke-width="2" stroke-linecap="round" mask="url(#pulse-fade)">
     <path class="wire-pulse" d={left[0]} pathLength="1000" style="stroke: var(--color-primary)" stroke-opacity="0.7" />
     <path class="wire-pulse wire-pulse--slow" d={left[2]} pathLength="1000" style="stroke: var(--color-accent)" stroke-opacity="0.55" />
   </g>
