@@ -1,7 +1,7 @@
 {
   "name": "@thewired/landing",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "astro dev",
@@ -9,18 +9,12 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^5.18.2",
-    "@astrojs/react": "^4.2.1",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "motion": "^12.12.1",
-    "lucide-react": "^1.70.0"
+    "astro": "^5.18.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.4",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.3.4",
-    "typescript": "^7.0.2",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0"
+    "typescript": "^7.0.2"
   }
 }

@@ -1,82 +1,211 @@
 ---
-import DownloadButton from './DownloadButton.tsx';
+/**
+ * Downloads. The latest release is read from GitHub at build time so the page
+ * works without JavaScript; in the browser the script re-reads it (to catch a
+ * release published after this build), picks the visitor's platform, and
+ * points the hero's button at the right build — or at soot on a phone.
+ */
+import { Picture } from 'astro:assets';
+import Icon from './Icon.astro';
+import accentGuy from '../assets/characters/accent-guy.png';
+import sootLogo from '../../soot/public/img/soot.png';
+import { RELEASES_URL, REQUIREMENTS, SOOT } from '../data/site';
+import { fallbackRelease, fetchLatestRelease, type Release } from '../lib/platforms';
+
+let release: Release = fallbackRelease();
+try {
+  release = await fetchLatestRelease();
+} catch (err) {
+  console.warn(`[landing] latest release unavailable at build time, linking to the releases page: ${String(err)}`);
+}
+
+const osIcon = { macOS: 'apple', Windows: 'windows', Linux: 'linux' } as const;
 ---
 
-<section id="download" class="relative py-32 overflow-hidden section-panel bg-spiderweb-dense">
-  <!-- Background -->
-  <div class="absolute inset-0 bg-cyber-void" />
-  <div class="absolute inset-0 bg-grid-cyber opacity-15" />
+<section id="download" class="section overflow-hidden border-t border-border bg-panel">
+  <div class="backlight left-1/2 top-1/3 h-[480px] w-[720px] -translate-x-1/2 opacity-30" style="background: radial-gradient(circle, #60706066, transparent 70%);" />
 
-  <!-- Subtle ambient -->
-  <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full blur-[200px] opacity-20"
-    style="background: radial-gradient(circle, #60706015, #78587010, transparent);"
-  />
+  <div class="container relative">
+    <div class="reveal max-w-xl">
+      <p class="eyebrow">Download</p>
+      <h2 class="mt-5 text-title font-semibold">Get The Wired.</h2>
+      <p class="mt-5 text-lede text-body">Free and open source. Updates install themselves.</p>
+    </div>
 
-  <div class="relative mx-auto max-w-6xl px-6">
-    <div class="flex flex-col lg:flex-row items-center gap-8 lg:gap-12">
-
-      <!-- Character — left -->
-      <div class="hidden lg:flex flex-shrink-0 items-end justify-center relative w-[280px]">
-        <div class="absolute bottom-0 left-1/2 -translate-x-1/2 w-[200px] h-[200px] rounded-full blur-[80px]"
-          style="background: radial-gradient(circle, #60706030, transparent);"
-        />
-        <img
-          src="/characters/accent-guy.png"
+    <div class="mt-14 grid grid-cols-1 gap-5 md:mt-20 lg:grid-cols-[minmax(0,1fr)_21rem]">
+      <!-- desktop -->
+      <div class="reveal card relative p-6 sm:p-8">
+        <!-- he sits on the card's edge -->
+        <Picture
+          src={accentGuy}
+          formats={['avif', 'webp']}
+          fallbackFormat="webp"
+          widths={[200, 400]}
+          sizes="200px"
           alt=""
-          class="relative w-full h-auto animate-float-slow"
-          style="filter: drop-shadow(0 0 25px #60706038) drop-shadow(0 0 50px #78587028) drop-shadow(0 0 90px #60706018);"
           loading="lazy"
+          class="pointer-events-none absolute -top-[150px] right-8 hidden w-[210px] drop-shadow-[0_20px_30px_#000000aa] md:block"
         />
+
+        <div class="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p class="font-mono text-[0.78rem] text-muted">
+              Desktop · <span data-release-version>{release.version ? `v${release.version}` : 'latest release'}</span>
+            </p>
+            <p class="mt-1 text-2xl font-semibold text-heading" data-primary-title>Pick your platform</p>
+            <p class="mt-1 text-sm text-muted" data-primary-detail>{REQUIREMENTS}</p>
+          </div>
+          <a href={RELEASES_URL} class="btn btn-primary w-full sm:w-auto" data-primary-link>
+            <Icon name="download" size={18} strokeWidth={2.4} />
+            <span data-primary-label>All downloads</span>
+          </a>
+        </div>
+
+        <ul class="mt-8 grid grid-cols-1 gap-2 sm:grid-cols-2" aria-label="All builds">
+          {release.builds.map((b) => (
+            <li>
+              <a
+                href={b.url}
+                class="build group flex items-center gap-4 rounded-xl border border-border bg-panel px-4 py-3.5 transition-colors hover:border-border-strong hover:bg-surface"
+                data-build={b.id}
+              >
+                <span class="text-body group-hover:text-heading"><Icon name={osIcon[b.os]} size={20} /></span>
+                <span class="min-w-0 flex-1">
+                  <span class="block font-medium text-heading">
+                    {b.os} <span class="font-normal text-muted">· {b.detail}</span>
+                  </span>
+                  <span class="block truncate font-mono text-[0.7rem] text-muted" data-build-file>{b.file ?? 'GitHub releases'}</span>
+                </span>
+                <Icon name="download" size={16} class="text-muted group-hover:text-primary" />
+              </a>
+            </li>
+          ))}
+          <li>
+            <a href={RELEASES_URL} class="group flex h-full items-center gap-4 rounded-xl border border-dashed border-border px-4 py-3.5 text-body transition-colors hover:border-border-strong hover:text-heading">
+              <Icon name="code" size={20} />
+              <span class="flex-1">Release notes & checksums</span>
+              <Icon name="arrow-up-right" size={16} />
+            </a>
+          </li>
+        </ul>
+
+        <p class="mt-6 font-mono text-[0.75rem] text-muted">{REQUIREMENTS}</p>
       </div>
 
-      <!-- CTA card -->
-      <div class="flex-1 relative">
-        <!-- Outer border -->
-        <div class="absolute -inset-[1px] rounded-lg"
-          style="background: linear-gradient(135deg, #38403820, transparent 40%, transparent 60%, #221A2C20); border-radius: 8px;"
-        />
-
-        <div class="relative card-cyber rounded-lg p-10 sm:p-14 text-center space-y-8">
-          <!-- HUD corners -->
-          <div class="absolute top-2 left-2 w-4 h-4 border-t-2 border-l-2 rounded-tl-sm" style="border-color: #384038;" />
-          <div class="absolute top-2 right-2 w-4 h-4 border-t-2 border-r-2 rounded-tr-sm" style="border-color: #384038;" />
-          <div class="absolute bottom-2 left-2 w-4 h-4 border-b-2 border-l-2 rounded-bl-sm" style="border-color: #221A2C;" />
-          <div class="absolute bottom-2 right-2 w-4 h-4 border-b-2 border-r-2 rounded-br-sm" style="border-color: #221A2C;" />
-
-          <div class="section-label">
-            <span class="w-1.5 h-1.5 rounded-full animate-pulse-glow" style="background: #607060;"></span>
-            Ready to Deploy
-          </div>
-
-          <h2 class="text-3xl sm:text-4xl font-bold tracking-tight" style="color: #E4DDE8;">
-            Ready to Enter?
-          </h2>
-          <p class="text-lg max-w-xl mx-auto leading-relaxed" style="color: #9A8FA8;">
-            Download The Wired for your platform. Free, open source, and always will be.
-          </p>
-
-          <DownloadButton client:load />
-
-          <p class="text-sm font-mono" style="color: #6B6078;">
-            macOS 13+ &middot; Windows 10+ &middot; Linux
-          </p>
+      <!-- phone: a bone card, because the soot lockup only sits on bone -->
+      <div class="reveal flex flex-col rounded-[20px] bg-bone p-7 text-soot">
+        <Picture src={sootLogo} formats={['avif', 'webp']} fallbackFormat="png" widths={[140, 280]} sizes="140px" alt="soot" loading="lazy" class="h-auto w-[130px]" />
+        <p class="mt-6 font-soot text-2xl font-extrabold leading-tight">on your phone?</p>
+        <p class="mt-2 text-[0.95rem] leading-relaxed text-[#3d3a36]">
+          soot is the mobile app for the same network. same key, same spaces.
+        </p>
+        <div class="mt-auto flex flex-col gap-2 pt-6">
+          <a class="btn btn-soot btn-sm" href={SOOT.appStore}><Icon name="apple" size={16} /> app store</a>
+          <a class="btn btn-soot btn-sm" href={SOOT.googlePlay}><Icon name="google-play" size={14} /> google play</a>
         </div>
       </div>
-
-      <!-- Character — right -->
-      <div class="hidden xl:flex flex-shrink-0 items-end justify-center relative w-[200px]">
-        <div class="absolute bottom-0 left-1/2 -translate-x-1/2 w-[150px] h-[150px] rounded-full blur-[60px]"
-          style="background: radial-gradient(circle, #78587028, transparent);"
-        />
-        <img
-          src="/characters/hero-girl-alt.png"
-          alt=""
-          class="relative w-full h-auto animate-float-slow"
-          style="animation-delay: -3s; filter: drop-shadow(0 0 20px #78587030) drop-shadow(0 0 60px #78587018);"
-          loading="lazy"
-        />
-      </div>
-
     </div>
   </div>
+
+  <script type="application/json" id="release-data" set:html={JSON.stringify(release)} />
 </section>
+
+<style>
+  .build[data-detected] {
+    border-color: #607060;
+    background: #60706022;
+  }
+</style>
+
+<script>
+  import { SOOT, RELEASES_URL } from '../data/site';
+  import { detectDevice, fetchLatestRelease, primaryBuildFor, type BuildId, type Device, type Release } from '../lib/platforms';
+
+  const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel);
+  const setText = (sel: string, text: string) => { const el = $(sel); if (el) el.textContent = text; };
+
+  const device: Device = detectDevice();
+  let preferred: BuildId | null = primaryBuildFor(device);
+
+  function apply(release: Release) {
+    const version = release.version ? `v${release.version}` : 'latest release';
+    document.querySelectorAll('[data-release-version]').forEach((el) => (el.textContent = version));
+
+    for (const b of release.builds) {
+      const a = $<HTMLAnchorElement>(`[data-build="${b.id}"]`);
+      if (!a) continue;
+      a.href = b.url;
+      const file = a.querySelector('[data-build-file]');
+      if (file) file.textContent = b.file ?? 'GitHub releases';
+      a.toggleAttribute('data-detected', b.id === preferred);
+    }
+
+    const heroCta = $<HTMLAnchorElement>('[data-hero-cta]');
+    const heroMeta = $('[data-hero-meta]');
+
+    if (device === 'ios' || device === 'android') {
+      const ios = device === 'ios';
+      if (heroCta) heroCta.href = ios ? SOOT.appStore : SOOT.googlePlay;
+      setText('[data-hero-cta-label]', ios ? 'Get soot for iPhone' : 'Get soot for Android');
+      $('[data-hero-cta-icon]')?.setAttribute('hidden', '');
+      if (heroMeta) {
+        heroMeta.innerHTML = '';
+        heroMeta.append('soot is our mobile app for the same network. ');
+        const a = Object.assign(document.createElement('a'), { href: '#download', className: 'text-link', textContent: 'Desktop downloads' });
+        heroMeta.append(a);
+      }
+      return;
+    }
+
+    const build = release.builds.find((b) => b.id === preferred);
+    if (!build) return;
+    const label = `Download for ${build.os}`;
+    const detail = `${build.detail} · ${version}`;
+
+    const primary = $<HTMLAnchorElement>('[data-primary-link]');
+    if (primary) primary.href = build.url;
+    setText('[data-primary-label]', label);
+    setText('[data-primary-title]', `${build.os} · ${build.detail}`);
+    setText('[data-primary-detail]', build.file ?? 'From the latest GitHub release');
+
+    if (heroCta) heroCta.href = build.url === RELEASES_URL ? '#download' : build.url;
+    setText('[data-hero-cta-label]', label);
+    if (heroMeta) {
+      heroMeta.innerHTML = '';
+      heroMeta.append(`${detail}. `);
+      const a = Object.assign(document.createElement('a'), { href: '#download', className: 'text-link', textContent: 'Other platforms' });
+      heroMeta.append(a);
+    }
+  }
+
+  const dataEl = document.getElementById('release-data');
+  let current: Release | null = null;
+  try {
+    current = JSON.parse(dataEl?.textContent ?? 'null') as Release;
+  } catch {
+    current = null;
+  }
+  if (current) apply(current);
+
+  // Intel Macs: Chromium can tell us the architecture; Safari and Firefox can't,
+  // and the Apple Silicon build stays the default there.
+  const uaData = (navigator as Navigator & {
+    userAgentData?: { getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string }> };
+  }).userAgentData;
+  if (device === 'macos' && uaData?.getHighEntropyValues) {
+    uaData.getHighEntropyValues(['architecture']).then(({ architecture }) => {
+      if (architecture === 'x86') {
+        preferred = 'macos-intel';
+        if (current) apply(current);
+      }
+    }).catch(() => {});
+  }
+
+  // Pick up a release published after this page was built.
+  fetchLatestRelease().then((latest) => {
+    if (latest.version && latest.version !== current?.version) {
+      current = latest;
+      apply(latest);
+    }
+  }).catch(() => {});
+</script>

@@ -1,71 +1,230 @@
 ---
-import ShowcaseSlider from './ShowcaseSlider.tsx';
+import { Picture, getImage } from 'astro:assets';
+import type { ImageMetadata } from 'astro';
+import Icon from './Icon.astro';
+import spaces from '../assets/showcase/spaces.png';
+import music from '../assets/showcase/music.png';
+import profile from '../assets/showcase/profile.png';
+import themesPoster from '../assets/showcase/themes-poster.png';
+
+type Tab = {
+  id: string;
+  label: string;
+  icon: 'hash' | 'music' | 'message' | 'user' | 'palette';
+  title: string;
+  body: string;
+  points: string[];
+  window: string;
+} & ({ image: ImageMetadata; alt: string } | { video: string; poster: string; alt: string });
+
+const poster = await getImage({ src: themesPoster, format: 'webp', width: 1600 });
+
+const tabs: Tab[] = [
+  {
+    id: 'spaces',
+    label: 'Spaces',
+    icon: 'hash',
+    title: 'Spaces with channels, roles and folders',
+    body: 'Give your scene a home: chat, notes, media and voice channels, organized in folders, with roles you define.',
+    points: ['Chat, notes, media & voice channels', 'Roles, permissions, moderation', 'Our relay, any NIP-29 relay, or your own machine'],
+    window: 'Neon Frequencies / #general',
+    image: spaces,
+    alt: 'A space in The Wired: channels on the left, a busy chat in the middle, the member list on the right.',
+  },
+  {
+    id: 'music',
+    label: 'Music',
+    icon: 'music',
+    title: 'A music library you publish yourself',
+    body: 'Upload tracks and albums, build projects with collaborators, make playlists, and listen together in real time.',
+    points: ['Albums, projects & playlists', 'Listen Together sessions', 'Lightning tips straight to the artist'],
+    window: 'Music / My Music',
+    image: music,
+    alt: 'The music library: a project with cover art above a list of tracks.',
+  },
+  {
+    id: 'profile',
+    label: 'Profiles',
+    icon: 'user',
+    title: 'A profile that travels with you',
+    body: 'Your name, avatar, posts and follows live on Nostr relays, so every Nostr app can show them. You choose which tabs others see.',
+    points: ['One identity across Nostr apps', 'Notes, articles, media & music tabs', 'Show or hide each section'],
+    window: 'Profile',
+    image: profile,
+    alt: 'A profile page with a banner, avatar, bio and a feed of posts.',
+  },
+  {
+    id: 'themes',
+    label: 'Themes',
+    icon: 'palette',
+    title: 'Make it look like yours',
+    body: 'Over twenty presets, from clean dark to terminal green, or build your own colors and type.',
+    points: ['Light & dark presets', 'Custom colors and fonts', 'Applies across the whole app instantly'],
+    window: 'Appearance',
+    video: '/media/themes.mp4',
+    poster: poster.src,
+    alt: 'Switching themes: the whole interface recolors as different presets are picked.',
+  },
+];
 ---
 
-<section id="showcase" class="relative py-24 overflow-hidden section-panel" style="border-top: 1px solid #221A2C;">
-  <div class="relative mx-auto max-w-7xl px-6">
-    <!-- Section header + nav arrows row -->
-    <div class="flex items-end justify-between mb-10">
-      <div class="space-y-3">
-        <div class="section-label">
-          Interface Preview
-        </div>
-        <h2 class="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight" style="color: #E4DDE8;">
-          See It In Action
-        </h2>
-        <p class="text-lg max-w-xl" style="color: #9A8FA8;">
-          Explore the features that make The Wired a new kind of social media platform.
-        </p>
+<section id="inside" class="section border-t border-border bg-panel">
+  <div class="container">
+    <div class="reveal max-w-2xl">
+      <p class="eyebrow">Inside the app</p>
+      <h2 class="mt-5 text-title font-semibold">Everything your people need, in one window.</h2>
+      <p class="mt-5 text-lede text-body">
+        Chat, music, calls and posts sit side by side, so a community doesn't have to live across five apps.
+      </p>
+    </div>
+
+    <div class="mt-12 grid grid-cols-1 gap-8 lg:mt-16 lg:grid-cols-[19rem_minmax(0,1fr)] lg:gap-10">
+      <!-- tabs -->
+      <div
+        role="tablist"
+        aria-label="Parts of the app"
+        aria-orientation="vertical"
+        class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] lg:mx-0 lg:flex-col lg:overflow-visible lg:px-0"
+        data-tabs
+      >
+        {tabs.map((t, i) => (
+          <button
+            type="button"
+            role="tab"
+            id={`tab-${t.id}`}
+            aria-controls={`panel-${t.id}`}
+            aria-selected={i === 0 ? 'true' : 'false'}
+            tabindex={i === 0 ? 0 : -1}
+            class="showcase-tab group flex shrink-0 items-center gap-3 rounded-full border border-border px-4 py-2.5 text-left transition-colors lg:items-start lg:rounded-2xl lg:border-transparent lg:p-4"
+          >
+            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface text-muted transition-colors lg:mt-0.5">
+              <Icon name={t.icon} size={16} />
+            </span>
+            <span>
+              <span class="block text-[0.95rem] font-medium text-heading">{t.label}</span>
+              <span class="mt-1 hidden text-sm leading-snug text-muted lg:block">{t.title}</span>
+            </span>
+          </button>
+        ))}
       </div>
 
-      <!-- Navigation arrows -->
-      <div class="hidden sm:flex items-center gap-2" id="showcase-nav">
-        <button
-          data-dir="prev"
-          class="w-10 h-10 rounded-full border flex items-center justify-center transition-colors"
-          style="border-color: #221A2C; color: #9A8FA8;"
-          aria-label="Scroll left"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <polyline points="15,18 9,12 15,6" />
-          </svg>
-        </button>
-        <button
-          data-dir="next"
-          class="w-10 h-10 rounded-full border flex items-center justify-center transition-colors"
-          style="border-color: #221A2C; color: #9A8FA8;"
-          aria-label="Scroll right"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <polyline points="9,6 15,12 9,18" />
-          </svg>
-        </button>
+      <!-- panels -->
+      <div class="min-w-0">
+        {tabs.map((t, i) => (
+          <div role="tabpanel" id={`panel-${t.id}`} aria-labelledby={`tab-${t.id}`} hidden={i !== 0} data-panel tabindex="0" class="outline-none">
+            <div class="app-window">
+              <div class="app-window__bar" aria-hidden="true">
+                <span class="app-window__dot" /><span class="app-window__dot" /><span class="app-window__dot" />
+                <span class="app-window__title">The Wired — {t.window}</span>
+              </div>
+              <div class="aspect-[16/10] bg-background">
+                {'image' in t ? (
+                  <Picture
+                    src={t.image}
+                    formats={['avif', 'webp']}
+                    fallbackFormat="webp"
+                    widths={[640, 960, 1280, 1800]}
+                    sizes="(min-width: 1280px) 52rem, (min-width: 1024px) 64vw, 94vw"
+                    alt={t.alt}
+                    loading="lazy"
+                    class="h-full w-full object-cover object-left-top"
+                  />
+                ) : (
+                  <video
+                    class="h-full w-full object-cover object-left-top"
+                    poster={t.poster}
+                    muted
+                    loop
+                    playsinline
+                    preload="none"
+                    aria-label={t.alt}
+                    data-autoplay
+                  >
+                    <source src={t.video} type="video/mp4" />
+                  </video>
+                )}
+              </div>
+            </div>
+
+            <div class="mt-6 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-start">
+              <div>
+                <h3 class="text-xl font-semibold lg:hidden">{t.title}</h3>
+                <p class="mt-2 max-w-xl text-body lg:mt-0">{t.body}</p>
+              </div>
+              <ul class="space-y-1.5 font-mono text-[0.78rem] text-muted sm:min-w-[17rem]">
+                {t.points.map((p) => (
+                  <li class="flex items-start gap-2.5"><span class="mt-[0.45rem] h-1 w-1 shrink-0 rounded-full bg-primary" />{p}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   </div>
-
-  <!-- Slider -->
-  <ShowcaseSlider client:visible />
-
-  <!-- Bottom edge -->
-  <div class="absolute bottom-0 left-0 right-0 h-px" style="background: linear-gradient(90deg, transparent, #221A2C, transparent);" />
 </section>
 
-<script>
-  const nav = document.getElementById('showcase-nav');
-  const track = document.getElementById('showcase-track');
-  if (nav && track) {
-    nav.querySelectorAll('button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const dir = btn.getAttribute('data-dir');
-        const cardWidth = track.querySelector('.showcase-card')?.clientWidth ?? 400;
-        const gap = 20;
-        const scrollAmount = cardWidth + gap;
-        track.scrollBy({
-          left: dir === 'next' ? scrollAmount : -scrollAmount,
-          behavior: 'smooth',
-        });
-      });
-    });
+<style>
+  .showcase-tab[aria-selected='true'] {
+    border-color: var(--color-border-strong);
+    background: var(--color-card);
   }
+  .showcase-tab[aria-selected='true'] > span:first-child {
+    background: #607060;
+    color: var(--color-heading);
+  }
+  .showcase-tab:hover:not([aria-selected='true']) {
+    background: #16111c99;
+  }
+  @media (min-width: 1024px) {
+    .showcase-tab[aria-selected='true'] {
+      box-shadow: inset 2px 0 0 var(--color-primary);
+    }
+  }
+</style>
+
+<script>
+  const list = document.querySelector<HTMLElement>('[data-tabs]');
+  const tabs = Array.from(list?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
+  const panels = tabs.map((t) => document.getElementById(t.getAttribute('aria-controls') ?? ''));
+
+  // Videos play only while their panel is showing and on screen.
+  const visible = new WeakSet<Element>();
+  const syncVideos = () => {
+    document.querySelectorAll<HTMLVideoElement>('video[data-autoplay]').forEach((v) => {
+      const shown = !v.closest('[role="tabpanel"]')?.hasAttribute('hidden') && visible.has(v);
+      if (shown && v.paused) v.play().catch(() => {});
+      else if (!shown && !v.paused) v.pause();
+    });
+  };
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => (e.isIntersecting ? visible.add(e.target) : visible.delete(e.target)));
+    syncVideos();
+  }, { threshold: 0.35 });
+  document.querySelectorAll('video[data-autoplay]').forEach((v) => io.observe(v));
+
+  const select = (index: number, focus = false) => {
+    tabs.forEach((tab, i) => {
+      const on = i === index;
+      tab.setAttribute('aria-selected', String(on));
+      tab.tabIndex = on ? 0 : -1;
+      panels[i]?.toggleAttribute('hidden', !on);
+    });
+    const tab = tabs[index];
+    if (focus) tab?.focus();
+    tab?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+    syncVideos();
+  };
+
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => select(i));
+    tab.addEventListener('keydown', (e) => {
+      const keys: Record<string, number> = {
+        ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: tabs.length - 1,
+      };
+      if (!(e.key in keys)) return;
+      e.preventDefault();
+      select((keys[e.key] + tabs.length) % tabs.length, true);
+    });
+  });
 </script>

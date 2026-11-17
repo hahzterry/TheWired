@@ -1,12 +1,15 @@
 soot brand assets
 
-The soot name, logo and artwork in this directory (public/img/ and
-public/favicon.png) are the soot project's brand assets. They are NOT
-licensed under this repository's MIT license: all rights reserved. Do not
-reuse them in other projects or forks.
+The soot name, logo and artwork in this directory (public/img/,
+public/favicon.png, and the app screenshots in shots/) are the soot
+project's brand assets. They are NOT licensed under this repository's MIT
+license: all rights reserved. Do not reuse them in other projects or forks.
 
 The fonts in public/fonts/ are licensed under the SIL Open Font License 1.1;
 see the OFL-*.txt file beside each one.
 
 The page's code (public/index.html, public/soot.css) is covered by the
 repository's MIT license like the rest of this repo.
+
+thewired.app's own page shows the logo, the screenshots and the Nunito face
+in its soot section; those files are bundled from here, not copied.

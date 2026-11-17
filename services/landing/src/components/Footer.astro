@@ -1,76 +1,84 @@
 ---
-const currentYear = new Date().getFullYear();
+import Icon from './Icon.astro';
+import { GITHUB_URL, ISSUES_URL, RELAY_URL, RELEASES_URL, SOOT } from '../data/site';
+
+const year = new Date().getFullYear();
+
+const columns = [
+  {
+    title: 'Product',
+    links: [
+      { href: '#download', label: 'Download' },
+      { href: '#inside', label: 'Inside the app' },
+      { href: '#features', label: 'Features' },
+      { href: RELEASES_URL, label: 'Release notes' },
+    ],
+  },
+  {
+    title: 'Mobile',
+    links: [
+      { href: SOOT.site, label: 'soot.win' },
+      { href: SOOT.appStore, label: 'soot on the App Store' },
+      { href: SOOT.googlePlay, label: 'soot on Google Play' },
+    ],
+  },
+  {
+    title: 'Open source',
+    links: [
+      { href: GITHUB_URL, label: 'GitHub' },
+      { href: ISSUES_URL, label: 'Report an issue' },
+      { href: 'https://nostr.com/', label: 'What is Nostr?' },
+      { href: 'https://github.com/nostr-protocol/nips', label: 'NIPs' },
+      { href: RELAY_URL, label: 'Our relay' },
+    ],
+  },
+  {
+    title: 'Legal',
+    links: [
+      { href: '/terms', label: 'Terms' },
+      { href: '/privacy', label: 'Privacy' },
+      { href: '/community-guidelines', label: 'Community guidelines' },
+      { href: '/support', label: 'Support' },
+    ],
+  },
+];
 ---
 
-<footer class="relative border-t py-16 section-void" style="border-color: #221A2C;">
-  <!-- Top border -->
-  <div class="absolute top-0 left-0 right-0 h-px"
-    style="background: linear-gradient(90deg, transparent, #384038, #221A2C, transparent);"
-  />
-
-  <div class="mx-auto max-w-7xl px-6">
-    <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-12">
-      <!-- Brand -->
-      <div class="space-y-4">
-        <div class="flex items-center gap-3">
-          <img src="/logo.png" alt="The Wired" class="w-8 h-8 rounded-lg" />
-          <span class="font-light text-lg uppercase tracking-[0.2em]"
-            style="color: #9A8FA8; -webkit-text-stroke: 0.5px #889880; text-shadow: 0 0 20px rgba(136,152,128,0.3);">
-            The Wired
-          </span>
-        </div>
-        <p class="text-sm leading-relaxed" style="color: #6B6078;">
-          Decentralized media platform built on Nostr.
-          Own your data. Own your identity.
+<footer class="border-t border-border">
+  <div class="container py-16">
+    <div class="grid gap-12 lg:grid-cols-[1.3fr_repeat(4,1fr)]">
+      <div class="max-w-xs">
+        <a href="/" class="flex items-center gap-3">
+          <img src="/logo-64.png" alt="" width="32" height="32" class="h-8 w-8 rounded-lg" loading="lazy" />
+          <span class="wordmark text-[0.95rem]">The Wired</span>
+        </a>
+        <p class="mt-5 text-sm text-muted">
+          Spaces, music, calls and private messages on a network nobody owns. Built on Nostr.
         </p>
-        <div class="w-12 h-px mt-4" style="background: linear-gradient(90deg, #384038, transparent);" />
+        <a href={GITHUB_URL} class="mt-5 inline-flex items-center gap-2 text-sm text-body hover:text-heading">
+          <Icon name="github" size={16} /> ummilabs/TheWired
+        </a>
       </div>
 
-      <!-- Product -->
-      <div class="space-y-4">
-        <h4 class="text-xs font-semibold uppercase tracking-[0.15em]" style="color: #785870;">Product</h4>
-        <ul class="space-y-2.5">
-          <li><a href="#download" class="text-sm transition-colors" style="color: #6B6078;">Download</a></li>
-          <li><a href="#features" class="text-sm transition-colors" style="color: #6B6078;">Features</a></li>
-          <li><a href="#showcase" class="text-sm transition-colors" style="color: #6B6078;">Showcase</a></li>
-        </ul>
-      </div>
-
-      <!-- Protocol -->
-      <div class="space-y-4">
-        <h4 class="text-xs font-semibold uppercase tracking-[0.15em]" style="color: #785870;">Protocol</h4>
-        <ul class="space-y-2.5">
-          <li><a href="https://nostr.org/" target="_blank" rel="noopener noreferrer" class="text-sm transition-colors" style="color: #6B6078;">What is Nostr?</a></li>
-          <li><a href="https://nostr-nips.com/" target="_blank" rel="noopener noreferrer" class="text-sm transition-colors" style="color: #6B6078;">NIPs (Protocol Specs)</a></li>
-          <li><a href="https://relay.thewired.app" target="_blank" rel="noopener noreferrer" class="text-sm transition-colors" style="color: #6B6078;">Our Relay</a></li>
-        </ul>
-      </div>
-
-      <!-- Community -->
-      <div class="space-y-4">
-        <h4 class="text-xs font-semibold uppercase tracking-[0.15em]" style="color: #785870;">Community</h4>
-        <ul class="space-y-2.5">
-          <li>
-            <a href="https://github.com/ummilabs/TheWired" target="_blank" rel="noopener noreferrer" class="text-sm transition-colors inline-flex items-center gap-1.5" style="color: #6B6078;">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-              GitHub
-            </a>
-          </li>
-        </ul>
+      <div class="grid grid-cols-2 gap-10 sm:grid-cols-4 lg:col-span-4">
+        {columns.map((c) => (
+          <nav aria-label={c.title}>
+            <h2 class="font-mono text-[0.72rem] font-medium uppercase tracking-[0.14em] text-accent">{c.title}</h2>
+            <ul class="mt-4 space-y-2.5">
+              {c.links.map((l) => (
+                <li><a href={l.href} class="text-sm text-body transition-colors hover:text-heading">{l.label}</a></li>
+              ))}
+            </ul>
+          </nav>
+        ))}
       </div>
     </div>
 
-    <!-- Bottom bar -->
-    <div class="mt-12 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4" style="border-top: 0.5px solid #221A2C;">
-      <p class="text-sm font-mono text-xs" style="color: #6B6078;">
-        &copy; {currentYear} The Wired. All rights reserved.
+    <div class="mt-14 flex flex-col gap-3 border-t border-border pt-8 font-mono text-[0.75rem] text-muted sm:flex-row sm:items-center sm:justify-between">
+      <p>© {year} The Wired. Code under the MIT license.</p>
+      <p class="flex items-center gap-2">
+        <span class="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" /> Built on Nostr
       </p>
-      <div class="flex items-center gap-2 text-sm">
-        <span class="text-xs" style="color: #6B6078;">Built on</span>
-        <span class="font-semibold text-xs" style="color: #889880;">Nostr</span>
-        <span class="text-xs mx-1" style="color: #221A2C;">//</span>
-        <span class="text-xs font-mono" style="color: #384038;">Open Source</span>
-      </div>
     </div>
   </div>
 </footer>

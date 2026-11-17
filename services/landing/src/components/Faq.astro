@@ -1,0 +1,82 @@
+---
+import { Picture } from 'astro:assets';
+import Icon from './Icon.astro';
+import heroGirlAlt from '../assets/characters/hero-girl-alt.png';
+import { ISSUES_URL } from '../data/site';
+
+const faqs = [
+  {
+    q: 'Do I need to sign up?',
+    a: 'No email and no phone number. The app makes a key pair for you and keeps it in your system keychain. You can also sign in with a Nostr key you already have, or approve from a remote signer (NIP-46).',
+  },
+  {
+    q: 'Is it really free?',
+    a: 'Yes. The app is free and open source under the MIT license, and so are the relay and servers behind it. There are no ads.',
+  },
+  {
+    q: 'What is Nostr?',
+    a: 'An open protocol for social apps. Everything you post is signed with your key and stored on relays, servers anyone can run, so any Nostr app can read it and no single company controls it.',
+  },
+  {
+    q: "What's soot?",
+    a: "soot is a mobile app for iPhone and Android built on the same network. Use the same key on both and your spaces, messages and follows carry across.",
+  },
+  {
+    q: 'Can I run my own space or server?',
+    a: 'Yes. Turn on self-hosted spaces in Settings › Features to run a space from your computer, use any NIP-29 relay you trust, or deploy the whole stack (relay, backend, gateway) from the repository.',
+  },
+  {
+    q: 'Who can read my messages?',
+    a: 'Direct messages, group rooms, calls and encrypted spaces are end-to-end encrypted, so only the people in them can read them. Public posts are public by design. The privacy policy covers what our servers keep.',
+    link: { href: '/privacy', label: 'Read the privacy policy' },
+  },
+];
+---
+
+<section id="faq" class="section overflow-hidden border-t border-border">
+  <div class="container grid grid-cols-1 gap-12 lg:grid-cols-[0.8fr_1.2fr] lg:gap-16">
+    <div class="reveal relative">
+      <p class="eyebrow">FAQ</p>
+      <h2 class="mt-5 text-title font-semibold">Questions, answered.</h2>
+      <p class="mt-5 max-w-sm text-body">
+        Something else? Open an <a class="text-link" href={ISSUES_URL}>issue on GitHub</a> or
+        see <a class="text-link" href="/support">support</a>.
+      </p>
+      <div class="relative mt-6 hidden max-w-[17rem] lg:block">
+        <div class="backlight inset-[16%] opacity-60" style="background: radial-gradient(circle, #78587050, transparent 66%);" />
+        <Picture
+          src={heroGirlAlt}
+          formats={['avif', 'webp']}
+          fallbackFormat="webp"
+          widths={[280, 420, 560]}
+          sizes="17rem"
+          alt=""
+          loading="lazy"
+          class="drift relative w-full drop-shadow-[0_24px_48px_#000000aa]"
+          style="animation-delay:-3s"
+        />
+      </div>
+    </div>
+
+    <div class="reveal divide-y divide-border border-y border-border">
+      {faqs.map((f, i) => (
+        <details class="faq group" open={i === 0}>
+          <summary class="flex cursor-pointer list-none items-center justify-between gap-6 py-5 text-left text-lg font-medium text-heading">
+            {f.q}
+            <Icon name="chevron-down" size={18} class="shrink-0 text-muted transition-transform duration-200 group-open:rotate-180" />
+          </summary>
+          <div class="pb-6 pr-10 text-body">
+            <p>{f.a}</p>
+            {f.link && <p class="mt-3"><a class="text-link" href={f.link.href}>{f.link.label}</a></p>}
+          </div>
+        </details>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .faq summary::-webkit-details-marker {
+    display: none;
+  }
+</style>
