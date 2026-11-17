@@ -19,13 +19,13 @@ const proof = [
   <div class="absolute inset-x-0 top-0 -z-10 h-[640px]">
     <Wires class="h-full w-full" />
   </div>
-  <div class="backlight -z-10 left-[-10%] top-[10%] h-[420px] w-[520px] opacity-40" style="background: radial-gradient(circle, #60706055, transparent 70%);" />
+  <div class="backlight -z-10 left-[-10%] top-[10%] h-[420px] w-[520px] opacity-40" style="background: radial-gradient(circle, color-mix(in srgb, var(--color-primary-deep) 33%, transparent), transparent 70%);" />
 
   <div class="container grid grid-cols-1 items-center gap-12 lg:grid-cols-[1.18fr_0.82fr] lg:gap-4">
     <!-- copy -->
     <div class="text-center lg:text-left">
       <p class="rise tag mx-auto lg:mx-0">
-        <span class="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_10px_#A9BC9C]" />
+        <span class="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_10px_var(--color-primary)]" />
         Open source · built on Nostr
       </p>
 
@@ -56,7 +56,7 @@ const proof = [
 
     <!-- character -->
     <div class="relative mx-auto w-full max-w-[30rem] lg:max-w-[34rem]">
-      <div class="backlight inset-[12%] opacity-90" style="background: radial-gradient(circle at 50% 55%, #60706066, #78587044 45%, transparent 72%);" />
+      <div class="backlight inset-[12%] opacity-90" style="background: radial-gradient(circle at 50% 55%, color-mix(in srgb, var(--color-primary-deep) 40%, transparent), color-mix(in srgb, var(--color-accent-deep) 27%, transparent) 45%, transparent 72%);" />
       <Picture
         src={heroGirl}
         formats={['avif', 'webp']}
@@ -74,7 +74,7 @@ const proof = [
       <ul class="pointer-events-none hidden sm:block" aria-label="Protocols">
         <li class="drift tag absolute left-[2%] top-[22%]"><span class="h-1.5 w-1.5 rounded-full bg-primary" />NIP-29 spaces</li>
         <li class="drift tag absolute right-[0%] top-[44%]" style="animation-delay:-2.5s"><span class="h-1.5 w-1.5 rounded-full bg-accent" />NIP-17 encrypted DMs</li>
-        <li class="drift tag absolute bottom-[20%] left-[6%]" style="animation-delay:-4.5s"><span class="h-1.5 w-1.5 rounded-full bg-[#E8C27A]" />NIP-57 zaps</li>
+        <li class="drift tag absolute bottom-[20%] left-[6%]" style="animation-delay:-4.5s"><span class="h-1.5 w-1.5 rounded-full bg-warm" />NIP-57 zaps</li>
       </ul>
     </div>
   </div>

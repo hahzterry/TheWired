@@ -77,6 +77,12 @@
   --color-accent: #C39BB8;
   --color-accent-deep: #785870;
 
+  /* A third, warm signal colour (tags, one avatar) */
+  --color-warm: #E8C27A;
+
+  /* Window chrome above product shots */
+  --color-chrome: #0E0B12;
+
   /* soot's own palette (the soot band only) */
   --color-bone: #F4F1EA;
   --color-soot: #0F0E0D;
@@ -132,7 +138,7 @@ p {
 }
 
 ::selection {
-  background: #607060aa;
+  background: color-mix(in srgb, var(--color-primary-deep) 67%, transparent);
   color: #fff;
 }
 
@@ -220,7 +226,7 @@ p {
   font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--color-muted);
-  background: #120E17b3;
+  background: color-mix(in srgb, var(--color-panel) 70%, transparent);
 }
 
 .text-link {
@@ -265,7 +271,7 @@ p {
 .btn-primary {
   background: var(--color-primary);
   color: var(--color-background);
-  box-shadow: 0 0 0 1px #c4d4b833 inset, 0 8px 30px -10px #a9bc9c66;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary-strong) 20%, transparent) inset, 0 8px 30px -10px color-mix(in srgb, var(--color-primary) 40%, transparent);
 }
 .btn-primary:hover {
   background: var(--color-primary-strong);
@@ -274,7 +280,7 @@ p {
 .btn-ghost {
   border: 1px solid var(--color-border-strong);
   color: var(--color-heading);
-  background: #16111C80;
+  background: color-mix(in srgb, var(--color-card) 50%, transparent);
 }
 .btn-ghost:hover {
   border-color: var(--color-primary);
@@ -322,7 +328,7 @@ p {
   box-shadow:
     0 0 0 1px #00000080,
     0 30px 80px -20px #000000cc,
-    0 0 120px -40px #607060aa;
+    0 0 120px -40px color-mix(in srgb, var(--color-primary-deep) 67%, transparent);
 }
 .app-window__bar {
   display: flex;
@@ -331,7 +337,7 @@ p {
   height: 2.25rem;
   padding: 0 0.9rem;
   border-bottom: 1px solid var(--color-border);
-  background: #0E0B12;
+  background: var(--color-chrome);
 }
 .app-window__dot {
   width: 0.65rem;
@@ -364,8 +370,8 @@ p {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(#2A213433 1px, transparent 1px),
-    linear-gradient(90deg, #2A213433 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--color-border) 20%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-border) 20%, transparent) 1px, transparent 1px);
   background-size: 64px 64px;
   mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, #000 20%, transparent 75%);
   -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, #000 20%, transparent 75%);

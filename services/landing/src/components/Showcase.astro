@@ -182,11 +182,11 @@ const tabs: Tab[] = [
     background: var(--color-card);
   }
   .showcase-tab[aria-selected='true'] > span:first-child {
-    background: #607060;
+    background: var(--color-primary-deep);
     color: var(--color-heading);
   }
   .showcase-tab:hover:not([aria-selected='true']) {
-    background: #16111c99;
+    background: color-mix(in srgb, var(--color-card) 60%, transparent);
   }
   @media (min-width: 1024px) {
     .showcase-tab[aria-selected='true'] {

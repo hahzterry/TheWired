@@ -25,10 +25,10 @@ const small = [
 ] as const;
 
 const speakers = [
-  { name: 'kxra', hue: '#A9BC9C', talking: true },
-  { name: 'sable', hue: '#C39BB8', talking: false },
+  { name: 'kxra', hue: 'var(--color-primary)', talking: true },
+  { name: 'sable', hue: 'var(--color-accent)', talking: false },
   { name: 'low tide', hue: '#7FA3B8', talking: false },
-  { name: 'juno', hue: '#E8C27A', talking: false },
+  { name: 'juno', hue: 'var(--color-warm)', talking: false },
 ];
 ---
 
@@ -63,7 +63,7 @@ const speakers = [
                 <li class="flex flex-col items-center gap-2 rounded-xl bg-card py-3">
                   <span
                     class:list={['h-10 w-10 rounded-full', s.talking && 'ring-2 ring-primary ring-offset-2 ring-offset-card']}
-                    style={`background: radial-gradient(circle at 35% 30%, ${s.hue}, #241C2D 75%);`}
+                    style={`background: radial-gradient(circle at 35% 30%, ${s.hue}, var(--color-surface-hover) 75%);`}
                   />
                   <span class="font-mono text-[0.65rem] text-body">{s.name}</span>
                 </li>

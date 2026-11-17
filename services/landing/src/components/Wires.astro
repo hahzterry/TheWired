@@ -29,14 +29,14 @@ const right = [
 >
   <defs>
     <linearGradient id="wire-fade" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1440" y2="0">
-      <stop offset="0" stop-color="#EEE8F2" stop-opacity="0" />
-      <stop offset="0.4" stop-color="#EEE8F2" stop-opacity="0.07" />
-      <stop offset="0.8" stop-color="#EEE8F2" stop-opacity="0.2" />
-      <stop offset="1" stop-color="#EEE8F2" stop-opacity="0.16" />
+      <stop offset="0" style="stop-color: var(--color-heading); stop-opacity: 0" />
+      <stop offset="0.4" style="stop-color: var(--color-heading); stop-opacity: 0.07" />
+      <stop offset="0.8" style="stop-color: var(--color-heading); stop-opacity: 0.2" />
+      <stop offset="1" style="stop-color: var(--color-heading); stop-opacity: 0.16" />
     </linearGradient>
     <linearGradient id="pole-fade" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2A2134" />
-      <stop offset="0.85" stop-color="#2A2134" stop-opacity="0" />
+      <stop offset="0" style="stop-color: var(--color-border)" />
+      <stop offset="0.85" style="stop-color: var(--color-border); stop-opacity: 0" />
     </linearGradient>
   </defs>
 
@@ -47,7 +47,7 @@ const right = [
     <rect x="1080" y="146" width="140" height="6" rx="2" />
     <rect x="1132" y="200" width="36" height="22" rx="3" />
   </g>
-  <g fill="#3B3047">
+  <g style="fill: var(--color-border-strong)">
     {[1075, 1115, 1185, 1225].map((x) => <rect x={x - 2.5} y="84" width="5" height="10" rx="1.5" />)}
     {[1095, 1205].map((x) => <rect x={x - 2.5} y="138" width="5" height="10" rx="1.5" />)}
   </g>
@@ -59,7 +59,7 @@ const right = [
 
   <!-- signal -->
   <g fill="none" stroke-width="2" stroke-linecap="round">
-    <path class="wire-pulse" d={left[0]} pathLength="1000" stroke="#A9BC9C" stroke-opacity="0.7" />
-    <path class="wire-pulse wire-pulse--slow" d={left[2]} pathLength="1000" stroke="#C39BB8" stroke-opacity="0.55" />
+    <path class="wire-pulse" d={left[0]} pathLength="1000" style="stroke: var(--color-primary)" stroke-opacity="0.7" />
+    <path class="wire-pulse wire-pulse--slow" d={left[2]} pathLength="1000" style="stroke: var(--color-accent)" stroke-opacity="0.55" />
   </g>
 </svg>
