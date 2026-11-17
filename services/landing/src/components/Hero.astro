@@ -1,100 +1,90 @@
 ---
-import HeroVisual from './HeroVisual.tsx';
+import { Picture } from 'astro:assets';
+import Icon from './Icon.astro';
+import Wires from './Wires.astro';
+import heroGirl from '../assets/characters/hero-girl.png';
+import { GITHUB_URL } from '../data/site';
+
+const proof = [
+  'Free & open source (MIT)',
+  'No email, no phone number',
+  'macOS · Windows · Linux',
+  'End-to-end encrypted DMs',
+];
 ---
 
-<section class="relative min-h-screen flex items-center overflow-hidden pt-20 section-void bg-spiderweb">
-  <!-- Background -->
-  <div class="absolute inset-0 bg-cyber-void" />
+<section id="top" class="relative isolate overflow-hidden pt-28 pb-14 sm:pt-32 lg:pt-36 lg:pb-20">
+  <!-- backdrop -->
+  <div class="hero-grid -z-10" />
+  <div class="absolute inset-x-0 top-0 -z-10 h-[640px]">
+    <Wires class="h-full w-full" />
+  </div>
+  <div class="backlight -z-10 left-[-10%] top-[10%] h-[420px] w-[520px] opacity-40" style="background: radial-gradient(circle, color-mix(in srgb, var(--color-primary-deep) 33%, transparent), transparent 70%);" />
 
-  <!-- Perspective grid floor -->
-  <div class="absolute inset-0 bg-grid-perspective opacity-70" />
-
-  <!-- Subtle scan line -->
-  <div class="absolute left-0 right-0 h-[1px] animate-scan-line z-[2] pointer-events-none"
-    style="background: linear-gradient(90deg, transparent, #38403870, #38403890, #38403870, transparent);"
-  />
-
-  <!-- Ambient orbs — muted -->
-  <div class="absolute top-1/4 -left-[10%] w-[600px] h-[600px] rounded-full blur-[150px] animate-float opacity-40"
-    style="background: radial-gradient(circle, #60706010, transparent 70%);"
-  />
-  <div class="absolute bottom-1/4 -right-[10%] w-[500px] h-[500px] rounded-full blur-[130px] animate-float opacity-30"
-    style="animation-delay: -3s; background: radial-gradient(circle, #7858700a, transparent 70%);"
-  />
-  <div class="absolute top-[60%] left-[40%] w-[400px] h-[400px] rounded-full blur-[120px] animate-float opacity-25"
-    style="animation-delay: -5s; background: radial-gradient(circle, #60706008, transparent 70%);"
-  />
-
-  <!-- Scanlines overlay -->
-  <div class="absolute inset-0 scanlines pointer-events-none" />
-
-  <div class="relative z-10 mx-auto max-w-7xl px-6 w-full flex flex-col lg:flex-row items-center lg:items-end gap-8 lg:gap-0">
-    <!-- Text content — left side -->
-    <div class="flex-1 text-center lg:text-left space-y-8 animate-fade-in-up pb-20 lg:pb-32">
-      <!-- Status badge -->
-      <div class="section-label">
-        <span class="w-1.5 h-1.5 rounded-full animate-pulse-glow" style="background: #607060;"></span>
-        Protocol: Nostr // Status: Online
-      </div>
-
-      <h1 class="text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-light uppercase tracking-[0.2em] leading-[1.05]"
-        style="color: #9A8FA8; -webkit-text-stroke: 1px #889880; text-shadow: 0 0 40px rgba(136,152,128,0.4), 0 0 90px rgba(136,152,128,0.2), 0 0 140px rgba(120,88,112,0.15);">
-        The Wired
-      </h1>
-
-      <p class="text-lg sm:text-xl max-w-xl mx-auto lg:mx-0 leading-relaxed" style="color: #9A8FA8;">
-        A decentralized media platform where you own your data, your identity,
-        and your community. Built on <span style="color: #889880;">Nostr</span>
+  <div class="container grid grid-cols-1 items-center gap-12 lg:grid-cols-[1.18fr_0.82fr] lg:gap-4">
+    <!-- copy -->
+    <div class="text-center lg:text-left">
+      <p class="rise tag mx-auto lg:mx-0">
+        <span class="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_10px_var(--color-primary)]" />
+        Open source · built on Nostr
       </p>
 
-      <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-        <a
-          href="#download"
-          class="btn-primary press-effect"
-        >
-          Download Now
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="5" y1="12" x2="19" y2="12" />
-            <polyline points="12,5 19,12 12,19" />
-          </svg>
-        </a>
+      <h1 class="rise rise-1 mt-6 text-display font-semibold">
+        Your community, on a network <span class="text-primary">nobody owns.</span>
+      </h1>
 
-        <a
-          href="https://github.com/ummilabs/TheWired"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="btn-secondary"
-        >
-          GitHub
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-          </svg>
+      <p class="rise rise-2 mx-auto mt-6 max-w-[36rem] text-lede text-body lg:mx-0">
+        Spaces with chat, voice and video. Music you publish yourself. Messages that stay private.
+        The Wired is a desktop app built on Nostr, so your identity and your people go wherever you go.
+      </p>
+
+      <div class="rise rise-3 mt-9 flex flex-col items-center gap-3 sm:flex-row sm:justify-center lg:justify-start">
+        <a href="#download" class="btn btn-primary w-full sm:w-auto" data-hero-cta>
+          <span data-hero-cta-icon><Icon name="download" size={18} strokeWidth={2.4} /></span>
+          <span data-hero-cta-label>Download The Wired</span>
+        </a>
+        <a href={GITHUB_URL} class="btn btn-ghost w-full sm:w-auto">
+          <Icon name="github" size={17} />
+          View source
         </a>
       </div>
 
-      <!-- Tech badges -->
-      <div class="flex items-center gap-3 justify-center lg:justify-start pt-2">
-        <span class="text-xs font-mono uppercase tracking-wider" style="color: #6B6078;">Built with</span>
-        <div class="flex items-center gap-2">
-          <span class="px-2.5 py-1 rounded text-[11px] font-mono font-medium" style="color: #9A8FA8; border: 0.5px solid #221A2C;">Nostr</span>
-          <span class="px-2.5 py-1 rounded text-[11px] font-mono font-medium" style="color: #9A8FA8; border: 0.5px solid #221A2C;">Tauri</span>
-          <span class="px-2.5 py-1 rounded text-[11px] font-mono font-medium" style="color: #9A8FA8; border: 0.5px solid #221A2C;">Rust</span>
-        </div>
-      </div>
+      <p class="rise rise-4 mt-4 font-mono text-[0.78rem] text-muted" data-hero-meta>
+        Free for macOS, Windows and Linux.
+      </p>
     </div>
 
-    <!-- Character visual — right side -->
-    <div class="flex-1 relative w-full max-w-xl lg:max-w-lg xl:max-w-xl min-h-[400px] lg:min-h-[600px]" style="animation: fade-in-up 0.6s ease-out 0.2s both;">
-      <HeroVisual client:load />
+    <!-- character -->
+    <div class="relative mx-auto w-full max-w-[30rem] lg:max-w-[34rem]">
+      <div class="backlight inset-[12%] opacity-90" style="background: radial-gradient(circle at 50% 55%, color-mix(in srgb, var(--color-primary-deep) 40%, transparent), color-mix(in srgb, var(--color-accent-deep) 27%, transparent) 45%, transparent 72%);" />
+      <Picture
+        src={heroGirl}
+        formats={['avif', 'webp']}
+        fallbackFormat="webp"
+        widths={[360, 540, 760, 1024]}
+        sizes="(min-width: 1024px) 34rem, (min-width: 640px) 30rem, 90vw"
+        alt=""
+        loading="eager"
+        fetchpriority="high"
+        class="rise rise-2 relative w-full drop-shadow-[0_30px_60px_#000000aa]"
+      />
+      <!-- the ground she stands on fades into the page -->
+      <div class="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-background to-transparent" />
+
+      <ul class="pointer-events-none hidden sm:block" aria-label="Protocols">
+        <li class="drift tag absolute left-[2%] top-[22%]"><span class="h-1.5 w-1.5 rounded-full bg-primary" />NIP-29 spaces</li>
+        <li class="drift tag absolute right-[0%] top-[44%]" style="animation-delay:-2.5s"><span class="h-1.5 w-1.5 rounded-full bg-accent" />NIP-17 encrypted DMs</li>
+        <li class="drift tag absolute bottom-[20%] left-[6%]" style="animation-delay:-4.5s"><span class="h-1.5 w-1.5 rounded-full bg-warm" />NIP-57 zaps</li>
+      </ul>
     </div>
   </div>
 
-  <!-- Scroll indicator -->
-  <div class="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 z-20">
-    <span class="text-[10px] uppercase tracking-[0.2em] animate-pulse-glow" style="color: #6B6078;">Scroll</span>
-    <div class="w-5 h-8 rounded-full border flex items-start justify-center p-1.5"
-      style="border-color: #221A2C;">
-      <div class="w-1 h-1.5 rounded-full animate-float" style="background: #384038;"></div>
-    </div>
+  <!-- proof strip -->
+  <div class="container mt-14 lg:mt-10">
+    <ul class="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 border-t border-border pt-6 font-mono text-[0.75rem] text-muted lg:justify-between">
+      {proof.map((p) => (
+        <li class="flex items-center gap-2"><span class="h-1 w-1 rounded-full bg-faint" />{p}</li>
+      ))}
+    </ul>
   </div>
 </section>

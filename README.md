@@ -747,7 +747,7 @@ Expanded from basic upload/playback into a full artist + release workflow.
 - **Auto-updater:** Tauri updater with branded overlay, runs on startup
 - **GitHub Releases CI:** Multi-platform builds (macOS, Windows, Linux ARM/x64) + signed updates
 - **NIP-05 identities:** `app.nip05_identities` table (migration 0017), `.well-known/nostr.json` route
-- **Custom branding:** Logo assets, landing page (Astro), redesigned with JetBrains Mono
+- **Custom branding:** Logo assets, landing page (Astro) set in Space Grotesk + Geist
 - **Resizable panels:** Drag handles between Sidebar / Center / RightPanel
 - **Collapsible sidebar:** Compact + expanded modes
 - **Space mode:** `read-write` vs `read` (community vs feed)

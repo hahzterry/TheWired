@@ -1,0 +1,65 @@
+---
+/**
+ * Power lines strung across the top of the hero: a utility pole on the right
+ * and cables sagging off both edges, with a faint signal running along two
+ * of them. Pure SVG + CSS; the pulses are dropped under reduced motion.
+ */
+interface Props {
+  class?: string;
+}
+const { class: className } = Astro.props;
+
+const left = [
+  'M1075 98 C 760 250 380 250 -40 150',
+  'M1115 98 C 800 285 420 300 -40 235',
+  'M1095 152 C 780 335 380 365 -40 330',
+];
+const right = [
+  'M1185 98 C 1290 160 1380 172 1480 140',
+  'M1225 98 C 1320 150 1400 152 1480 118',
+  'M1205 152 C 1300 220 1390 232 1480 210',
+];
+---
+
+<svg
+  class:list={['wires pointer-events-none', className]}
+  viewBox="0 0 1440 640"
+  preserveAspectRatio="xMaxYMin slice"
+  aria-hidden="true"
+>
+  <defs>
+    <linearGradient id="wire-fade" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1440" y2="0">
+      <stop offset="0" style="stop-color: var(--color-heading); stop-opacity: 0" />
+      <stop offset="0.4" style="stop-color: var(--color-heading); stop-opacity: 0.07" />
+      <stop offset="0.8" style="stop-color: var(--color-heading); stop-opacity: 0.2" />
+      <stop offset="1" style="stop-color: var(--color-heading); stop-opacity: 0.16" />
+    </linearGradient>
+    <linearGradient id="pole-fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" style="stop-color: var(--color-border)" />
+      <stop offset="0.85" style="stop-color: var(--color-border); stop-opacity: 0" />
+    </linearGradient>
+  </defs>
+
+  <!-- pole -->
+  <g fill="url(#pole-fade)">
+    <rect x="1145" y="24" width="10" height="620" rx="2" />
+    <rect x="1058" y="92" width="184" height="7" rx="2" />
+    <rect x="1080" y="146" width="140" height="6" rx="2" />
+    <rect x="1132" y="200" width="36" height="22" rx="3" />
+  </g>
+  <g style="fill: var(--color-border-strong)">
+    {[1075, 1115, 1185, 1225].map((x) => <rect x={x - 2.5} y="84" width="5" height="10" rx="1.5" />)}
+    {[1095, 1205].map((x) => <rect x={x - 2.5} y="138" width="5" height="10" rx="1.5" />)}
+  </g>
+
+  <!-- cables -->
+  <g fill="none" stroke="url(#wire-fade)" stroke-width="1.25">
+    {[...left, ...right].map((d) => <path d={d} />)}
+  </g>
+
+  <!-- signal -->
+  <g fill="none" stroke-width="2" stroke-linecap="round">
+    <path class="wire-pulse" d={left[0]} pathLength="1000" style="stroke: var(--color-primary)" stroke-opacity="0.7" />
+    <path class="wire-pulse wire-pulse--slow" d={left[2]} pathLength="1000" style="stroke: var(--color-accent)" stroke-opacity="0.55" />
+  </g>
+</svg>

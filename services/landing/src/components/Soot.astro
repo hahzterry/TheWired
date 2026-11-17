@@ -1,0 +1,130 @@
+---
+/**
+ * soot — a standalone app for iPhone and Android, built on The Wired's
+ * network. It gets this one section and is presented as its own app, not as
+ * a mobile version of The Wired. The band borrows soot's own
+ * design rules: bone canvas (the cat is black and is never recoloured),
+ * grain, lowercase, flat, one ember spark. Its assets live in ../../soot/
+ * under that directory's NOTICE.
+ */
+import { Picture } from 'astro:assets';
+import Icon from './Icon.astro';
+import { SOOT } from '../data/site';
+import sootLogo from '../../soot/public/img/soot.png';
+import grain from '../../soot/public/img/grain.png';
+import chat from '../../soot/shots/space-chat.jpg';
+import nowPlaying from '../../soot/shots/now-playing.jpg';
+---
+
+<section id="soot" class="soot-band relative isolate overflow-hidden bg-bone text-soot" style={`--grain: url(${grain.src});`}>
+  <div class="container grid grid-cols-1 items-center gap-14 py-20 sm:py-24 lg:grid-cols-2 lg:py-28">
+    <div class="reveal max-w-xl">
+      <Picture
+        src={sootLogo}
+        formats={['avif', 'webp']}
+        fallbackFormat="png"
+        widths={[200, 400]}
+        sizes="200px"
+        alt="soot"
+        loading="lazy"
+        class="h-auto w-[180px] sm:w-[200px]"
+      />
+
+      <p class="mt-8 font-mono text-[0.78rem] text-ash">built on the wired · iphone & android</p>
+      <h2 class="soot-title mt-3">a home for the underground.</h2>
+      <p class="mt-5 text-lg leading-relaxed text-[#3d3a36]">
+        soot is its own app for iPhone and Android, built on the wired's network: spaces for your scene, music as
+        the native language, and messages straight to the artist.
+      </p>
+
+      <div class="mt-8 flex flex-col gap-3 sm:flex-row">
+        <a class="btn btn-soot" href={SOOT.appStore}>
+          <Icon name="apple" size={18} /> app store
+        </a>
+        <a class="btn btn-soot" href={SOOT.googlePlay}>
+          <Icon name="google-play" size={16} /> google play
+        </a>
+      </div>
+
+      <p class="mt-6 flex items-center gap-2.5 font-mono text-[0.8rem] text-ash">
+        <span class="h-[7px] w-[7px] rounded-full bg-ember" aria-hidden="true" />
+        from the shadows... no labels.
+        <a href={SOOT.site} class="soot-link ml-1">soot.win</a>
+      </p>
+    </div>
+
+    <!-- two phones -->
+    <div class="relative mx-auto h-[27rem] w-[86%] max-w-[26rem] sm:h-[34rem] sm:w-full" aria-hidden="true">
+      <div class="phone absolute left-0 top-6 w-[54%] -rotate-[7deg]">
+        <Picture src={nowPlaying} formats={['avif', 'webp']} fallbackFormat="jpg" widths={[240, 480]} sizes="14rem" alt="" loading="lazy" class="block w-full rounded-[1.6rem]" />
+      </div>
+      <div class="phone absolute right-0 top-0 w-[58%] rotate-[5deg]">
+        <Picture src={chat} formats={['avif', 'webp']} fallbackFormat="jpg" widths={[240, 480]} sizes="15rem" alt="" loading="lazy" class="block w-full rounded-[1.6rem]" />
+      </div>
+    </div>
+  </div>
+
+  <!-- the lurker: two eyes, pupils looking the same way -->
+  <div class="lurker absolute right-[clamp(16px,5vw,64px)] top-8 leading-none" aria-hidden="true">
+    <svg viewBox="0 0 74 28" width="56" height="21">
+      <circle cx="14" cy="14" r="14" />
+      <circle class="pupil" cx="11.48" cy="17.08" r="5.32" />
+      <circle cx="60" cy="14" r="14" />
+      <circle class="pupil" cx="57.48" cy="17.08" r="5.32" />
+    </svg>
+  </div>
+</section>
+
+<style>
+  .soot-band::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: var(--grain) repeat;
+    background-size: 128px 128px;
+    opacity: 0.05;
+    pointer-events: none;
+  }
+  .soot-title {
+    font-family: var(--font-soot);
+    font-weight: 800;
+    font-size: clamp(2.2rem, 1.6rem + 2.6vw, 3.4rem);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--color-soot);
+  }
+  .soot-link {
+    color: var(--color-soot);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .soot-band :focus-visible {
+    outline-color: var(--color-soot);
+  }
+  .phone {
+    padding: 7px;
+    border-radius: 2rem;
+    background: #1a1918;
+    box-shadow:
+      0 0 0 1px #00000040,
+      0 40px 80px -30px #0f0e0d99,
+      0 18px 36px -18px #0f0e0d80;
+  }
+  .lurker circle {
+    fill: var(--color-soot);
+  }
+  .lurker .pupil {
+    fill: var(--color-bone);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .lurker svg {
+      animation: blink 4.32s infinite;
+      transform-origin: center;
+    }
+    @keyframes blink {
+      0%, 95%, 100% { transform: scaleY(1); }
+      97.5% { transform: scaleY(0.08); }
+    }
+  }
+</style>
